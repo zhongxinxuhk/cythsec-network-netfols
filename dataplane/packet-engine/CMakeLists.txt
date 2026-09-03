@@ -30,12 +30,12 @@ endif()
 option(ENABLE_XDP "Enable XDP/eBPF backend" OFF)
 option(ENABLE_AF_XDP "Enable AF_XDP backend" OFF)
 option(ENABLE_DPDK "Enable DPDK backend" OFF)
-# 仅当被作为独立工程（未处于上层 add_subdirectory 语境）时，允许跑 CTest
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  option(PACKET_ENGINE_BUILD_TESTS "Build packet-engine unit tests" ON)
-else()
-  option(PACKET_ENGINE_BUILD_TESTS "Build packet-engine unit tests" OFF)
-endif()
+
+# 测试开关统一遵循 CMake 标准 BUILD_TESTING 约定：
+#   - 从根仓库 configure（根 include(CTest) 定义 BUILD_TESTING，默认 ON）-> 测试开
+#   - 作为独立工程 configure -> 本目录自行 include(CTest) 定义 BUILD_TESTING
+# 这样无论从仓库根还是单独打开 packet-engine，都能一致产出 test_packet 目标。
+include(CTest)
 
 # ---- 版本号头文件生成 -----------------------------------------------------
 set(PACKET_ENGINE_VERSION "${PROJECT_VERSION}")
@@ -71,8 +71,7 @@ add_executable(hello_packet cli/main.cpp)
 target_link_libraries(hello_packet PRIVATE packet_engine)
 
 # ---- 单元测试（CTest）-----------------------------------------------------
-if(PACKET_ENGINE_BUILD_TESTS)
-  enable_testing()
+if(BUILD_TESTING)
   add_executable(test_packet tests/test_packet.cpp)
   target_link_libraries(test_packet PRIVATE packet_engine)
   add_test(NAME packet_engine_unit COMMAND test_packet)
