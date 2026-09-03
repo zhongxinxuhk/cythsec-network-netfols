@@ -1,0 +1,75 @@
+# --- 构建产物 / Build artifacts ---
+build/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+out/
+dist/
+release/
+
+# --- C/C++ ---
+*.cmake
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+.dSYM/
+
+# --- Rust ---
+target/
+**/*.rs.bk
+Cargo.lock
+
+# --- Go ---
+*.test
+*.out
+vendor/
+
+# --- Node / Frontend ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+web/console/dist/
+web/console/.vite/
+
+# --- Python (ML) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- 数据集 / 抓包（体积大、通常不入仓） ---
+datasets/**/*.pcap
+datasets/**/*.pcapng
+datasets/**/*.parquet
+datasets/**/*.csv
+datasets/**/*.json
+capture/**/*.pcap
+
+# --- 编辑器 / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- 密钥 / 本地配置 ---
+*.env
+*.env.local
+secrets/
+**/config.local.*
+
+# --- 日志 ---
+*.log
+logs/
