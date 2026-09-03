@@ -13,8 +13,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // 开发期代理到本地控制平面服务
-      '/api': 'http://localhost:8080',
+      // 开发期代理到 routerd（默认 :8080，可用 VITE_ROUTERD_TARGET 覆盖）
+      '/api': process.env.VITE_ROUTERD_TARGET || 'http://localhost:8080',
+      '/healthz': process.env.VITE_ROUTERD_TARGET || 'http://localhost:8080',
     },
   },
   build: {
