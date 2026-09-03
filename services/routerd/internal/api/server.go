@@ -24,6 +24,7 @@ func NewServer() http.Handler {
 	mux.HandleFunc("GET /api/v1/system", handleSystem)
 	mux.HandleFunc("GET /api/v1/interfaces", handleInterfaces)
 	mux.HandleFunc("GET /api/v1/routes", handleRoutes)
+	mux.HandleFunc("GET /api/v1/traffic", handleTraffic)
 
 	return logMiddleware(mux)
 }
@@ -66,6 +67,15 @@ func handleRoutes(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: routes})
+}
+
+func handleTraffic(w http.ResponseWriter, _ *http.Request) {
+	traf, err := netinfo.ListTraffic()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: traf})
 }
 
 func logMiddleware(next http.Handler) http.Handler {

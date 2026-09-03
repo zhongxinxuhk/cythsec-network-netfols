@@ -6,6 +6,7 @@
 //	GET /api/v1/system    系统概貌（hostname / os / arch / go 版本）
 //	GET /api/v1/interfaces  网卡、IP、接口状态
 //	GET /api/v1/routes    路由表
+//	GET /api/v1/traffic   网卡流量计数（rx/tx bytes & packets）
 //
 // 监听地址可通过 -addr 覆盖，默认 :8080。
 package main
@@ -46,6 +47,7 @@ func main() {
 	log.Printf("  GET /api/v1/system")
 	log.Printf("  GET /api/v1/interfaces")
 	log.Printf("  GET /api/v1/routes")
+	log.Printf("  GET /api/v1/traffic")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("listen: %v", err)
 	}

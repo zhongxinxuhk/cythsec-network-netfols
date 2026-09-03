@@ -54,3 +54,26 @@ func TestListRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestListTraffic 校验 Linux 上能读到网卡流量计数。
+func TestListTraffic(t *testing.T) {
+	traf, err := ListTraffic()
+	if err != nil {
+		t.Fatalf("ListTraffic: %v", err)
+	}
+	if runtime.GOOS != "linux" {
+		if len(traf) != 0 {
+			t.Errorf("非 Linux 平台应返回空表, got %d", len(traf))
+		}
+		return
+	}
+	// Linux 上 /sys/class/net 至少应有回环接口（symlink 指向 devices）。
+	if len(traf) == 0 {
+		t.Fatal("Linux 上不应返回空流量表")
+	}
+	for _, c := range traf {
+		if c.Interface == "" {
+			t.Error("流量接口名不应为空")
+		}
+	}
+}
