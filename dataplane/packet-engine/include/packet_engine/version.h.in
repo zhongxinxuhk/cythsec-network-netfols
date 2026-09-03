@@ -1,0 +1,9 @@
+// version.h.in - 版本号模板，由 CMake configure_file 生成 version.h
+// Generated from CMake project version at configure time.
+#pragma once
+
+#define PACKET_ENGINE_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define PACKET_ENGINE_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define PACKET_ENGINE_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+#define PACKET_ENGINE_VERSION_STR "@PROJECT_VERSION@"
