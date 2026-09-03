@@ -1,0 +1,8 @@
+go 1.22
+
+use (
+	./services/routerd
+	./services/policyd
+	./services/dnsd
+	./services/telemetryd
+)

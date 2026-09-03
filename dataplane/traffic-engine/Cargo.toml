@@ -1,0 +1,10 @@
+[package]
+name = "traffic-engine"
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+description = "Rust traffic analysis core: flow, session, reassembly, dpi, feature, behavior, risk."
+
+# 注：crates/ 下的子模块（flow/session/reassembly/dpi/protocol/feature/behavior/risk/common）
+# 将逐步补全各自的 Cargo.toml 并加入本工作区 members。当前为单包骨架。
+[dependencies]
