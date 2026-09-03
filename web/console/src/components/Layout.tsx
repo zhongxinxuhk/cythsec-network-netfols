@@ -32,9 +32,11 @@ export function Layout() {
   }, []);
 
   const navItems = [
-    { to: '/', label: '系统', end: true },
-    { to: '/interfaces', label: '网络接口' },
-    { to: '/routes', label: '路由表' },
+    { to: '/', label: 'Dashboard', end: true },
+    { to: '/interfaces', label: 'Interfaces' },
+    { to: '/routes', label: 'Routes' },
+    { to: '/traffic', label: 'Traffic' },
+    { to: '/system', label: 'System' },
   ];
 
   return (

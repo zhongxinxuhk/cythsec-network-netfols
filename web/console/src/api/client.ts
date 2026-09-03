@@ -5,6 +5,7 @@ import type {
   InterfaceInfo,
   Route,
   SystemInfo,
+  TrafficCounters,
 } from './types';
 
 // routerd 基地址：优先用 Vite 注入的 env（见 vite.config proxy），
@@ -42,4 +43,5 @@ export const api = {
   system: () => get<SystemInfo>('/system'),
   interfaces: () => get<InterfaceInfo[]>('/interfaces'),
   routes: () => get<Route[]>('/routes'),
+  traffic: () => get<TrafficCounters[]>('/traffic'),
 };

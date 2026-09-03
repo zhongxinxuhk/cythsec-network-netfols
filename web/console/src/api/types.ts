@@ -50,3 +50,16 @@ export interface Route {
   ref: number;
   use: number;
 }
+
+// /api/v1/traffic 里一张网卡的流量计数
+export interface TrafficCounters {
+  interface: string;
+  rx_bytes: number;
+  tx_bytes: number;
+  rx_packets: number;
+  tx_packets: number;
+  rx_errors: number;
+  tx_errors: number;
+  rx_dropped: number;
+  tx_dropped: number;
+}
