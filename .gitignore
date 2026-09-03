@@ -48,6 +48,8 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ipynb_checkpoints/
+ml/**/runs/
+ml/**/wandb/
 
 # --- 数据集 / 抓包（体积大、通常不入仓） ---
 datasets/**/*.pcap
@@ -55,6 +57,7 @@ datasets/**/*.pcapng
 datasets/**/*.parquet
 datasets/**/*.csv
 datasets/**/*.json
+!datasets/samples/README.md
 capture/**/*.pcap
 
 # --- 编辑器 / OS ---
