@@ -5,6 +5,24 @@ edition = "2021"
 license = "Proprietary"
 description = "Rust traffic analysis core: flow, session, reassembly, dpi, feature, behavior, risk."
 
-# 注：crates/ 下的子模块（flow/session/reassembly/dpi/protocol/feature/behavior/risk/common）
-# 将逐步补全各自的 Cargo.toml 并加入本工作区 members。当前为单包骨架。
+# 本阶段为单包骨架，实现最小数据链 Packet -> Flow -> Session：
+#   src/flow/    五元组 Packet 与 Flow 流模型
+#   src/session/ 双向 Session 会话模型
+#
+# 二进制名：traffic-engine（src/main.rs，演示入口）
+# 库名：traffic_engine（src/lib.rs，供 main 与单元/集成测试复用）
+#
+# crates/ 下的独立子 crate（reassembly/dpi/feature/behavior/risk/common 等）
+# 将在后续迭代逐个补全并加入上层根 workspace members，当前统一在单包内演进。
+[lib]
+name = "traffic_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "traffic-engine"
+path = "src/main.rs"
+
 [dependencies]
+
+# 零第三方依赖，保持最小工程可离线构建、便于工具链验证。
+[dev-dependencies]
