@@ -25,13 +25,7 @@ pub struct FlowKey {
 
 impl FlowKey {
     /// 简易 IPv4 三元组构造（测试与演示常用）。
-    pub fn new_ipv4(
-        src: [u8; 4],
-        sport: u16,
-        dst: [u8; 4],
-        dport: u16,
-        proto: u8,
-    ) -> Self {
+    pub fn new_ipv4(src: [u8; 4], sport: u16, dst: [u8; 4], dport: u16, proto: u8) -> Self {
         Self {
             src_ip: IpAddr::V4(Ipv4Addr::from(src)),
             src_port: sport,

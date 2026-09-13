@@ -1,0 +1,40 @@
+# .gitleaks.toml —— cythsec 密钥防泄漏配置（CYS-SEC-006）
+#
+# 设计：
+#   - useDefault = true：继承 gitleaks 内置规则集（AWS / GitHub / Google / Slack /
+#     PEM 私钥 / JWT / 通用口令 等），无需联网拉取外部配置。
+#   - [allowlist]：对构建产物、依赖、VCS、测试夹具、文档与本项目自带扫描脚本做
+#     路径级放行，避免对无密钥文件产生噪声。
+#
+# 验证：安装 gitleaks 后执行 `gitleaks detect --config .gitleaks.toml --verbose`。
+
+title = "cythsec gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+paths = [
+  '''(?i)node_modules/''',
+  '''(?i)\.git/''',
+  '''(?i)dist/''',
+  '''(?i)target/''',
+  '''(?i)build/''',
+  '''(?i)\.idea/''',
+  '''(?i)cmake-build-debug/''',
+  '''(?i)docs/''',
+  '''(?i)package-lock\.json''',
+  '''(?i)Cargo\.lock''',
+  '''(?i).*_test\.go''',
+  '''(?i).*_test\.rs''',
+  '''(?i)\.env\.example''',
+  '''(?i).*\.pcap''',
+  '''(?i).*\.pcapng''',
+  '''(?i)scripts/security/scan-secrets\.sh''',
+  '''(?i)web/console/package-lock\.json''',
+]
+
+# 对明显占位符赋值做全局放行（与 scripts/security/scan-secrets.sh 的负向过滤对齐）。
+regexes = [
+  '''(?i)(password|secret|token|api[_-]?key)\s*[:=]\s*["']?(example|sample|changeme|xxxx|your[-_])''',
+]

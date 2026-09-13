@@ -14,14 +14,14 @@ import (
 
 // Route 一条 IPv4 路由。
 type Route struct {
-	Interface string `json:"interface"` // 出接口名
+	Interface   string `json:"interface"` // 出接口名
 	Destination string `json:"destination"`
-	Gateway   string `json:"gateway"`
-	Mask      string `json:"mask"`
-	Flags     string `json:"flags"`
-	Metric    int    `json:"metric"`
-	Ref       int    `json:"ref"`
-	Use       int    `json:"use"`
+	Gateway     string `json:"gateway"`
+	Mask        string `json:"mask"`
+	Flags       string `json:"flags"`
+	Metric      int    `json:"metric"`
+	Ref         int    `json:"ref"`
+	Use         int    `json:"use"`
 }
 
 // isRouteRelevant 判断一条 /proc/net/route 标志位是否该呈现给控制面。

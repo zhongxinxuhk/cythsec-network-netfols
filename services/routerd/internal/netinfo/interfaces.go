@@ -17,18 +17,18 @@ type InterfaceAddr struct {
 
 // InterfaceInfo 一张网卡的汇总信息（含状态与地址）。
 type InterfaceInfo struct {
-	Name        string          `json:"name"`
-	Index       int             `json:"index"`
-	MTU         int             `json:"mtu"`
-	MAC         string          `json:"mac"`
-	Flags       []string        `json:"flags"`
-	Up          bool            `json:"up"`
-	Running     bool            `json:"running"`
-	Loopback    bool            `json:"loopback"`
-	Broadcast   bool            `json:"broadcast"`
-	Multicast   bool            `json:"multicast"`
-	PointToPoint bool           `json:"point_to_point"`
-	Addrs       []InterfaceAddr `json:"addresses"`
+	Name         string          `json:"name"`
+	Index        int             `json:"index"`
+	MTU          int             `json:"mtu"`
+	MAC          string          `json:"mac"`
+	Flags        []string        `json:"flags"`
+	Up           bool            `json:"up"`
+	Running      bool            `json:"running"`
+	Loopback     bool            `json:"loopback"`
+	Broadcast    bool            `json:"broadcast"`
+	Multicast    bool            `json:"multicast"`
+	PointToPoint bool            `json:"point_to_point"`
+	Addrs        []InterfaceAddr `json:"addresses"`
 }
 
 func ifFlagSet(f net.Flags, bit net.Flags) bool { return f&bit != 0 }

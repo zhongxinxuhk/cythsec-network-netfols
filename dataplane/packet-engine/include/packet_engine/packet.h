@@ -24,4 +24,4 @@ std::string hello_message();
 // 工程版本号（自 version.h 读取）。
 std::string version();
 
-}  // namespace packet_engine
+} // namespace packet_engine

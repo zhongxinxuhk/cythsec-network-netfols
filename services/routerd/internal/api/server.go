@@ -1,87 +1,101 @@
 // Package api 提供 routerd 的 HTTP 控制面 API。
 // 供 Web Console 消费：获取系统信息、网卡/IP、路由表等。
+//
+// 横切关注点（三个基础端点、中间件栈、低基数路由标签）统一由
+// cythsec/services/pkg/controlplane 提供，本包只注册 routerd 的业务路由。
+//
+// 中间件顺序（由外到内）：
+//
+//	request_id -> 访问日志 -> CORS -> 上下文日志 -> 指标 -> 路由处理器
+//
+// 日志与指标中间件各自在调用 next 之前注入 httpx.RouteHolder，使得请求结束后
+// 仍能读到处理器声明的路由模板（低基数标签），而非具体路径。
 package api
 
 import (
-	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
-	"time"
 
+	"cythsec/services/pkg/apiresp"
+	"cythsec/services/pkg/controlplane"
+	"cythsec/services/pkg/metrics"
 	"cythsec/services/routerd/internal/netinfo"
 )
 
-// NewServer 构造 HTTP 多路复用器，注册 routerd 的 v1 API。
-func NewServer() http.Handler {
-	mux := http.NewServeMux()
+// ServiceName 是 routerd 在日志、健康检查与指标子系中使用的服务名。
+const ServiceName = "routerd"
 
-	// 健康检查
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
+// ServerOptions 配置 routerd 控制面 HTTP 服务的行为。
+//
+// 所有字段均为可选：零值即使用默认行为，便于测试与最小化启动。
+type ServerOptions struct {
+	// CORSAllowedOrigins 允许跨域的源列表；为空时使用默认 ["http://localhost:5173"]。
+	// 支持特殊值 "*" 表示允许任意源（仅建议开发/演示环境使用）。
+	CORSAllowedOrigins []string
+	// Logger 结构化日志器；为 nil 时使用 slog.Default()。
+	Logger *slog.Logger
+	// Metrics 聚合的 HTTP 指标；为 nil 时不采集 HTTP 指标。
+	Metrics *metrics.HTTPMetrics
+	// Registry 指标注册表；非 nil 时暴露 GET /metrics。
+	Registry *metrics.Registry
+	// RuntimeMetricsRefresh 由 metrics.RegisterGoCollector 返回，用于抓取前刷新运行时指标。
+	RuntimeMetricsRefresh func()
+	// DisableMetrics 显式关闭 /metrics 端点（优先级高于 Registry）。
+	DisableMetrics bool
+}
 
+// RegisterRoutes 把 routerd 的业务路由注册到控制面 mux。
+//
+// 必须使用 controlplane.Handle（内部套 httpx.Route）：裸 mux.HandleFunc 会让
+// route 标签退化为具体请求路径。
+func RegisterRoutes(mux *http.ServeMux) {
 	// v1 控制面 API（供 Web Console 对接）
-	mux.HandleFunc("GET /api/v1/system", handleSystem)
-	mux.HandleFunc("GET /api/v1/interfaces", handleInterfaces)
-	mux.HandleFunc("GET /api/v1/routes", handleRoutes)
-	mux.HandleFunc("GET /api/v1/traffic", handleTraffic)
-
-	return logMiddleware(mux)
+	controlplane.Handle(mux, "GET /api/v1/system", handleSystem)
+	controlplane.Handle(mux, "GET /api/v1/interfaces", handleInterfaces)
+	controlplane.Handle(mux, "GET /api/v1/routes", handleRoutes)
+	controlplane.Handle(mux, "GET /api/v1/traffic", handleTraffic)
 }
 
-// 统一 JSON 响应包装：{ "data": ... }，预留 future 的 code/error 结构。
-type envelope struct {
-	Data  any    `json:"data"`
-	Error string `json:"error,omitempty"`
+// NewServer 构造 routerd 的 HTTP handler（供测试与嵌入使用）。
+func NewServer(opts ServerOptions) http.Handler {
+	return controlplane.NewHandler(controlplane.Options{
+		Service:               ServiceName,
+		CORSAllowedOrigins:    opts.CORSAllowedOrigins,
+		Logger:                opts.Logger,
+		Metrics:               opts.Metrics,
+		Registry:              opts.Registry,
+		RuntimeMetricsRefresh: opts.RuntimeMetricsRefresh,
+		DisableMetrics:        opts.DisableMetrics,
+	}, RegisterRoutes)
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("write json: %v", err)
-	}
+func handleSystem(w http.ResponseWriter, r *http.Request) {
+	apiresp.JSON(w, r, http.StatusOK, netinfo.GetSystem())
 }
 
-func writeErr(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, envelope{Error: msg})
-}
-
-func handleSystem(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, envelope{Data: netinfo.GetSystem()})
-}
-
-func handleInterfaces(w http.ResponseWriter, _ *http.Request) {
+func handleInterfaces(w http.ResponseWriter, r *http.Request) {
 	ifaces, err := netinfo.ListInterfaces()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		apiresp.Err(w, r, http.StatusInternalServerError, apiresp.CodeInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: ifaces})
+	apiresp.JSON(w, r, http.StatusOK, ifaces)
 }
 
-func handleRoutes(w http.ResponseWriter, _ *http.Request) {
+func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	routes, err := netinfo.ListRoutes()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		apiresp.Err(w, r, http.StatusInternalServerError, apiresp.CodeInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: routes})
+	apiresp.JSON(w, r, http.StatusOK, routes)
 }
 
-func handleTraffic(w http.ResponseWriter, _ *http.Request) {
+func handleTraffic(w http.ResponseWriter, r *http.Request) {
 	traf, err := netinfo.ListTraffic()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		apiresp.Err(w, r, http.StatusInternalServerError, apiresp.CodeInternal, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: traf})
-}
-
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start))
-	})
+	apiresp.JSON(w, r, http.StatusOK, traf)
 }

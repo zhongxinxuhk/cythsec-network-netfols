@@ -18,8 +18,8 @@ pub struct Session {
     pub id: u64,
     /// 会话主键采用"发起方方向"的五元组作为稳定标识。
     pub key: FlowKey,
-    pub forward: Flow,   // 发起方 -> 响应方
-    pub backward: Flow,  // 响应方 -> 发起方
+    pub forward: Flow,  // 发起方 -> 响应方
+    pub backward: Flow, // 响应方 -> 发起方
     pub state: SessionState,
     /// 会话首包方向作为 forward 的判定依据（演示：这里假设 forward 先出现）。
     pub started_at_us: u64,
@@ -110,8 +110,8 @@ mod tests {
         let mut s = Session::new(1, f);
 
         s.ingest(&pkt(f, 1200, 1)); // 请求
-        s.ingest(&pkt(f, 800, 2));  // 第二个请求
-        s.ingest(&pkt(b, 500, 3));  // 响应
+        s.ingest(&pkt(f, 800, 2)); // 第二个请求
+        s.ingest(&pkt(b, 500, 3)); // 响应
 
         assert_eq!(s.forward.packet_count, 2);
         assert_eq!(s.backward.packet_count, 1);

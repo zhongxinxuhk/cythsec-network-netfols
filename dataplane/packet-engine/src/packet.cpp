@@ -25,4 +25,4 @@ std::string version() {
   return PACKET_ENGINE_VERSION_STR;
 }
 
-}  // namespace packet_engine
+} // namespace packet_engine

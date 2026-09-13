@@ -1,0 +1,3 @@
+# Rust 格式化配置（供 cargo fmt 使用）。
+max_width = 100
+edition = "2021"

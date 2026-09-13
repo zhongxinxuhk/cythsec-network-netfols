@@ -11,6 +11,9 @@ export function fmtBytes(n: number): string {
     v /= 1024;
     i++;
   }
+  // 字节是离散计数，不存在 1.00 B 这种语义（小数点下无有效信息），
+  // 因此 kB 以下固定取整；进位后的单位才按量级决定小数位。
+  if (i === 0) return `${v} B`;
   return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
 }
 

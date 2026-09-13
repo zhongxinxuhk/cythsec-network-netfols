@@ -1,9 +1,9 @@
 // main.rs - traffic-engine 演示入口
 // 走一遍最小数据链：Packet -> Flow -> Session，输出会话聚合统计，
 // 用于验证 cargo build + cargo test 在目标平台(Linux ELF / openEuler)正常。
+use traffic_engine::crate_version;
 use traffic_engine::flow::{FlowKey, Packet};
 use traffic_engine::session::{Session, SessionState};
-use traffic_engine::crate_version;
 
 fn main() {
     println!("traffic-engine v{}", crate_version());

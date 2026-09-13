@@ -1,0 +1,26 @@
+# .pre-commit-config.yaml —— cythsec 提交前安全门禁（CYS-SEC-006）
+#
+# 双层防护：
+#   1. gitleaks：基于 .gitleaks.toml 的正式密钥扫描（需 pre-commit 拉取该 repo）。
+#   2. scan-secrets（local）：本项目自带、零外部依赖的兜底扫描脚本，保证即使
+#      gitleaks 未安装也能在提交前拦住明文密钥。
+#
+# 安装：pip install pre-commit && pre-commit install
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: gitleaks (密钥扫描)
+        args: ["--config", ".gitleaks.toml", "--verbose", "--redact"]
+
+  - repo: local
+    hooks:
+      - id: scan-secrets
+        name: scan-secrets (零依赖兜底扫描)
+        entry: bash scripts/security/scan-secrets.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+        # 命中即非零退出，阻断提交。

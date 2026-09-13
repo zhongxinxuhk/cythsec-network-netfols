@@ -1,0 +1,59 @@
+# CythSec C++ 代码风格（clang-format）
+#
+# 由软件工程基座引入，供 `clang-format --dry-run --Werror` 在 CI lint 阶段强制检查。
+#
+# 设计原则：**本配置适配既有代码库风格，而非要求代码库改造**。
+# 原因：packet-engine 的手写风格（左对齐指针、对齐尾随注释、2 空格行内注释前缀、
+# 单行短循环、手工分组的 include）先于本配置存在，且已在此风格下通过 124 个断言。
+# 让配置迁就代码，可避免一次无收益的 30 文件全量重排。
+#
+# 另注：LLVM 的多项默认值在 clang-format 18 之后改为结构体形式，故此处一律显式
+# 声明，不依赖默认值（例：SortIncludes 需写 Enabled 而非布尔）。
+
+BasedOnStyle: LLVM
+Language: Cpp
+
+# ---- 缩进与行宽 -----------------------------------------------------------
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ColumnLimit: 100
+
+# ---- 指针 / 引用对齐：左对齐（`const char* p`，非 `const char *p`）--------
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+DerivePointerAlignment: false
+
+# ---- 注释 ----------------------------------------------------------------
+# 保留手工对齐的尾随注释（如 `uint16_t length = 0;     // 说明`）。
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+# 行内注释前缀空格数不设上限，以兼容 `}  // namespace xxx` 等既有写法。
+SpacesInLineCommentPrefix:
+  Minimum: 1
+  Maximum: -1
+# 含中文的注释按显示宽度自动折行无益，关闭重排以免破坏手工分段。
+ReflowComments: false
+
+# ---- include -------------------------------------------------------------
+# 保留手工分组与顺序（头文件自包含性另由最小 TU 编译测试覆盖）。
+SortIncludes:
+  Enabled: false
+  IgnoreCase: false
+IncludeBlocks: Preserve
+
+# ---- 短语句 --------------------------------------------------------------
+# 允许 `for (...) x += 1;` 这类单行短循环（代码库既有写法）。
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: Inline
+
+# ---- 空行 -----------------------------------------------------------------
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# ---- 大括号 ---------------------------------------------------------------
+BreakBeforeBraces: Attach
+AllowShortCaseLabelsOnASingleLine: false

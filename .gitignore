@@ -23,7 +23,7 @@ compile_commands.json
 # --- Rust ---
 target/
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock 保留入库：应用类工程（非库）锁定依赖版本，保证可重现构建
 
 # --- Go ---
 *.test
@@ -72,6 +72,9 @@ Thumbs.db
 *.env.local
 secrets/
 **/config.local.*
+
+# --- 本地工具状态（Mimosa 审计：finding-ledger / history / hook-state / reports） ---
+.mimosa/
 
 # --- 日志 ---
 *.log

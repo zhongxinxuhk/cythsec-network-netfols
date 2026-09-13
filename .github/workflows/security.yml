@@ -1,0 +1,53 @@
+# .github/workflows/security.yml —— cythsec 安全扫描流水线（CYS-SEC-006）
+#
+# 触发条件：push 到主分支 / 任意 PR / 每周一定时。
+# 仅创建/修改此文件；ci.yml 与 lint.yml 归软件专家维护，不在此触碰。
+#
+# 注意：本文件只做声明，依赖 GitHub Actions 运行器；本地无需可运行。
+
+name: security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # 每周一 04:17 UTC 定时全量扫描
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: 密钥 / 凭据扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks（基于 .gitleaks.toml）
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: scan-secrets（零依赖兜底脚本）
+        run: bash scripts/security/scan-secrets.sh
+
+  govulncheck:
+    name: Go 依赖漏洞扫描（govulncheck）
+    runs-on: ubuntu-latest
+    # 可选步骤：依赖网络与构建环境，失败不阻断整体安全流水线。
+    continue-on-error: true
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: actions/checkout@v4
+      - name: 安装 govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: 扫描 Go 模块漏洞
+        run: "$(go env GOPATH)/bin/govulncheck ./..."

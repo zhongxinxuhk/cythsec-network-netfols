@@ -1,0 +1,105 @@
+name: CI
+
+# 触发条件：推送到 main 或开启/更新 PR 时运行。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 四语言矩阵：cpp / rust / go / node，各自 build + test。
+# 构建与测试逻辑全部收敛在 scripts/ 下，本 workflow 只负责环境准备与调用（CYS-INF-007）。
+jobs:
+  cpp:
+    name: C++ 构建与测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 CMake
+        uses: lukka/get-cmake@latest
+      - name: 构建并测试 (C++)
+        run: |
+          bash scripts/build/build-all.sh --cpp
+          bash scripts/test/test-all.sh --cpp
+
+  rust:
+    name: Rust 构建与测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 缓存 Cargo registry + target
+        uses: Swatinem/rust-cache@v2
+      - name: 构建并测试 (Rust)
+        run: |
+          bash scripts/build/build-all.sh --rust
+          bash scripts/test/test-all.sh --rust
+
+  go:
+    name: Go 构建与测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: 缓存 Go 构建与模块
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      - name: 构建并测试 (Go)
+        run: |
+          bash scripts/build/build-all.sh --go
+          bash scripts/test/test-all.sh --go
+
+  e2e:
+    name: 控制面端到端验证
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: 生成四服务二进制（含版本注入）
+        run: bash scripts/build/build-all.sh --go
+      - name: 安装 jq（日志结构化校验用）
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: 启动四服务并逐项验收（CYS-TEL-002 的可执行验收）
+        # WORK_DIR 固定路径 + 失败保留，使下面的 artifact 上传有实际内容可传。
+        env:
+          WORK_DIR: ${{ runner.temp }}/e2e-work
+        run: bash scripts/verify/e2e-control-plane.sh
+      - name: 失败时上传四服务日志与指标
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-workdir
+          path: ${{ runner.temp }}/e2e-work
+          if-no-files-found: warn
+
+  node:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: web/console/package-lock.json
+      - name: 安装依赖 + 类型检查 + 构建
+        run: |
+          cd web/console
+          npm ci
+          npm run typecheck
+          npm run build
+      - name: 上传 dist 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-console-dist
+          path: web/console/dist

@@ -1,0 +1,33 @@
+name: Lint
+
+# 触发条件：推送到 main 或 PR 时运行静态检查。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 静态检查统一收敛在 scripts/lint/lint-all.sh（CYS-INF-007）：
+#   clang-format --dry-run --Werror / cargo fmt --check / gofmt -l / npm run lint。
+jobs:
+  lint:
+    name: 静态检查（clang-format / cargo fmt / gofmt / eslint）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: web/console/package-lock.json
+      - name: 安装 clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: 安装前端依赖（eslint 需要 node_modules）
+        run: cd web/console && npm ci
+      - name: 运行静态检查
+        run: bash scripts/lint/lint-all.sh

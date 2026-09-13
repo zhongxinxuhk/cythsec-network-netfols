@@ -1,5 +1,22 @@
-# routerd 配置示例（首版仅 HTTP 监听地址）。
-# 实际运行可用 -addr 命令行参数覆盖；未来可扩展为读此文件的配置中心。
+# routerd 配置文件（极简 YAML，仅顶层 key: value）。
+#
+# 配置优先级（高 -> 低）：命令行 flag > 环境变量 > 本文件 > 内置默认值。
+# 可用 -config 指定其他路径；环境变量用 ROUTERD_* 前缀（如 ROUTERD_LISTEN_ADDR）。
 
 # HTTP 监听地址
 listen_addr: ":8080"
+
+# 允许跨域的源（逗号分隔）；默认开发源为 http://localhost:5173
+cors_origins: "http://localhost:5173"
+
+# 优雅关闭超时（Go duration 语法，如 10s / 5s）
+shutdown_timeout: "10s"
+
+# 日志级别：debug / info / warn / error
+log_level: "info"
+
+# 日志格式：json（默认，便于 jq / 采集器解析）或 text（开发时更易读）
+log_format: "json"
+
+# 是否暴露 GET /metrics（Prometheus 文本格式）
+metrics_enabled: true
