@@ -201,10 +201,16 @@ impl fmt::Display for DecodeError {
                 stage.as_str()
             ),
             DecodeError::NonIpEtherType { ether_type } => {
-                write!(f, "非 IP 帧：EtherType=0x{ether_type:04X}（ARP/STP/LLDP 等不构成五元组）")
+                write!(
+                    f,
+                    "非 IP 帧：EtherType=0x{ether_type:04X}（ARP/STP/LLDP 等不构成五元组）"
+                )
             }
             DecodeError::UnsupportedIpVersion { version } => {
-                write!(f, "IP 版本字段为 {version}，既非 4 也非 6：帧内容与以太头 EtherType 矛盾")
+                write!(
+                    f,
+                    "IP 版本字段为 {version}，既非 4 也非 6：帧内容与以太头 EtherType 矛盾"
+                )
             }
             DecodeError::Ipv4BadHeaderLength { ihl_bytes } => write!(
                 f,
@@ -224,7 +230,10 @@ impl fmt::Display for DecodeError {
                 "IPv6 下一头为 {next_header}，本解码器不展开（如 ESP 负载加密，端口本就不可见）"
             ),
             DecodeError::TooManyVlanTags { limit } => {
-                write!(f, "VLAN 标签嵌套超过 {limit} 层：现实中不存在，解析位置多半已偏")
+                write!(
+                    f,
+                    "VLAN 标签嵌套超过 {limit} 层：现实中不存在，解析位置多半已偏"
+                )
             }
         }
     }
@@ -267,7 +276,9 @@ pub fn decode_frame(frame: &[u8]) -> Result<DecodedFrame, DecodeError> {
     let mut vlan_tags = 0u8;
     while ETHERTYPE_VLAN.contains(&ether_type) {
         if vlan_tags == MAX_VLAN_TAGS {
-            return Err(DecodeError::TooManyVlanTags { limit: MAX_VLAN_TAGS });
+            return Err(DecodeError::TooManyVlanTags {
+                limit: MAX_VLAN_TAGS,
+            });
         }
         if frame.len() < offset + VLAN_TAG_LEN {
             return Err(DecodeError::Truncated {
@@ -493,11 +504,7 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
 ///
 /// 只需要 4 字节即可得到端口对，因此**不要求完整四层头**：截断捕获常见于「只抓头」的
 /// 采集配置，此时端口完全可用，拿不到完整的 20 字节 TCP 头并不影响五元组成立。
-fn decode_ports(
-    frame: &[u8],
-    l4_offset: usize,
-    l4: L4Proto,
-) -> Result<(u16, u16), DecodeError> {
+fn decode_ports(frame: &[u8], l4_offset: usize, l4: L4Proto) -> Result<(u16, u16), DecodeError> {
     if !l4.has_ports() {
         return Ok((0, 0));
     }
@@ -594,7 +601,9 @@ mod tests {
         deep.extend_from_slice(&frame[14..]);
         assert_eq!(
             decode_frame(&deep).unwrap_err(),
-            DecodeError::TooManyVlanTags { limit: MAX_VLAN_TAGS }
+            DecodeError::TooManyVlanTags {
+                limit: MAX_VLAN_TAGS
+            }
         );
         // 解不出来时不得给出「没打标」的结论
         frame.truncate(10);
@@ -789,7 +798,9 @@ mod tests {
         v.extend_from_slice(&[0u8; 8]);
         assert_eq!(
             decode_frame(&v).unwrap_err(),
-            DecodeError::UnsupportedIpv6NextHeader { next_header: IPPROTO_ESP }
+            DecodeError::UnsupportedIpv6NextHeader {
+                next_header: IPPROTO_ESP
+            }
         );
     }
 

@@ -14,7 +14,12 @@ pub enum Proto {
 }
 
 /// 最小五元组：源/目的地址与端口 + 协议，用于唯一标识一条流。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// 除 `Hash`/`Eq`（流表用）外还实现 `Ord`：**输出需要确定性顺序**。以 HashMap 遍历流表
+/// 输出的报告每次顺序都不同，使跨次比对（e2e 逐行 diff、快照回归）失去意义 ——
+/// 排序规则本身不重要，稳定才重要。`IpAddr` 的 `Ord` 先按 v4/v6 分族再按地址，
+/// 因此同族地址的先后与数值大小一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FlowKey {
     pub src_ip: IpAddr,
     pub src_port: u16,

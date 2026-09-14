@@ -1,0 +1,5 @@
+GET /path?q=1 HTTP/1.1
+Host: api.example.com:8443
+User-Agent: curl/8.0
+Accept: */*
+

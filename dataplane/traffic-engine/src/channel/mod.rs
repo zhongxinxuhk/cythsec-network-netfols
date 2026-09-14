@@ -27,5 +27,7 @@ mod region;
 mod tests;
 
 pub use consumer::{ConsumeError, Consumer, ConsumerStats, PacketMeta};
-pub use decode::{decode_flow_key, L4Proto};
+pub use decode::{
+    decode_flow_key, decode_frame, DecodeError, DecodeStage, DecodedFrame, L3Proto, L4Proto,
+};
 pub use region::{AttachError, Channel, ChannelStats, RegionPerm};

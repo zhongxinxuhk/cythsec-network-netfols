@@ -20,6 +20,17 @@ struct PacketBuffer {
   int64_t timestamp_ns = 0; // 时间戳，单位：纳秒（由后端约定 epoch 或相对值）
   uint32_t refcount = 0;    // 引用计数（零拷贝共享时 +1，释放时 -1）
 
+  // VLAN 标签。网卡做硬件 VLAN 剥离时，标签会从帧里被摘掉、改由元数据携带
+  // （Linux 经 tp_status 的 TP_STATUS_VLAN_VALID + tp_vlan_tci）。此时**帧内已无
+  // 4 字节标签**，而以太网类型字段的位置整体前移 4 字节 —— 若按「帧内必有标签」
+  // 去解析，解出的五元组是错的，且不会报错。
+  //
+  // 故标签必须在元数据里携带，而不是让上层在帧内搜索 0x8100：后者在
+  // 「帧内恰好出现 8100 这个值」时会误判（如某些 IP 载荷），也无法处理
+  // QinQ 双标签的第一层。解析边界仍以 caplen 为准。
+  uint16_t vlan_tci = 0;    // 标签控制信息（PCP+DEI+VID，主机字节序）
+  bool vlan_tagged = false; // 是否有有效标签（true 时 vlan_tci 才有意义）
+
   // 解析边界应以 caplen 为准，而非 wirelen（wirelen 可能超出已捕获范围）。
   size_t available() const { return static_cast<size_t>(caplen); }
 

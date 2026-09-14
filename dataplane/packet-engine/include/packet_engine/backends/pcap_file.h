@@ -40,8 +40,15 @@ public:
 
   // 后端层错误查询（open 失败后用于诊断）。
   PcapStatus error() const { return err_; }
-  const char* error_reason() const { return err_reason_.c_str(); }
+  // 覆写基类虚接口（而非新增同名非虚函数）：CLI 一律按 PacketBackend* 使用，
+  // 且刻意不做 dynamic_cast 到具体类型 —— 否则平台/后端差异会立刻上浮到工具层。
+  const char* error_reason() const override { return err_reason_.c_str(); }
+
+  // 保留强类型访问器供测试与后端专属代码使用；同时按基类契约再暴露一份。
   uint32_t link_type() const { return linktype_; }
+  uint32_t bound_link_type() const override { return linktype_; }
+  // 文件后端不绑定接口，故 bound_ifindex() 用基类默认值 0。
+  const char* capture_mode_name() const override { return "file"; }
 
 private:
   int parse(); // 解析已读入 buf_ 的内容

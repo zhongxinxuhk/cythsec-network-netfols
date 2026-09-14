@@ -15,6 +15,9 @@ usage() { cat <<'EOF'
     - clang-format --dry-run --Werror（C/C++，基于仓库 .clang-format）
     - cargo fmt --all -- --check（Rust）
     - gofmt -l（Go，services/ 下）
+    - 属性字典生成物一致性（scripts/verify/check-attributes.sh）
+    - 通道 ABI 双端契约一致性（scripts/verify/check-channel-abi.sh）
+    - 前端类型检查（web/console：src/tests + 构建配置两份 tsconfig）
     - npm run lint（前端 eslint，web/console）
   任一检查未通过则整体非 0 退出。
 EOF
@@ -94,6 +97,34 @@ if ! bash scripts/verify/check-attributes.sh; then
   failed=$((failed+1))
 else
   echo "✓ [codegen] 属性字典生成物一致"
+fi
+
+# ---------- 生成物一致性 : 通道 ABI ----------
+# 同理归入 lint：它校验的是「C++ / Rust 双端契约生成物与真源是否一致」。
+# 通道 ABI 是**跨语言二进制契约**，漂移的表现不是编译失败而是静默错读内存，
+# 因此这里的检查是本仓库最不能省的一条。除新鲜度外还校验诊断可达性 ——
+# 真源登记了却无人构造的诊断会让读者误以为该条校验存在。
+echo "==> [codegen] 通道 ABI 双端契约一致性"
+if ! bash scripts/verify/check-channel-abi.sh; then
+  echo "✗ [codegen] 通道 ABI 生成物与真源不一致，或存在不可达诊断" >&2
+  failed=$((failed+1))
+else
+  echo "✓ [codegen] 通道 ABI 双端契约一致"
+fi
+
+# ---------- 前端 : 类型检查 ----------
+# 两份配置都必须查：
+#   tsconfig.json      覆盖 src/ 与 tests/
+#   tsconfig.node.json 覆盖构建配置文件（vite.config.ts / vitest.config.ts / version-source.ts）
+# 后者此前不被任何门禁覆盖 —— `tsc --noEmit` 不解析 project references，所以构建配置里的
+# 类型错误（例如 @types/node 缺失导致 __dirname / process 未定义）可以长期无人发现，
+# 而这类缺失同时也会让 `npm run build` 挂掉。
+echo "==> [node] 前端类型检查（src/tests + 构建配置）"
+if ! (cd web/console && npm run typecheck:all); then
+  echo "✗ [node] 类型检查未通过" >&2
+  failed=$((failed+1))
+else
+  echo "✓ [node] 类型检查通过"
 fi
 
 # ---------- 前端 : eslint ----------

@@ -19,9 +19,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::abi_gen::{
-    channel_layout, diag, header_off, ChannelHeader, ChannelLayout, LayoutError,
-    PacketDescriptor, Severity, ABI_VERSION, DESCRIPTOR_STEP, DEFAULT_SLOT_COUNT,
-    DEFAULT_SLOT_SIZE, HEADER_REGION_SIZE, MAGIC, MAGIC_BE, MAGIC_LEN, REGION_ALIGNMENT,
+    channel_layout, diag, header_off, ChannelHeader, ChannelLayout, LayoutError, PacketDescriptor,
+    Severity, ABI_VERSION, DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE, DESCRIPTOR_STEP,
+    HEADER_REGION_SIZE, MAGIC, MAGIC_BE, MAGIC_LEN, REGION_ALIGNMENT,
 };
 
 const PROT_READ: i32 = 0x1;
@@ -83,6 +83,24 @@ pub enum AttachError {
         local_data: u32,
         remote_data: u32,
     },
+    /// 区域里的槽位数与部署期望值不符。
+    ///
+    /// 与 `SlotCountOutOfRange` 的区别在于比较对象：那条比的是**合法区间**（区域自己就非法），
+    /// 这条比的是**部署配置**（区域本身自洽合法，只是不是本端要的那一个）。现实成因几乎
+    /// 总是「上一版配置建的区域没清理」——此时两端布局不同，读到的每个字段都无意义，
+    /// 而区域自检完全通过。故必须由配置层面的期望值拦下，不能靠运气。
+    SlotCountMismatch {
+        local: u32,
+        remote: u32,
+    },
+    /// 区域里的槽容量与部署期望值不符。理由同 `SlotCountMismatch`。
+    ///
+    /// 单列而不与槽位数合并，是因为两者的排障方向不同：槽位数不符通常意味着「配置改过」，
+    /// 槽容量不符还额外意味着**单槽边界整体错位**，报文会被按错误长度切割。
+    SlotSizeMismatch {
+        local: u32,
+        remote: u32,
+    },
     SlotCountOutOfRange {
         value: u32,
         min_value: u32,
@@ -126,6 +144,8 @@ impl AttachError {
             AttachError::AbiVersionMismatch { .. } => diag::ChanAbiVersionMismatch::CODE,
             AttachError::HeaderSizeMismatch { .. } => diag::ChanHeaderSizeMismatch::CODE,
             AttachError::LayoutMismatch { .. } => diag::ChanLayoutMismatch::CODE,
+            AttachError::SlotCountMismatch { .. } => diag::ChanSlotCountMismatch::CODE,
+            AttachError::SlotSizeMismatch { .. } => diag::ChanSlotSizeMismatch::CODE,
             AttachError::SlotCountOutOfRange { .. } => diag::ChanSlotCountOutOfRange::CODE,
             AttachError::SlotSizeOutOfRange { .. } => diag::ChanSlotSizeOutOfRange::CODE,
             AttachError::SizeOverflow { .. } => diag::ChanSizeOverflow::CODE,
@@ -156,18 +176,28 @@ impl AttachError {
 impl fmt::Display for AttachError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
-            AttachError::Io { path, err_no, detail } => diag::ChanIoError {
+            AttachError::Io {
+                path,
+                err_no,
+                detail,
+            } => diag::ChanIoError {
                 detail: detail.clone(),
                 err_no: *err_no as u32,
                 path: path.display().to_string(),
             }
             .to_string(),
-            AttachError::Uninitialized { local_magic, remote_magic } => diag::ChanUninitialized {
+            AttachError::Uninitialized {
+                local_magic,
+                remote_magic,
+            } => diag::ChanUninitialized {
                 local_magic: *local_magic,
                 remote_magic: *remote_magic,
             }
             .to_string(),
-            AttachError::MagicMismatch { local_magic, remote_magic } => diag::ChanMagicMismatch {
+            AttachError::MagicMismatch {
+                local_magic,
+                remote_magic,
+            } => diag::ChanMagicMismatch {
                 local_magic: *local_magic,
                 remote_magic: *remote_magic,
             }
@@ -194,23 +224,40 @@ impl fmt::Display for AttachError {
                 remote_data: *remote_data,
             }
             .to_string(),
-            AttachError::SlotCountOutOfRange { value, min_value, max_value } => {
-                diag::ChanSlotCountOutOfRange {
-                    value: *value,
-                    min_value: *min_value,
-                    max_value: *max_value,
-                }
-                .to_string()
+            AttachError::SlotCountMismatch { local, remote } => diag::ChanSlotCountMismatch {
+                local: *local,
+                remote: *remote,
             }
-            AttachError::SlotSizeOutOfRange { value, min_value, max_value } => {
-                diag::ChanSlotSizeOutOfRange {
-                    value: *value,
-                    min_value: *min_value,
-                    max_value: *max_value,
-                }
-                .to_string()
+            .to_string(),
+            AttachError::SlotSizeMismatch { local, remote } => diag::ChanSlotSizeMismatch {
+                local: *local,
+                remote: *remote,
             }
-            AttachError::SizeOverflow { slot_count, slot_size } => diag::ChanSizeOverflow {
+            .to_string(),
+            AttachError::SlotCountOutOfRange {
+                value,
+                min_value,
+                max_value,
+            } => diag::ChanSlotCountOutOfRange {
+                value: *value,
+                min_value: *min_value,
+                max_value: *max_value,
+            }
+            .to_string(),
+            AttachError::SlotSizeOutOfRange {
+                value,
+                min_value,
+                max_value,
+            } => diag::ChanSlotSizeOutOfRange {
+                value: *value,
+                min_value: *min_value,
+                max_value: *max_value,
+            }
+            .to_string(),
+            AttachError::SizeOverflow {
+                slot_count,
+                slot_size,
+            } => diag::ChanSizeOverflow {
                 slot_count: *slot_count,
                 slot_size: *slot_size,
             }
@@ -220,18 +267,19 @@ impl fmt::Display for AttachError {
                 actual: *actual,
             }
             .to_string(),
-            AttachError::BaseNotAligned { required, remainder } => diag::ChanBaseNotAligned {
+            AttachError::BaseNotAligned {
+                required,
+                remainder,
+            } => diag::ChanBaseNotAligned {
                 required: *required,
                 remainder: *remainder,
             }
             .to_string(),
-            AttachError::TailAheadOfHead { tail, head } => {
-                diag::ChanTailAheadOfHead {
-                    tail: *tail,
-                    head: *head,
-                }
-                .to_string()
+            AttachError::TailAheadOfHead { tail, head } => diag::ChanTailAheadOfHead {
+                tail: *tail,
+                head: *head,
             }
+            .to_string(),
         };
         f.write_str(&text)
     }
@@ -283,10 +331,13 @@ impl Region {
         if create_len.is_some() {
             opts.create(true).truncate(true);
         }
-        let file = opts.open(path).map_err(|e| io_error(path, "open 失败", &e))?;
+        let file = opts
+            .open(path)
+            .map_err(|e| io_error(path, "open 失败", &e))?;
 
         if let Some(len) = create_len {
-            file.set_len(len).map_err(|e| io_error(path, "set_len 失败", &e))?;
+            file.set_len(len)
+                .map_err(|e| io_error(path, "set_len 失败", &e))?;
         }
 
         let len = file
@@ -294,7 +345,11 @@ impl Region {
             .map_err(|e| io_error(path, "stat 失败", &e))?
             .len();
         if len == 0 {
-            return Err(AttachError::RegionTooSmall { required: 1, actual: 0 }.with_path(path));
+            return Err(AttachError::RegionTooSmall {
+                required: 1,
+                actual: 0,
+            }
+            .with_path(path));
         }
 
         let mut prot = PROT_READ;
@@ -383,7 +438,17 @@ impl Channel {
 
         // 头部必须用非对齐读：对齐检查本身要在读到头部之后才能做，
         // 因此这里不能假定对齐（否则在未对齐区域上是 UB）。
-        let header: ChannelHeader = unsafe { ptr::read_unaligned(region.base as *const ChannelHeader) };
+        let header: ChannelHeader =
+            unsafe { ptr::read_unaligned(region.base as *const ChannelHeader) };
+
+        // 顺序是刻意的：先回答「这块内存是不是一个可用的通道」（validate），
+        // 再回答「它是不是本端配置要的那一个」（期望值比对）。
+        //
+        // 反过来做会给出误导性诊断：区域被清零/截断时 header.slot_count 读出来是 0，
+        // 期望值比对会先报 slot_count_mismatch（期望 1024、对端 0），把排障的人引向
+        // 「配置写错了」；而真正该做的是重建区域。validate 自己声明的原则正是
+        // 「从『这块内存根本不是通道』到『通道对但布局不符』」，期望值比对属于后者。
+        let layout = validate(&header, base, region.len())?;
 
         if let Some((exp_count, exp_size)) = expected {
             if header.slot_count != exp_count {
@@ -400,8 +465,11 @@ impl Channel {
             }
         }
 
-        let layout = validate(&header, base, region.len())?;
-        Ok(Channel { region, header, layout })
+        Ok(Channel {
+            region,
+            header,
+            layout,
+        })
     }
 
     /// 创建并 attach 一个全新区域。
@@ -451,7 +519,11 @@ impl Channel {
             );
         }
 
-        let mut ch = Channel { region, header, layout };
+        let mut ch = Channel {
+            region,
+            header,
+            layout,
+        };
         ch.refresh_header();
         // 对自己刚写入的头部再跑一遍完整校验：这不只是形式主义——校验逻辑本身若与写入
         // 逻辑不一致，会在这里立刻暴露，而不是等到消费端 attach 时才以一个难解的
@@ -655,21 +727,41 @@ impl fmt::Debug for Channel {
 
 fn layout_error_to_attach(e: LayoutError) -> AttachError {
     match e {
-        LayoutError::SlotCountOutOfRange { value, min_value, max_value } => {
-            AttachError::SlotCountOutOfRange { value, min_value, max_value }
-        }
-        LayoutError::SlotSizeOutOfRange { value, min_value, max_value } => {
-            AttachError::SlotSizeOutOfRange { value, min_value, max_value }
-        }
-        LayoutError::SizeOverflow { slot_count, slot_size } => {
-            AttachError::SizeOverflow { slot_count, slot_size }
-        }
+        LayoutError::SlotCountOutOfRange {
+            value,
+            min_value,
+            max_value,
+        } => AttachError::SlotCountOutOfRange {
+            value,
+            min_value,
+            max_value,
+        },
+        LayoutError::SlotSizeOutOfRange {
+            value,
+            min_value,
+            max_value,
+        } => AttachError::SlotSizeOutOfRange {
+            value,
+            min_value,
+            max_value,
+        },
+        LayoutError::SizeOverflow {
+            slot_count,
+            slot_size,
+        } => AttachError::SizeOverflow {
+            slot_count,
+            slot_size,
+        },
     }
 }
 
 /// attach 期校验。顺序是刻意安排的：从「这块内存根本不是通道」到「通道对但布局不符」，
 /// 先排除粗粒度问题，避免用「布局不符」这类细节诊断掩盖「拿错文件」这种根因。
-fn validate(header: &ChannelHeader, base: usize, file_len: u64) -> Result<ChannelLayout, AttachError> {
+fn validate(
+    header: &ChannelHeader,
+    base: usize,
+    file_len: u64,
+) -> Result<ChannelLayout, AttachError> {
     // 1. 全零魔数单独判定：文件被截断/刚创建未初始化时同样呈现全零，
     //    与「魔数不对」是两种完全不同的处置方向，不该合并。
     if header.magic == [0u8; MAGIC_LEN] {
@@ -702,8 +794,8 @@ fn validate(header: &ChannelHeader, base: usize, file_len: u64) -> Result<Channe
 
     // 3. 用本端常量按对端记录的槽位配置算一遍布局；对端记录的偏移必须与之相符。
     //    这才是「两端常量是否一致」的真正检验 —— 只比常量本身无从发现差异。
-    let local_layout = channel_layout(header.slot_count, header.slot_size)
-        .map_err(layout_error_to_attach)?;
+    let local_layout =
+        channel_layout(header.slot_count, header.slot_size).map_err(layout_error_to_attach)?;
 
     // 说明：这里**刻意不**用 (data_off - desc_off) / slot_count 反推「对端步进」再与
     // DESCRIPTOR_STEP 比较。那个反推在数学上无法区分两种情形：「对端槽位数写错」与

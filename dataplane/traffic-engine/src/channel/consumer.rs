@@ -73,7 +73,8 @@ impl CorruptReason {
             }
             CorruptReason::CaplenExceedsSlot => "报文长度超过槽容量",
             CorruptReason::DataRangeExceedsSlot => {
-                "数据区间未落在所属槽位内：data_off 应为相对数据区起点的偏移，                 且 [data_off, data_off+caplen) 必须落在本槽位的字节区间内"
+                "数据区间未落在所属槽位内：data_off 应为相对数据区起点的偏移，\
+                 且 [data_off, data_off+caplen) 必须落在本槽位的字节区间内"
             }
         }
     }
@@ -107,7 +108,12 @@ pub enum ConsumeError {
 impl fmt::Display for ConsumeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConsumeError::ProducerOverrun { head, tail, slot_count, skipped } => write!(
+            ConsumeError::ProducerOverrun {
+                head,
+                tail,
+                slot_count,
+                skipped,
+            } => write!(
                 f,
                 "消费者落后超过一圈：head={head} tail={tail} 槽位数={slot_count}，\
                  已丢失 {skipped} 个未读报文（这些槽位已被生产者覆盖）"
@@ -262,7 +268,13 @@ impl<'a> Consumer<'a> {
         // 序号自检：这是整套索引算术最廉价也最有力的验证。生产者的序号与消费者推出的
         // 位置若不一致，说明其中一侧的算术已经错了，此时任何字段都不可信。
         if desc.seq != tail {
-            return Err(corrupt(index, tail, &desc, slot_size, CorruptReason::SeqMismatch));
+            return Err(corrupt(
+                index,
+                tail,
+                &desc,
+                slot_size,
+                CorruptReason::SeqMismatch,
+            ));
         }
         if desc.caplen > slot_size {
             return Err(corrupt(

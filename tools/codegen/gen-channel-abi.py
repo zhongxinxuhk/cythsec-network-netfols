@@ -15,17 +15,32 @@
 # 三处一致性由三层机制分别守住，缺一不可：
 #   1. **编译期**：生成的结构体带 static_assert（字段偏移 + 结构体尺寸），
 #      人类改错字段顺序会在编译时失败，而不是在运行时读到垃圾。
+#      ⚠️ C++ 侧有个前置条件：本文件是 header-only，断言只在**有人 include 它**时才被
+#      编译。Rust 侧只要 `pub mod abi_gen;` 就会编译，C++ 侧则必须存在真实翻译单元
+#      （cli/dump_abi_main.cpp / tests/test_channel_abi.cpp）。无人 include 时这些断言
+#      一条也不会被求值 —— 形态完整、读起来像防线，实际是注释。
 #   2. **生成物新鲜度**：`--check` 比对生成物与真源（scripts/verify/check-channel-abi.sh），
 #      改真源忘记重新生成会被拦下。
-#   3. **跨语言 parity**：两端各自的 `--dump-abi` 输出逐行 `key=value`，脚本直接 diff。
-#      这是唯一能发现「一侧改了、另一侧没改」的手段——静态断言只看自己那一侧。
+#   3. **跨语言 parity**：两端各自的 `--dump-abi` 输出逐行 `key=value`，脚本直接 diff
+#      （scripts/verify/check-channel-parity.sh）。这是唯一能发现「一侧改了、另一侧没改」
+#      的手段——静态断言只看自己那一侧。三层的 dump 内容同样由本脚本生成：两条独立的
+#      渲染路径会因为「只改了一边」而漂移，而漂移掉的正是它要检测的东西。
+#
+# 落地现状：三层均已落地并由上述两个脚本覆盖。第 3 层的入口是 C++ 的
+# `cythsec-dump-abi` 与 Rust 的 `dump-abi` 两个可执行目标。
 #
 # 诊断文案同样由真源生成（而非两侧各写一遍）：ABI 报错的读者是排障的人，两端报错措辞
 # 不同会让人误以为遇到了两个不同的问题。
 #
 # 用法：
 #   python3 tools/codegen/gen-channel-abi.py            # 生成（幂等覆盖）
-#   python3 tools/codegen/gen-channel-abi.py --check    # 只校验生成物是否与真源一致
+#   python3 tools/codegen/gen-channel-abi.py --check    # 只校验，不写盘
+#
+# --check 退出码（分开是为了让调用方能给出精确的修复指引）：
+#   0 = 生成物一致且诊断均可达
+#   1 = 生成物与真源不一致（修复：重新运行本脚本生成）
+#   2 = 诊断可达性失败，即真源登记了却没有任何构造点（修复：实现它，或连同调用处一起删）
+#   3 = 真源非法（模板占位符与字段表不符、类型未登记等）
 
 import argparse
 import difflib
@@ -77,6 +92,40 @@ SEVERITIES = {
     "error": {"cpp": "Severity::kError", "rust": "Severity::Error"},
     "warning": {"cpp": "Severity::kWarning", "rust": "Severity::Warning"},
 }
+
+# 布局错误 -> (parity 文本, Rust 变体名, C++ 枚举名)。
+#
+# parity 文本由本表生成、两端同源，因此它自己不构成校验；被校验的是「哪个探针触发了
+# 哪个错误」这条映射。布局算术是生成代码里最容易漂移的一段（两端各由 Python 渲染一份），
+# 错误归类一旦漂移，就等于两端的边界语义不同。
+LAYOUT_ERRORS = (
+    ("slot_count_out_of_range", "SlotCountOutOfRange", "kSlotCountOutOfRange"),
+    ("slot_size_out_of_range", "SlotSizeOutOfRange", "kSlotSizeOutOfRange"),
+    ("size_overflow", "SizeOverflow", "kSizeOverflow"),
+)
+
+# 布局探针：(parity key, C++ 入参, Rust 入参, 取值字段)。
+#
+# 「取值字段」为 required 时是 64 位、其余是 32 位；两端统一渲染成十进制字符串，
+# 因此不受位宽差异影响。
+LAYOUT_PROBES = (
+    ("layout.default.desc_off", "kDefaultSlotCount, kDefaultSlotSize",
+     "DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE", "desc_off"),
+    ("layout.default.data_off", "kDefaultSlotCount, kDefaultSlotSize",
+     "DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE", "data_off"),
+    ("layout.default.required", "kDefaultSlotCount, kDefaultSlotSize",
+     "DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE", "required"),
+    # 下界必须被接受：把 `< min` 写成 `<= min` 是范围检查最常见的差一错，而它只在
+    # 恰好取最小值时才暴露 —— 默认配置永远测不到。
+    ("layout.probe.min_x_min.required", "kMinSlotCount, kMinSlotSize",
+     "MIN_SLOT_COUNT, MIN_SLOT_SIZE", "required"),
+    ("layout.probe.1_x_default.desc_off", "1u, kDefaultSlotSize",
+     "1, DEFAULT_SLOT_SIZE", "desc_off"),
+    ("layout.probe.default_x_1.desc_off", "kDefaultSlotCount, 1u",
+     "DEFAULT_SLOT_COUNT, 1", "desc_off"),
+    ("layout.probe.max_x_max.desc_off", "kMaxSlotCount, kMaxSlotSize",
+     "MAX_SLOT_COUNT, MAX_SLOT_SIZE", "desc_off"),
+)
 
 # 字段名会成为生成源码里的成员名，因此必须同时在 C++ 与 Rust 里可用。两类坑：
 #
@@ -169,7 +218,10 @@ RUST_RESERVED = {
 
 def die(msg):
     print("gen-channel-abi: " + msg, file=sys.stderr)
-    sys.exit(1)
+    # 退出码 3 专用于「真源本身非法」。与 1（生成物过期）分开，是因为两者的修复动作
+    # 方向相反：1 是「真源对了、生成物忘了更新」，3 是「真源写错了」——把 3 也归到 1
+    # 会让人去跑一次生成，反而把非法真源的产物写进仓库。
+    sys.exit(3)
 
 
 def load_registry():
@@ -365,6 +417,12 @@ def render_cpp(doc):
         last = doc[group][-1]
         end = last["offset"] + FIELDS[last["type"]]["size"] * FIELDS[last["type"]]["count"]
         w("static_assert(sizeof(%s) == %du, \"%s 尺寸与通道 ABI 不符\");\n\n" % (name, end, name))
+    # 结构体尺寸与常量之间的关系也要在编译期固定。这条此前没有任何断言守着：
+    # 消费端按 `index * descriptor_step` 定位第 N 个槽，若 step 大于描述符尺寸，就会
+    # 读到槽之间的空隙 —— 每个字段都「有值」，只是全部错位、且不会崩。
+    w("// 描述符步进必须等于描述符尺寸：消费端按 index * descriptor_step 定位槽位。\n")
+    w("static_assert(kDescriptorStep == sizeof(PacketDescriptor), "
+      "\"descriptor_step 与 PacketDescriptor 尺寸不符（错位读不会崩，只会读到垃圾）\");\n\n")
 
     # 诊断
     w(_layout_cpp(ch))
@@ -413,6 +471,7 @@ def render_cpp(doc):
         w("  }\n")
         w("};\n\n")
     w("}  // namespace diag\n")
+    w(_dump_cpp(doc))
     w("}  // namespace abi\n}  // namespace channel\n}  // namespace packet_engine\n")
     return "".join(out)
 
@@ -495,6 +554,11 @@ def render_rust(doc):
         end = last["offset"] + FIELDS[last["type"]]["size"] * FIELDS[last["type"]]["count"]
         w("const _: () = assert!(std::mem::size_of::<%s>() == %d, \"%s 尺寸与通道 ABI 不符\");\n\n"
           % (name, end, name))
+    # 见 C++ 侧同段说明：step 与描述符尺寸的关系此前无人守。
+    w("const _: () = assert!(\n")
+    w("    DESCRIPTOR_STEP as usize == std::mem::size_of::<PacketDescriptor>(),\n")
+    w("    \"descriptor_step 与 PacketDescriptor 尺寸不符（错位读不会崩，只会读到垃圾）\"\n")
+    w(");\n\n")
 
     w(_layout_rust(ch))
     w("// ---- 诊断严重度 ----\n")
@@ -543,6 +607,7 @@ def render_rust(doc):
             w("            %s: %s,\n" % (f["name"], rust_sample(f, d["sample"][f["name"]])))
         w("        }\n        .to_string()\n    }\n\n")
     w("}  // pub mod diag\n")
+    w(_dump_rust(doc))
     return "".join(out)
 
 
@@ -659,6 +724,153 @@ def _layout_rust(ch):
     w("    Ok(ChannelLayout {\n")
     w("        desc_off: desc_off as u32,\n        data_off: data_off as u32,\n"
       "        required,\n    })\n}\n\n")
+    return "".join(lines)
+
+
+def _dump_entries(doc):
+    """parity dump 的条目表：[(key, C++ 取值表达式, Rust 取值表达式)]。
+
+    取值一律取**表达式**而非字面量。照抄真源只是把真源打印一遍，两端口径一致是必然的，
+    等于没验证。取 sizeof / offsetof / 生成常量 / 生成的布局函数 / 诊断样本，验证的才是
+    「真源 → 生成代码 → 编译产物」这条链在两端都成立 —— 也唯有如此，diff 才有意义。
+    """
+    entries = []
+
+    def add(key, cpp, rust):
+        entries.append((key, cpp, rust))
+
+    add("registry_version", "std::string(kRegistryVersion)", "REGISTRY_VERSION.to_string()")
+    add("magic_text", "std::string(kMagicText)", "MAGIC_TEXT.to_string()")
+    add("magic_len", "std::to_string(kMagicLen)", "MAGIC_LEN.to_string()")
+    add("magic_be", "Hex64(kMagicBE)", "hex64(MAGIC_BE)")
+
+    for key, cpp, rust in (
+        ("abi_version", "kAbiVersion", "ABI_VERSION"),
+        ("header_region_size", "kHeaderRegionSize", "HEADER_REGION_SIZE"),
+        ("descriptor_step", "kDescriptorStep", "DESCRIPTOR_STEP"),
+        ("region_alignment", "kRegionAlignment", "REGION_ALIGNMENT"),
+        ("default_slot_count", "kDefaultSlotCount", "DEFAULT_SLOT_COUNT"),
+        ("default_slot_size", "kDefaultSlotSize", "DEFAULT_SLOT_SIZE"),
+        ("min_slot_count", "kMinSlotCount", "MIN_SLOT_COUNT"),
+        ("max_slot_count", "kMaxSlotCount", "MAX_SLOT_COUNT"),
+        ("min_slot_size", "kMinSlotSize", "MIN_SLOT_SIZE"),
+        ("max_slot_size", "kMaxSlotSize", "MAX_SLOT_SIZE"),
+    ):
+        add(key, "std::to_string(%s)" % cpp, "%s.to_string()" % rust)
+
+    for group, name in (("header_fields", "ChannelHeader"),
+                        ("descriptor_fields", "PacketDescriptor")):
+        for f in doc[group]:
+            add("struct.%s.offset.%s" % (name, f["name"]),
+                "std::to_string(offsetof(%s, %s))" % (name, f["name"]),
+                "std::mem::offset_of!(%s, %s).to_string()" % (name, f["name"]))
+        add("struct.%s.size" % name,
+            "std::to_string(sizeof(%s))" % name,
+            "std::mem::size_of::<%s>().to_string()" % name)
+
+    for fl in doc["flags"]:
+        add("flag.%s" % fl["name"],
+            "std::to_string(flag::k%s)" % (fl["name"][0].upper() + fl["name"][1:]),
+            "flag::%s.to_string()" % fl["name"].upper())
+
+    for key, cpp_args, rust_args, field in LAYOUT_PROBES:
+        add(key, "LayoutProbe(%s, %s)" % (cpp_args, cpp_str(field)),
+            "layout_probe(%s, %s)" % (rust_args, rust_str(field)))
+
+    for d in doc["diagnostics"]:
+        ident = diag_ident(d["code"])
+        add("diag.%s.severity" % d["code"],
+            "std::string(to_string(diag::%s::severity()))" % ident,
+            "diag::%s::SEVERITY.as_str().to_string()" % ident)
+        add("diag.%s.sample" % d["code"],
+            "diag::%s::sample()" % ident,
+            "diag::%s_sample()" % ident.lower())
+    return entries
+
+
+def _dump_cpp(doc):
+    """生成 C++ 侧 parity dump（与 Rust 侧同序同键，由 _dump_entries 单点决定）。"""
+    lines = []
+    w = lines.append
+    w("// ---- 跨语言 parity dump ----\n")
+    w("//\n")
+    w("// 逐行 `key=value`，与 Rust 端 abi_dump() 同序同键；两端的取值都由**本端编译产物**\n")
+    w("// 算出（常量 / offsetof / sizeof / 生成的布局函数 / 诊断样本），再由\n")
+    w("// scripts/verify/check-channel-parity.sh 逐行 diff。这是三层里唯一能发现\n")
+    w("// 「一侧改了、另一侧没改」的手段 —— static_assert 只看自己那一侧。\n")
+    w("//\n")
+    w("// 本头是 header-only：断言与 dump 都只在有人 include 时才被编译。C++ 侧因此\n")
+    w("// **必须有真实翻译单元引用它**（cli/dump_abi_main.cpp、tests/test_channel_abi.cpp）。\n")
+    w("// 无人 include 时，上面那些 static_assert 一条也不会被求值 —— 看起来是防线，\n")
+    w("// 实际是注释；这是 C++ 与 Rust 在这一点上最大的差别（Rust 只要 `pub mod` 就编译）。\n")
+    w("namespace dump {\n\n")
+    w("// 64 位值的 16 进制渲染：两端必须同宽（含前导零），否则 diff 会因宽度差异误报。\n")
+    w("inline std::string Hex64(uint64_t v) {\n")
+    w("  char buf[32];\n")
+    w("  std::snprintf(buf, sizeof(buf), \"0x%016llx\", static_cast<unsigned long long>(v));\n")
+    w("  return std::string(buf);\n}\n\n")
+    w("// 布局错误的 parity 文本（与 Rust 端 layout_error_name 一致）。\n")
+    w("inline const char* LayoutErrorName(LayoutError e) {\n")
+    w("  switch (e) {\n")
+    for text, _rust_variant, cpp_enum in LAYOUT_ERRORS:
+        w("    case LayoutError::%s:\n      return %s;\n" % (cpp_enum, cpp_str(text)))
+    w("    case LayoutError::kNone:\n      break;\n")
+    w("  }\n  return \"none\";\n}\n\n")
+    w("// 布局探针：跑一遍本端生成的布局算术，返回取值或 `error:<错误名>`。\n")
+    w("// 失败时也返回字符串而不抛异常：探针的产出要能进 diff，不能被中断。\n")
+    w("inline std::string LayoutProbe(uint32_t slot_count, uint32_t slot_size, const char* field) {\n")
+    w("  ChannelLayout out{};\n")
+    w("  const LayoutError e = channel_layout(slot_count, slot_size, &out);\n")
+    w("  if (e != LayoutError::kNone) return std::string(\"error:\") + LayoutErrorName(e);\n")
+    w("  const std::string f(field);\n")
+    w("  if (f == \"desc_off\") return std::to_string(out.desc_off);\n")
+    w("  if (f == \"data_off\") return std::to_string(out.data_off);\n")
+    w("  return std::to_string(out.required);\n}\n\n")
+    w("// 逐行 `key=value`。**顺序即比对顺序**，不得随手调整。\n")
+    w("inline std::vector<std::string> AbiDump() {\n")
+    w("  std::vector<std::string> out;\n")
+    w("  auto add = [&out](const char* key, const std::string& value) {\n")
+    w("    out.push_back(std::string(key) + \"=\" + value);\n")
+    w("  };\n")
+    for key, cpp_expr, _rust_expr in _dump_entries(doc):
+        w("  add(%s, %s);\n" % (cpp_str(key), cpp_expr))
+    w("  return out;\n}\n\n")
+    w("}  // namespace dump\n")
+    return "".join(lines)
+
+
+def _dump_rust(doc):
+    """生成 Rust 侧 parity dump（与 C++ 侧同序同键，由 _dump_entries 单点决定）。"""
+    lines = []
+    w = lines.append
+    w("// ---- 跨语言 parity dump ----\n")
+    w("//\n")
+    w("// 逐行 `key=value`，与 C++ 端 AbiDump() 同序同键；取值同样由**本端编译产物**算出，\n")
+    w("// 由 scripts/verify/check-channel-parity.sh 逐行 diff（理由见 C++ 侧同段说明）。\n")
+    w("/// 布局错误的 parity 文本（与 C++ 端 LayoutErrorName 一致）。\n")
+    w("pub fn layout_error_name(e: LayoutError) -> &'static str {\n")
+    w("    match e {\n")
+    for text, rust_variant, _cpp_enum in LAYOUT_ERRORS:
+        w("        LayoutError::%s { .. } => %s,\n" % (rust_variant, rust_str(text)))
+    w("    }\n}\n\n")
+    w("/// 布局探针：跑一遍本端生成的布局算术，返回取值或 `error:<错误名>`。\n")
+    w("pub fn layout_probe(slot_count: u32, slot_size: u32, field: &str) -> String {\n")
+    w("    match channel_layout(slot_count, slot_size) {\n")
+    w("        Err(e) => format!(\"error:{}\", layout_error_name(e)),\n")
+    w("        Ok(l) => match field {\n")
+    w("            \"desc_off\" => l.desc_off.to_string(),\n")
+    w("            \"data_off\" => l.data_off.to_string(),\n")
+    w("            _ => l.required.to_string(),\n")
+    w("        },\n    }\n}\n\n")
+    w("/// 跨语言 parity dump：逐行 `key=value`。**顺序即比对顺序**，不得随手调整。\n")
+    w("pub fn abi_dump() -> Vec<String> {\n")
+    w("    // 64 位值的 16 进制渲染：两端必须同宽（含前导零），否则 diff 会因宽度差异误报。\n")
+    w("    fn hex64(v: u64) -> String {\n")
+    w("        format!(\"0x{:016x}\", v)\n    }\n\n")
+    w("    let mut out: Vec<String> = Vec::new();\n")
+    for key, _cpp_expr, rust_expr in _dump_entries(doc):
+        w("    out.push(format!(\"%s={}\", %s));\n" % (key, rust_expr))
+    w("    out\n}\n\n")
     return "".join(lines)
 
 
@@ -809,13 +1021,42 @@ def _is_constructed(text, ident):
     return False
 
 
+def construct_idents(entry):
+    """一条诊断在实现树中可能的**构造点标识符**，按优先级排列。
+
+    诊断有两条产生路径，检测器必须都认，否则会成片误报：
+
+      1. 直接构造诊断类型 —— `diag::ChanTruncatedPacket { ... }`；
+      2. 构造承载它的错误变体 —— `AttachError::Uninitialized { ... }`，该变体只在
+         `Display` 里被渲染成 `diag::ChanUninitialized`。channel 模块的主流写法是第 2 种。
+
+    旧版检测器只认第 1 种，于是 11 条**实际已实现**的校验被判成「登记了却没有构造点」。
+    这类误报的代价不止是多几行红字：门禁会因此常亮，团队学会忽略它，
+    真正新出现的死诊断就再也没人看得见 —— 比没有检查更糟。
+
+    变体名默认按「去掉 Chan 前缀」推导；不遵循该规律的（`chan.io_error` 的变体叫
+    `AttachError::Io`）由真源用 `impl_idents` 显式登记，不靠猜。
+    """
+    idents = list(entry.get("impl_idents") or [])
+    ident = diag_ident(entry["code"])
+    if ident not in idents:
+        idents.insert(0, ident)
+    if ident.startswith("Chan") and len(ident) > 4 and ident[4:] not in idents:
+        idents.append(ident[4:])
+    return idents
+
+
 def check_reachability(doc):
     """诊断必须真的能被触发；返回 [(code, ident, 原因)]。
 
     存在理由：**登记了却永远不会触发的诊断是纯负债**。它在真源里看起来是一份能力，两端
     都会为它生成结构体与渲染代码，但没有代码路径构造它；而读到它的人会以为这条校验存在。
-    本批次已因此删掉三条（descriptor_size_mismatch、slot_count_mismatch、
-    slot_size_mismatch）—— 同一个成因：先写了诊断，后来设计改了却没回来删。
+
+    历史记录：上一批次曾据此删掉三条（`descriptor_size_mismatch`、`slot_count_mismatch`、
+    `slot_size_mismatch`）。事后证明后两条是**误删** —— `attach_expect` 的测试与语义都需要
+    它们，删除只删了真源，没回头改调用处，直接导致 Rust 端编译失败（2 × E0599）而无人发现
+    （因为 `check-channel-abi.sh` 当时并不存在，本检查从未被跑过）。教训：本检查报出的每一条
+    都必须落到「实现它」或「连调用处一起删」，**只删真源是最坏的一种处置**。
 
     分两级判定，因为两类死的表现与代价不同：
       - 完全未被引用：连映射都没有，任何一侧都不会渲染它；
@@ -828,11 +1069,12 @@ def check_reachability(doc):
         return []
     problems = []
     for d in doc["diagnostics"]:
-        ident = diag_ident(d["code"])
-        if ident not in text:
-            problems.append((d["code"], ident, "在实现树中完全未被引用"))
-        elif not _is_constructed(text, ident):
-            problems.append((d["code"], ident, "只出现在映射分支里，没有任何构造点"))
+        idents = construct_idents(d)
+        present = [i for i in idents if i in text]
+        if not present:
+            problems.append((d["code"], idents[0], "在实现树中完全未被引用"))
+        elif not any(_is_constructed(text, i) for i in present):
+            problems.append((d["code"], idents[0], "只出现在映射分支里，没有任何构造点"))
     return problems
 
 
@@ -864,7 +1106,9 @@ def main():
             for code, ident, why in problems:
                 print("✗ 诊断 %s（%s）%s：登记了却不可达的诊断会被读成「存在这条校验」；"
                       "请实现它，或从真源删除" % (code, ident, why), file=sys.stderr)
-            return 1
+            # 与「生成物过期」分开退出码：两者的修复动作完全不同 —— 前者重新生成即可，
+            # 后者必须动代码。合并成同一个码会让调用方只能给出含糊的提示。
+            return 2
         print("通道 ABI 诊断可达性通过（%d 条全部被实现引用）" % len(doc["diagnostics"]))
         return 0
 

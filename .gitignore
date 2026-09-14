@@ -38,6 +38,8 @@ yarn-error.log*
 .pnpm-debug.log*
 web/console/dist/
 web/console/.vite/
+# TS 增量编译缓存：随 tsc -b / composite 项目生成，机器相关，不入仓
+*.tsbuildinfo
 
 # --- Python (ML) ---
 __pycache__/

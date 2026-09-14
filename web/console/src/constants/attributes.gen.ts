@@ -3,7 +3,11 @@
 // 属性字典是规则引擎的「表达上限」：新增可匹配维度必须先登记到真源，再重新生成四语言绑定。
 // 生成物与真源的一致性由 scripts/verify/check-attributes.sh 把关（CI 关口）。
 //
-// 规范标识统一为 ATTR_* 字符串；本文件的对象键是 TS 风格的派生名，值恒等于规范标识。
+// 规范标识统一为 ATTR_* 字符串。本文件有两类对象的键，取法刻意不同：
+//   - 枚举映射（ATTR_VALUE_TYPE / ATTR_SCOPE / ATTR_STAGE）：键是 TS 派生名（String / L2 / …），
+//     值是规范标识，供 ATTR_SCOPE.L2 这种可读写法访问。
+//   - 说明表（*_DESC）：键是规范标识（string / l2 / …）。因为其类型 Record<AttrScope, string>
+//     里的 AttrScope 取自枚举映射的**值**联合，按值查说明才成立：ATTR_SCOPE_DESC[scope]。
 
 /** 属性值类型，决定表达式字面量的解析方式与可用匹配算子。 */
 export const ATTR_VALUE_TYPE = {
@@ -27,20 +31,20 @@ export type AttrValueType = (typeof ATTR_VALUE_TYPE)[keyof typeof ATTR_VALUE_TYP
 
 /** 值类型说明。 */
 export const ATTR_VALUE_TYPE_DESC: Readonly<Record<AttrValueType, string>> = {
-  String: "UTF-8 文本，可按 format 做归一化后匹配",
-  Bytes: "原始字节串，表达式为十六进制字面量",
-  IP: "单 IP 地址（IPv4/IPv6 统一表示）",
-  IPPrefix: "IP 网段，表达式为 CIDR",
-  Port: "TCP/UDP 端口（0-65535）",
-  U8: "无符号 8 位整数",
-  U16: "无符号 16 位整数",
-  U32: "无符号 32 位整数",
-  U64: "无符号 64 位整数",
-  I64: "有符号 64 位整数",
-  Bool: "布尔值",
-  Enum: "枚举值，表达式为枚举名",
-  StringSet: "字符串集合，用于集合匹配（FQDN 列表、IP 段列表等）",
-  TimeMs: "毫秒时间量",
+  string: "UTF-8 文本，可按 format 做归一化后匹配",
+  bytes: "原始字节串，表达式为十六进制字面量",
+  ip: "单 IP 地址（IPv4/IPv6 统一表示）",
+  ip_prefix: "IP 网段，表达式为 CIDR",
+  port: "TCP/UDP 端口（0-65535）",
+  u8: "无符号 8 位整数",
+  u16: "无符号 16 位整数",
+  u32: "无符号 32 位整数",
+  u64: "无符号 64 位整数",
+  i64: "有符号 64 位整数",
+  bool: "布尔值",
+  enum: "枚举值，表达式为枚举名",
+  string_set: "字符串集合，用于集合匹配（FQDN 列表、IP 段列表等）",
+  time_ms: "毫秒时间量",
 };
 
 /** 属性所属的协议层/语义域。 */
@@ -59,14 +63,14 @@ export type AttrScope = (typeof ATTR_SCOPE)[keyof typeof ATTR_SCOPE];
 
 /** 作用域说明。 */
 export const ATTR_SCOPE_DESC: Readonly<Record<AttrScope, string>> = {
-  L2: "链路层",
-  L3: "网络层",
-  L4: "传输层",
-  L5Plus: "应用层（L5-L7）",
-  Tunnel: "隧道与封装（含内外层元数据）",
-  Identity: "端点身份与外部情报",
-  Flow: "流统计",
-  Derived: "派生判定结果（打分、标签）",
+  l2: "链路层",
+  l3: "网络层",
+  l4: "传输层",
+  l5plus: "应用层（L5-L7）",
+  tunnel: "隧道与封装（含内外层元数据）",
+  identity: "端点身份与外部情报",
+  flow: "流统计",
+  derived: "派生判定结果（打分、标签）",
 };
 
 /** 属性的计算阶段，用于按需计算。 */
@@ -82,11 +86,11 @@ export type AttrStage = (typeof ATTR_STAGE)[keyof typeof ATTR_STAGE];
 
 /** 计算阶段说明。 */
 export const ATTR_STAGE_DESC: Readonly<Record<AttrStage, string>> = {
-  Packet: "逐包可得（零/低状态）",
-  Flow: "需要流状态累积",
-  L7: "需要协议解析或重组",
-  Window: "需要前缀窗口（前 N 包）",
-  ML: "需要模型推理",
+  packet: "逐包可得（零/低状态）",
+  flow: "需要流状态累积",
+  l7: "需要协议解析或重组",
+  window: "需要前缀窗口（前 N 包）",
+  ml: "需要模型推理",
 };
 
 /** 属性规范标识常量。字符串值即跨语言对齐依据。 */

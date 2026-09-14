@@ -345,6 +345,44 @@
       }
     },
     {
+      "code": "chan.slot_count_mismatch",
+      "severity": "error",
+      "template": "通道槽位数与部署期望不符：期望 {local}，区域记录 {remote}；该区域多半是上一版配置创建后未清理的旧区域，两端布局因此不同，读到的每个字段都无意义 —— 请按期望配置重建区域，或修正期望值",
+      "fields": [
+        {
+          "name": "local",
+          "type": "u32"
+        },
+        {
+          "name": "remote",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "local": 1024,
+        "remote": 64
+      }
+    },
+    {
+      "code": "chan.slot_size_mismatch",
+      "severity": "error",
+      "template": "通道槽容量与部署期望不符：期望 {local} 字节，区域记录 {remote} 字节；槽容量不同则单槽边界整体错位，报文会被按错误长度切割 —— 请按期望配置重建区域，或修正期望值",
+      "fields": [
+        {
+          "name": "local",
+          "type": "u32"
+        },
+        {
+          "name": "remote",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "local": 2048,
+        "remote": 512
+      }
+    },
+    {
       "code": "chan.slot_count_out_of_range",
       "severity": "error",
       "template": "通道槽位数越界：请求 {value}，允许区间 [{min_value}, {max_value}]",
@@ -452,6 +490,9 @@
     {
       "code": "chan.io_error",
       "severity": "error",
+      "impl_idents": [
+        "AttachError::Io"
+      ],
       "template": "通道区域 I/O 失败：{detail}（errno={err_no}，路径={path}）",
       "fields": [
         {

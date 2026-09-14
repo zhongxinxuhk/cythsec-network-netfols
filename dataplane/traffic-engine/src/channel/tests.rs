@@ -87,7 +87,10 @@ fn write_slot(chan: &mut Channel, seq: u64, frame: &[u8], timestamp_ns: i64, fla
     // 先写数据、再写描述符 —— 与契约要求的内存序一致。
     bytes[data_at..data_at + frame.len()].copy_from_slice(frame);
     unsafe {
-        ptr::write_unaligned(bytes.as_mut_ptr().add(desc_at) as *mut PacketDescriptor, desc);
+        ptr::write_unaligned(
+            bytes.as_mut_ptr().add(desc_at) as *mut PacketDescriptor,
+            desc,
+        );
     }
 }
 
@@ -173,7 +176,11 @@ fn create_then_attach_sees_same_header() {
     let tmp = TempRegion::new("attach");
     let created = Channel::create(tmp.path(), 64, 512).expect("创建应成功");
     let layout = created.layout();
-    assert_eq!(layout.desc_off % abi_gen::REGION_ALIGNMENT, 0, "描述符区应页对齐");
+    assert_eq!(
+        layout.desc_off % abi_gen::REGION_ALIGNMENT,
+        0,
+        "描述符区应页对齐"
+    );
     assert_eq!(created.header().magic, abi_gen::MAGIC);
     assert_eq!(created.header().abi_version, abi_gen::ABI_VERSION);
     drop(created);
@@ -288,8 +295,7 @@ fn layout_mismatch_message_carries_all_four_offsets() {
         let _c = Channel::create(tmp.path(), 64, 512).expect("创建应成功");
     }
     let mut bytes = std::fs::read(tmp.path()).unwrap();
-    bytes[header_off::DATA_OFF..header_off::DATA_OFF + 4]
-        .copy_from_slice(&9000u32.to_ne_bytes());
+    bytes[header_off::DATA_OFF..header_off::DATA_OFF + 4].copy_from_slice(&9000u32.to_ne_bytes());
     std::fs::write(tmp.path(), &bytes).unwrap();
 
     let text = Channel::attach(tmp.path()).unwrap_err().to_string();
@@ -309,7 +315,10 @@ fn attach_rejects_truncated_region() {
         let c = Channel::create(tmp.path(), 64, 512).expect("创建应成功");
         let need = c.layout().required;
         // 截到布局所需长度的一半
-        let f = std::fs::OpenOptions::new().write(true).open(tmp.path()).unwrap();
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(tmp.path())
+            .unwrap();
         f.set_len(need / 2).unwrap();
     }
     let err = Channel::attach(tmp.path()).unwrap_err();
@@ -342,6 +351,42 @@ fn attach_expect_catches_stale_region_from_older_config() {
 }
 
 #[test]
+fn attach_expect_ranks_root_cause_above_config_mismatch() {
+    // 顺序回归锁定：期望值比对必须排在 validate 之后。
+    //
+    // 若顺序颠倒，全零区域的 slot_count 读出来是 0，会先报 slot_count_mismatch
+    // （「期望 64、对端 0」），把排障的人引向「配置写错了」；而根因是区域尚未初始化，
+    // 该做的是重建区域 —— 两者处置方向相反，误导的代价是白改一轮配置。
+    let tmp = TempRegion::new("expect_blank");
+    {
+        // 长度足以通过区域尺寸检查，但内容全零 —— 等价于「创建后未初始化」或「被手工清零」。
+        let f = std::fs::File::create(tmp.path()).expect("创建文件应成功");
+        f.set_len(8 * 1024 * 1024).expect("设置长度应成功");
+    }
+    let err = Channel::attach_expect(tmp.path(), 64, 512, RegionPerm::ReadWrite).unwrap_err();
+    assert_eq!(
+        err.code(),
+        "chan.uninitialized",
+        "全零区域应报「未初始化」这个根因，而不是配置不匹配"
+    );
+
+    // 同理：拿错文件（魔数不对）时也该报 magic_mismatch，而非配置不匹配。
+    let tmp2 = TempRegion::new("expect_wrong_magic");
+    {
+        let _c = Channel::create(tmp2.path(), 64, 512).expect("创建应成功");
+    }
+    let mut bytes = std::fs::read(tmp2.path()).unwrap();
+    bytes[..8].copy_from_slice(b"NOTACHAN");
+    std::fs::write(tmp2.path(), &bytes).unwrap();
+    let err = Channel::attach_expect(tmp2.path(), 1024, 2048, RegionPerm::ReadWrite).unwrap_err();
+    assert_eq!(
+        err.code(),
+        "chan.magic_mismatch",
+        "魔数不符是根因，应优先于槽位配置不匹配报出"
+    );
+}
+
+#[test]
 fn attach_rejects_out_of_range_slot_config() {
     // 区域里写着越界配置：不得按它去算布局（会溢出/越界），必须拒绝。
     let tmp = TempRegion::new("range");
@@ -355,7 +400,11 @@ fn attach_rejects_out_of_range_slot_config() {
     let err = Channel::attach(tmp.path()).unwrap_err();
     assert_eq!(err.code(), "chan.slot_count_out_of_range");
     match err {
-        AttachError::SlotCountOutOfRange { value, min_value, max_value } => {
+        AttachError::SlotCountOutOfRange {
+            value,
+            min_value,
+            max_value,
+        } => {
             assert_eq!(value, abi_gen::MAX_SLOT_COUNT + 1);
             assert_eq!(
                 (min_value, max_value),
@@ -381,7 +430,8 @@ fn readonly_attach_can_inspect_without_consuming() {
             0
         ));
     }
-    let ro = Channel::attach_expect(tmp.path(), 16, 256, RegionPerm::ReadOnly).expect("只读应可 attach");
+    let ro =
+        Channel::attach_expect(tmp.path(), 16, 256, RegionPerm::ReadOnly).expect("只读应可 attach");
     assert_eq!(ro.stats().head, 1);
     assert_eq!(ro.stats().tail, 0);
     assert_eq!(ro.stats().backlog(), 1);
@@ -442,7 +492,10 @@ fn publish_then_consume_end_to_end_into_flow_keys() {
     // 用头部长度字段而非数出来的字节数，是为了让截断捕获不使流量统计系统性偏小。
     assert_eq!(keys[0].2, 12, "UDP 头 8 + 载荷 4");
     assert_eq!(keys[2].2, 24, "UDP 头 8 + 载荷 16");
-    assert_eq!(consumer.stats().bytes, frames.iter().map(|f| f.len() as u64).sum::<u64>());
+    assert_eq!(
+        consumer.stats().bytes,
+        frames.iter().map(|f| f.len() as u64).sum::<u64>()
+    );
 
     // 通道自身的累计计数应同步。
     let st = consumer.channel_stats();
@@ -523,7 +576,10 @@ fn producer_stops_at_capacity_and_accounts_the_loss() {
     assert_eq!(st.head, 4, "环满时不得推进 head");
     assert_eq!(st.published, 4);
     assert_eq!(st.dropped, 6, "6 帧被丢弃必须入账");
-    assert_eq!(st.full_events, 6, "环满次数应单独计数，用于判断是否消费者太慢");
+    assert_eq!(
+        st.full_events, 6,
+        "环满次数应单独计数，用于判断是否消费者太慢"
+    );
     assert_eq!(st.tail, 0);
 
     // 已发布槽位不得被后来者覆盖：首帧序号仍是 0。
@@ -573,9 +629,16 @@ fn overwriting_producer_is_detected_with_exact_loss() {
     // 失效的静默性：pending 仍报 13，看上去只是「有数据待读」。
     assert_eq!(consumer.pending(), 13);
 
-    let err = consumer.poll(|_, _| panic!("一圈以上的积压不该返回数据")).unwrap_err();
+    let err = consumer
+        .poll(|_, _| panic!("一圈以上的积压不该返回数据"))
+        .unwrap_err();
     match err {
-        ConsumeError::ProducerOverrun { head, tail, slot_count, skipped } => {
+        ConsumeError::ProducerOverrun {
+            head,
+            tail,
+            slot_count,
+            skipped,
+        } => {
             assert_eq!(slot_count, slots);
             assert_eq!(head, 13);
             assert_eq!(tail, 0);
@@ -611,7 +674,9 @@ fn drain_continues_past_overrun_but_stops_on_corrupt_descriptor() {
     assert_eq!(chan.stats().head, 10);
     let mut consumer = Consumer::resume(&mut chan);
     let mut seqs = Vec::new();
-    let n = consumer.drain(|m, _| seqs.push(m.seq)).expect("有丢包也应排空成功");
+    let n = consumer
+        .drain(|m, _| seqs.push(m.seq))
+        .expect("有丢包也应排空成功");
     assert_eq!(n, 4, "仅环内最新 4 帧可读");
     assert_eq!(seqs, vec![6, 7, 8, 9], "读到的必须是环内仍然完好的那几帧");
     assert!(consumer.last_overrun().is_some(), "丢弃事件应被记录");
@@ -664,7 +729,9 @@ fn corrupt_descriptor_seq_mismatch_is_detected() {
     bytes[base..base + 8].copy_from_slice(&999u64.to_ne_bytes());
 
     let mut consumer = Consumer::resume(&mut chan);
-    let err = consumer.poll(|_, _| panic!("描述符损坏时不该交出数据")).unwrap_err();
+    let err = consumer
+        .poll(|_, _| panic!("描述符损坏时不该交出数据"))
+        .unwrap_err();
     match err {
         ConsumeError::CorruptDescriptor {
             index,
@@ -703,7 +770,8 @@ fn corrupt_caplen_uses_the_shared_diagnostic_text() {
     let text = err.to_string();
     assert!(text.contains("999"), "文案应含实际长度: {text}");
     assert!(
-        text.contains(&abi_gen::diag::ChanTruncatedPacket::CODE.to_string()) || text.contains("槽容量"),
+        text.contains(&abi_gen::diag::ChanTruncatedPacket::CODE.to_string())
+            || text.contains("槽容量"),
         "应复用真源的截断诊断文案: {text}"
     );
     assert_eq!(consumer.tail(), 0);
@@ -731,7 +799,9 @@ fn tail_ahead_of_head_is_caught_by_health() {
     assert!(!consumer.poll(|_, _| panic!("不该有数据")).unwrap());
 
     // 健康检查必须把它抓出来。
-    let err = consumer.health().expect_err("tail 越过 head 应被健康检查拦下");
+    let err = consumer
+        .health()
+        .expect_err("tail 越过 head 应被健康检查拦下");
     assert_eq!(err.code(), "chan.tail_ahead_of_head");
     let text = err.to_string();
     assert!(text.contains("消费位置 128"), "文案应含实际 tail: {text}");
@@ -754,7 +824,10 @@ fn health_recheck_is_idempotent() {
     ));
     let mut consumer = Consumer::resume(&mut chan);
     assert!(consumer.health().is_ok());
-    assert!(consumer.health().is_ok(), "重复健康检查应保持通过（不得有累积副作用）");
+    assert!(
+        consumer.health().is_ok(),
+        "重复健康检查应保持通过（不得有累积副作用）"
+    );
 }
 
 #[test]
@@ -793,7 +866,12 @@ fn truncated_capture_is_counted_and_caplen_used() {
     let mut chan = Channel::create(tmp.path(), 4, 512).expect("创建应成功");
 
     let frame = udp_frame([10, 0, 0, 1], 1, [10, 0, 0, 2], 2, 0);
-    assert!(TestProducer::publish(&mut chan, &frame, 1, abi_gen::flag::TRUNCATED));
+    assert!(TestProducer::publish(
+        &mut chan,
+        &frame,
+        1,
+        abi_gen::flag::TRUNCATED
+    ));
     // 把 wirelen 改大，模拟「线上比抓到的长」
     let base = chan.layout().desc_off as usize;
     let bytes = chan.test_bytes_mut();
@@ -858,7 +936,10 @@ fn oversized_frame_is_rejected_not_truncated_silently() {
     let mut chan = Channel::create(tmp.path(), 4, 64).expect("创建应成功");
     let big = udp_frame([10, 0, 0, 1], 1, [10, 0, 0, 2], 2, 200);
     assert!(big.len() > 64);
-    assert!(!TestProducer::publish(&mut chan, &big, 1, 0), "超长帧应被拒");
+    assert!(
+        !TestProducer::publish(&mut chan, &big, 1, 0),
+        "超长帧应被拒"
+    );
 
     let st = chan.stats();
     assert_eq!(st.head, 0, "拒绝时不得推进 head");
@@ -877,5 +958,8 @@ fn header_struct_size_matches_region_reservation() {
         abi_gen::HEADER_REGION_SIZE
     );
     assert_eq!(hdr, 128);
-    assert_eq!(std::mem::size_of::<PacketDescriptor>(), DESCRIPTOR_STEP as usize);
+    assert_eq!(
+        std::mem::size_of::<PacketDescriptor>(),
+        DESCRIPTOR_STEP as usize
+    );
 }

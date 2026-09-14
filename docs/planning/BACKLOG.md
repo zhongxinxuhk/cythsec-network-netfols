@@ -229,7 +229,7 @@
 | ⬜ | CYS-PKT-021 | RSS 配置管理 | `src/rss/`；查询/设置 indirection table，与 `platform/linux/ethtool` 联动 | 可读写 indirection table | CYS-PKT-020 | P2/M |
 | ⬜ | CYS-PKT-022 | BPF 过滤器 | 编译并挂载 tcpdump 风格过滤器，提前丢弃无关流量 | 过滤器生效后 CPU 占用下降可观测 | CYS-PKT-008 | P1/M |
 | ⬜ | CYS-PKT-023 | 统计接口 | PPS/BPS/丢包/错误/队列深度，按接口与队列维度 | 统计可被 telemetryd 抓取 | CYS-PKT-022 | P1/S |
-| ⬜ | CYS-PKT-024 | 与 traffic-engine 的通道契约 | 定义共享内存环形队列 + 序列化布局（冻结 ABI 版本号），跨语言（C++ 生产 / Rust 消费） | 双端各自单测通过，ABI 版本不匹配时明确报错 | CYS-PKT-023 | P0/L |
+| ☑ | CYS-PKT-024 | 与 traffic-engine 的通道契约 | 真源 `configs/registry/channel-abi.json` 冻结 ABI 版本号、布局常量与全部诊断；C++ 侧 `include/packet_engine/channel/{abi_gen.h,region.h,producer.h}` + `src/channel/{region,producer}.cpp`（SPSC 生产端），Rust 侧 `src/channel/{region,consumer,decode}.rs`（消费端）。三层防线全部落地：① 编译期断言（偏移/尺寸/`descriptor_step`），② 生成物新鲜度（`check-channel-abi.sh`），③ 跨语言 parity dump（`cythsec-dump-abi` ↔ `dump-abi`，`check-channel-parity.sh`） | 双端各自单测通过（CTest 5/5：`channel_abi` + `channel_producer`；`cargo test` 48 passed）；ABI 版本不匹配时报 `chan.abi_version_mismatch`；parity 两端 89 行逐字一致；`descriptor_step == sizeof(PacketDescriptor)` 有生成期断言守护 | CYS-PKT-023 | P0/L |
 | ⬜ | CYS-PKT-025 | C++ 测试框架升级 | 引入 Catch2 或 Google Test（替换裸 `check()`），同时保留零依赖构建选项 | 测试可分组、可筛选、可输出 JUnit XML | — | P1/M |
 | ⬜ | CYS-PKT-026 | 静态分析接入 | `clang-tidy` 配置 + CI 强制执行 | 无 error 级告警 | CYS-INF-002 | P1/M |
 | ⬜ | CYS-PKT-027 | 内存/UB 检测构建 | ASan + UBSan 构建预设，纳入 CI | 全测试在 ASan 下通过 | CYS-INF-033 | P1/M |
@@ -306,7 +306,7 @@
 | ⬜ | CYS-TRF-031 | 风险评分引擎 | `crates/risk`：加权评分、规则命中累加、阈值分级（低/中/高/危急） | 评分可解释（含命中明细） | CYS-TRF-030 | P1/L |
 | ⬜ | CYS-TRF-032 | 规则 DSL | 简洁规则语法（条件 + 动作），支持热加载 | 规则文件改动后无需重启生效 | CYS-TRF-031 | P2/L |
 | ⬜ | CYS-TRF-033 | 输出 FlowRecord schema | 与 `storage/clickhouse` 对齐的列式 schema，含所有特征与评分 | schema 冻结并版本化 | CYS-TRF-027 | P0/M |
-| ⬜ | CYS-TRF-034 | 共享内存接入 | 从 `packet-engine` 的共享环消费真实报文（CYS-PKT-024 的消费端） | 端到端跑通真实网卡 → Flow | CYS-PKT-024 | P0/L |
+| ◐ | CYS-TRF-034 | 共享内存接入 | 从 `packet-engine` 的共享环消费真实报文（CYS-PKT-024 的消费端）。**已落地**：Rust `src/bin/ring_consume.rs`（attach 既有环 / `--from-head` 跳过积压 / `--expect-*` 断言开关）、`scripts/verify/e2e-shared-ring.sh`（C++ 进程写 → 环 → Rust 进程读并解 Flow，4 阶段 19 项断言，含两端记账与区域计数的交叉核对），已挂入 `test-all.sh --e2e`。**未达成**：真实网卡接入 —— 当前只跑通 `datasets/pcap/` 的真实报文；网卡侧依赖 CYS-PKT-007（pcap live）/ CYS-PKT-008（AF_PACKET），两者均未开始，且 `xdp/`、`af_xdp/`、`dpdk/` 三个目录仍为空占位 | 已达成：真实 pcap → 共享环 → Flow 端到端（19 项断言）。待达成：真实网卡 → Flow（受 CYS-PKT-007/008 阻塞） | CYS-PKT-024 | P0/L |
 | ⬜ | CYS-TRF-035 | 离线 pcap 处理 CLI | `cythsec-analyze -r x.pcap -o flows.jsonl`，输出 FlowRecord 流 | 对 `datasets/pcap/` 全样本可批量处理 | CYS-TRF-033 | P0/M |
 | ⬜ | CYS-TRF-036 | 可观测性 | `tracing` + `metrics`：处理速率、丢包、内存占用、各阶段延迟 | 指标可被 telemetryd 抓取 | CYS-TRF-034 | P1/M |
 | ⬜ | CYS-TRF-037 | Criterion 基准 | 流表插入/查询、重组吞吐、特征提取吞吐 | 基准可跨 commit 对比 | CYS-TRF-027 | P2/M |
@@ -759,15 +759,16 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 329 |
-| 已完成 | 20 |
+| 未开始 | 327 |
+| 进行中 | 1 |
+| 已完成 | 21 |
 
 ### 6.6 里程碑完成度
 
 | 里程碑 | 已完成 | 总数 | 完成率 |
 | --- | --- | --- | --- |
 | M1 | 13 | 54 | 24% |
-| M2 | 2 | 38 | 5% |
+| M2 | 3 | 38 | 8% |
 | M3 | 0 | 39 | 0% |
 | M4 | 0 | 45 | 0% |
 | M5 | 4 | 24 | 17% |
@@ -795,3 +796,13 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 | 2026-09-14 | 修复 `cythsec-parse` 无参崩溃 | `cli/parse_main.cpp` 中 `strcmp(argv[1], "-r")` 早于 `argc < 2` 判断，`argc==1` 时 `argv[1]` 为 `NULL`，属未定义行为。实测 `exit=139`（SIGSEGV），修复后 `exit=2` 并正常打印用法（同时补上此前缺失的 `-r` 用法说明）。关联 `CYS-PKT-006` |
 | 2026-09-14 | 新增 pcap 样本集（补 `CYS-PKT-006` 验收缺口） | `datasets/pcap/` 此前**仅有 `.gitkeep`（空目录）**，导致 `CYS-PKT-006` 的验收标准「能完整读完 `datasets/pcap/` 样本且计数正确」实际无法满足（55 个断言全用自构造字节流，覆盖边界但未验证真实样本端到端）。处置：新增 `datasets/pcap/generate-samples.py`（确定性生成器，不塞来历不明的二进制 blob）+ 2 个样本（`sample-ipv4-mixed.pcap` 4 包含 1 个截断包 / `sample-ipv6-tcp.pcap` 1 包）。验证：`cythsec-parse -r` 端到端 **4/4 解析成功**，截断包（caplen=54/wirelen=66）准确识别，L3/L4 分布精确匹配 |
 | 2026-09-14 | **修复 C++ lint 门禁假绿灯（重要）** | `scripts/lint/lint-all.sh` 用 `command -v clang-format` 探测工具，而 macOS 上 `clang-format` 随 Xcode CommandLineTools 安装却**不在 PATH**（实际位于 `/Library/Developer/CommandLineTools/usr/bin/clang-format`，版本 21.0.0），导致该门禁被静默跳过，从未真正执行过。补测发现 **29/30 个 C++ 文件不通过** `--dry-run --Werror`（含本次开发之前已提交的 `main.cpp`/`packet.h`/`packet.cpp`），即 CI 的 C++ lint job 必然失败。处置：① 脚本改为探测多个常见安装位置，并把「找不到工具」计为门禁失败而非跳过；② `.clang-format` 原先 `BasedOnStyle: LLVM` 的默认 `PointerAlignment: Right` 与代码库一致使用的**左对齐指针**冲突，且多项 LLVM 默认值在 clang-format 18 后已改为结构体形式 —— 按「配置适配既有代码」原则重写配置（显式声明 `PointerAlignment: Left`、`SortIncludes.Enabled: false`、`AlignTrailingComments.Kind: Always`、`ReflowComments: false` 以保护中文注释等）；③ 对 28 个文件执行 `clang-format -i` 消除残余差异（改动前已备份至 `/tmp/cpp-backup/`，改动前记录 30 个文件的 SHA-256）。**行为中性已验证**：重建 0 错误 0 警告，CTest 3/3，`test_packet` 5 + `test_parser` 64 + `test_pcap` 55 = **124 个断言与格式化前完全一致** |
+| 2026-09-14 | **修复 master 主干 Rust 端编译失败（重要）** | `dataplane/traffic-engine/src/channel/region.rs` 引用了 `AttachError::SlotCountMismatch` / `SlotSizeMismatch`，但真源 `configs/registry/channel-abi.json` 中这两条诊断已被删除、生成枚举里也无对应变体，`cargo build` 报 2 个 E0599 —— 即**主干处于无法编译状态**。核实为依据误删（`channel/tests.rs` 明确断言这两个码，`attach_expect` 的语义也需要它们），故在真源恢复两条诊断（字段 `local`/`remote`，severity `error`）并重新生成双端契约。验证：`cargo build` 0 错 0 警、`cargo test` 48 passed、C++ 构建通过 |
+| 2026-09-14 | **修复诊断可达性检测器的成片误报** | `tools/codegen/gen-channel-abi.py` 的 `_is_constructed` 只认 `diag::ChanX` 形态，不认识 `AttachError::X` 这类**枚举变体构造**，导致 15 条诊断中 9 条已实现的被误报为「死诊断」。修正为按 `construct_idents()` 给出的多条候选标识逐个判定，并为唯一的命名例外（`chan.io_error` → `ChanIoError`）在真源登记 `impl_ident`。**关键**：修完做注入验证——往真源塞一条真死诊断 `chan.__probe_never_implemented`，确认检测器仍能捕获，避免「把检测器改瞎」；验证后恢复现场并核对生成物字节一致、探针残留为 0 |
+| 2026-09-14 | 补齐 `check-channel-abi.sh` 并挂入门禁 | 生成器注释与两个生成物头注释共 4 处写着「改动会被 `scripts/verify/check-channel-abi.sh` 拦下」，而**该脚本此前并不存在**，lint 门禁也没挂它 —— 于是通道 ABI 的漂移检查长期无人执行。新增该脚本（只读校验，退出码区分「生成物过期 1 / 诊断不可达 2 / 真源非法 3 / 缺 python3 4」，好让调用方给出精确修复指引），并在生成器中把三类失败拆成不同退出码；挂入 `scripts/lint/lint-all.sh`，与 `check-attributes.sh` 对称。**约定**：注释里声称「有脚本会拦下」的，该脚本必须真实存在并挂在门禁上 |
+| 2026-09-14 | 修复 `attach_expect` 的校验顺序缺陷 | `Channel::attach_with` 把「配置期望值 vs 区域值」的比对放在了 `validate()` 的根基校验**之前**，违反 `validate` 自身声明的「先粗后细」原则：对未初始化区域（全零头部）会误报 `chan.slot_count_mismatch` 而非 `chan.uninitialized`，把排障人引向错误方向。已移到 `validate()` 之后，并加单测锁定该顺序行为 |
+| 2026-09-14 | **通道 ABI 三层防线补全第 3 层：跨语言 parity（`CYS-PKT-024`）** | 此前三层中只有前两层落地，且第 1 层在 C++ 侧**从未生效**：`abi_gen.h` 是 header-only，其中的 35 条 `static_assert` 只在有人 include 时才会被编译，而全仓**没有任何翻译单元引用它**（Rust 侧因 `pub mod abi_gen;` 正常生效）。本轮：① 新增 `dataplane/packet-engine/cli/dump_abi_main.cpp` 与 `tests/test_channel_abi.cpp`，使那些断言真正进入编译（注入违背断言验证：编译期如期报错）；② 由**生成器单点生成**双端 parity dump（C++ `dump::AbiDump()` / Rust `abi_dump()`，取值一律取编译产物表达式——常量 / `offsetof` / `sizeof` / 生成的布局函数 / 诊断样本，共 89 行），避免「两侧各写一遍」重蹈漂移；③ 新增 `scripts/verify/check-channel-parity.sh`（构建两端可执行产物后逐行 diff）并挂入 `scripts/test/test-all.sh`（新增 `--parity`）。注入验证：只手改 Rust 侧 `MIN_SLOT_SIZE` 64→65，关口如期报 `exit=1` 并同时抓到派生出的 `layout.probe.min_x_min.required` 差异；恢复后两端 89 行完全一致。④ 新增真源级不变量 `descriptor_step == sizeof(PacketDescriptor)` 的编译期断言（此前无人守：step 大于描述符尺寸会读到槽间空隙，字段都有值但全部错位） |
+| 2026-09-14 | 修复 `test-all.sh` C++ 栈「用旧产物验收」 | 该脚本仅在 `build/` **不存在**时才配置与构建，之后只跑 `ctest` —— 后果有二：新增目标后不重新配置，ctest 报 `Unable to find executable` / `Not Run`（那句话指不到「配置过期」这个真实原因）；更严重的是**拿上一次构建的产物去验当前源码**，本地绿灯而实际验的是旧二进制。已改为每次重新配置 + 增量构建 + ctest。修复后 CTest 恢复 4/4（新增 `packet_engine_channel_abi`） |
+| 2026-09-14 | **修复前端版本号注入链路从未生效（`CYS-INF-020` 相关）** | `web/console/vite.config.ts` 与 `vitest.config.ts` 各持一份版本读取逻辑且路径不一致：后者上溯三级（`../../../VERSION`）实际解析到**仓库外**的 `CLionProjects/VERSION`，`readFileSync` 抛异常后被 `catch` 静默吞掉、回落 `'dev'` —— 版本号看起来「有值」，实际从未来自 `VERSION`。处置：抽出单一真源 `web/console/version-source.ts`（**去掉静默兜底**，读不到直接让构建失败，避免同类问题再次隐身），两份配置改为引用它，并纳入 `tsconfig.node.json`。验证：`version.test.ts` 7 项通过（此前 2 项失败） |
+| 2026-09-14 | **修复 `attributes.gen.ts` 生成物编译不过（前端 `typecheck`/`build` 双红）** | `tools/codegen/gen-attributes.py` 生成的三个说明表（`ATTR_VALUE_TYPE_DESC` / `ATTR_SCOPE_DESC` / `ATTR_STAGE_DESC`）用了 PascalCase 派生名作键，而它们的类型是 `Record<AttrValueType, string>` —— 键须取自枚举映射的**值**联合（`"string"` / `"l2"` / `"packet"`），故 TS 报 6 处 TS2561。修生成器（键改用规范标识），并在 `TS_HEADER` 中写明「两类对象的键取法刻意不同」的理由，把这条踩过的坑留在生成物注释里。同时补装 `@types/node`（构建配置需要）、把 `tsc --noEmit -p tsconfig.node.json` 纳入 `lint-all.sh`、清理未入库的 `*.tsbuildinfo`。验证：前端 typecheck 0 错、测试 25/25、生产构建通过 |
+| 2026-09-14 | **`CYS-PKT-024` 转 ☑：补齐 C++ 生产端并打通跨语言端到端（`CYS-TRF-034` → ◐）** | 此前该契约**只有 Rust 侧有实现**，C++ 侧仅有一份从未被 include 的 header，所谓「跨语言」实际从未跑起来过。本轮：① 新增 C++ 共享区域层 `include/packet_engine/channel/region.h` + `src/channel/region.cpp`（普通文件 `open`/`ftruncate`/`mmap(MAP_SHARED)`，与 Rust 侧 `Region::map` 同机制；attach 期全部诊断复用生成物的 `diag` 命名空间，保证两端报错逐字一致）；② 新增 C++ 生产端 `producer.h/.cpp`（SPSC 语义严格对齐 Rust `tests.rs` 的 `TestProducer`：先数据后描述符、release 序发布 head、超长帧只计 `dropped` 不计 `full_events`、环满同时计两者并丢新帧、绝不触碰消费端专属字段）；③ 新增 `cli/ring_feed_main.cpp`（pcap → 环，支持多源）与 Rust `src/bin/ring_consume.rs`（attach 既有环 / `--from-head` / `--expect-*` 断言）；④ 新增 `scripts/verify/e2e-shared-ring.sh`（**C++ 进程写 → mmap 文件 → Rust 进程读并解 Flow**，4 阶段 19 项断言）并挂入 `test-all.sh --e2e`。**注入验证抓到两处真实缺口**：一是注入「`desc.data_off` 误用区域相对偏移」后诊断如期报错，但输出里暴露出诊断文案含一长串游离空格（行连接符展开后的残留，仅出现在面向排障者的文案里，已全仓扫描修净）；二是注入「生产端 `published` 双计」时 **19 项断言全部通过 —— 关口存在漏洞**：两端 CLI 各自报的都是本地计数，无人核对区域内实际落下的计数器，而那正是运维排障唯一能看的字段。据此补上「区域共享计数」记录与本地/区域交叉核对断言，重做同一注入后如期被抓。另修正 e2e 汇总行**写死的断言数**（原写 17、实为 19）为动态累计。`CYS-TRF-034` 只转 ◐ 而非 ☑：其验收标准含「真实网卡 → Flow」，而网卡侧依赖 `CYS-PKT-007`/`008`（均未开始，`xdp/`、`af_xdp/`、`dpdk/` 仍为空占位），本轮达成的是「真实 pcap → 环 → Flow」，已在条目中显式标注，不含糊成已完成 |
+

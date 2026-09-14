@@ -187,6 +187,10 @@ static_assert(offsetof(PacketDescriptor, reserved3) == 56u,
               "PacketDescriptor.reserved3 偏移与通道 ABI 不符");
 static_assert(sizeof(PacketDescriptor) == 64u, "PacketDescriptor 尺寸与通道 ABI 不符");
 
+// 描述符步进必须等于描述符尺寸：消费端按 index * descriptor_step 定位槽位。
+static_assert(kDescriptorStep == sizeof(PacketDescriptor),
+              "descriptor_step 与 PacketDescriptor 尺寸不符（错位读不会崩，只会读到垃圾）");
+
 // ---- 布局计算（由真源生成，两端必须用同一套算术）----
 // desc_off = align_up(header_region_size, region_alignment)
 // data_off = desc_off + slot_count * descriptor_step
@@ -255,6 +259,10 @@ inline constexpr char kChanAbiVersionMismatchCode[] = "chan.abi_version_mismatch
 inline constexpr char kChanHeaderSizeMismatchCode[] = "chan.header_size_mismatch";
 // chan.layout_mismatch（error）
 inline constexpr char kChanLayoutMismatchCode[] = "chan.layout_mismatch";
+// chan.slot_count_mismatch（error）
+inline constexpr char kChanSlotCountMismatchCode[] = "chan.slot_count_mismatch";
+// chan.slot_size_mismatch（error）
+inline constexpr char kChanSlotSizeMismatchCode[] = "chan.slot_size_mismatch";
 // chan.slot_count_out_of_range（error）
 inline constexpr char kChanSlotCountOutOfRangeCode[] = "chan.slot_count_out_of_range";
 // chan.slot_size_out_of_range（error）
@@ -428,6 +436,70 @@ struct ChanLayoutMismatch {
     v.remote_desc = 4128ULL;
     v.local_data = 69632ULL;
     v.remote_data = 69664ULL;
+    return v.format();
+  }
+};
+
+// chan.slot_count_mismatch
+struct ChanSlotCountMismatch {
+  static const char* code() { return kChanSlotCountMismatchCode; }
+  static Severity severity() { return Severity::kError; }
+  uint32_t local = 0;
+  uint32_t remote = 0;
+
+  // 用两遍 snprintf 取得精确长度：诊断里含路径这类变长字段，
+  // 定长缓冲会在最需要看到完整路径时把尾部截掉。
+  std::string format() const {
+    const char* kFmt = "通道槽位数与部署期望不符：期望 %u，区域记录 "
+                       "%u；该区域多半是上一版配置创建后未清理的旧区域，两端布局因此不同，读到的每"
+                       "个字段都无意义 —— 请按期望配置重建区域，或修正期望值";
+    const int need = std::snprintf(nullptr, 0, kFmt, static_cast<unsigned>(local),
+                                   static_cast<unsigned>(remote));
+    if (need <= 0)
+      return std::string();
+    std::vector<char> buf(static_cast<std::size_t>(need) + 1);
+    std::snprintf(buf.data(), buf.size(), kFmt, static_cast<unsigned>(local),
+                  static_cast<unsigned>(remote));
+    return std::string(buf.data(), static_cast<std::size_t>(need));
+  }
+
+  // parity 校验用的确定性样本（取值亦来自真源）。
+  static std::string sample() {
+    ChanSlotCountMismatch v{};
+    v.local = 1024ULL;
+    v.remote = 64ULL;
+    return v.format();
+  }
+};
+
+// chan.slot_size_mismatch
+struct ChanSlotSizeMismatch {
+  static const char* code() { return kChanSlotSizeMismatchCode; }
+  static Severity severity() { return Severity::kError; }
+  uint32_t local = 0;
+  uint32_t remote = 0;
+
+  // 用两遍 snprintf 取得精确长度：诊断里含路径这类变长字段，
+  // 定长缓冲会在最需要看到完整路径时把尾部截掉。
+  std::string format() const {
+    const char* kFmt = "通道槽容量与部署期望不符：期望 %u 字节，区域记录 %u "
+                       "字节；槽容量不同则单槽边界整体错位，报文会被按错误长度切割 —— "
+                       "请按期望配置重建区域，或修正期望值";
+    const int need = std::snprintf(nullptr, 0, kFmt, static_cast<unsigned>(local),
+                                   static_cast<unsigned>(remote));
+    if (need <= 0)
+      return std::string();
+    std::vector<char> buf(static_cast<std::size_t>(need) + 1);
+    std::snprintf(buf.data(), buf.size(), kFmt, static_cast<unsigned>(local),
+                  static_cast<unsigned>(remote));
+    return std::string(buf.data(), static_cast<std::size_t>(need));
+  }
+
+  // parity 校验用的确定性样本（取值亦来自真源）。
+  static std::string sample() {
+    ChanSlotSizeMismatch v{};
+    v.local = 2048ULL;
+    v.remote = 512ULL;
     return v.format();
   }
 };
@@ -687,6 +759,184 @@ struct ChanTailAheadOfHead {
 };
 
 } // namespace diag
+// ---- 跨语言 parity dump ----
+//
+// 逐行 `key=value`，与 Rust 端 abi_dump() 同序同键；两端的取值都由**本端编译产物**
+// 算出（常量 / offsetof / sizeof / 生成的布局函数 / 诊断样本），再由
+// scripts/verify/check-channel-parity.sh 逐行 diff。这是三层里唯一能发现
+// 「一侧改了、另一侧没改」的手段 —— static_assert 只看自己那一侧。
+//
+// 本头是 header-only：断言与 dump 都只在有人 include 时才被编译。C++ 侧因此
+// **必须有真实翻译单元引用它**（cli/dump_abi_main.cpp、tests/test_channel_abi.cpp）。
+// 无人 include 时，上面那些 static_assert 一条也不会被求值 —— 看起来是防线，
+// 实际是注释；这是 C++ 与 Rust 在这一点上最大的差别（Rust 只要 `pub mod` 就编译）。
+namespace dump {
+
+// 64 位值的 16 进制渲染：两端必须同宽（含前导零），否则 diff 会因宽度差异误报。
+inline std::string Hex64(uint64_t v) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "0x%016llx", static_cast<unsigned long long>(v));
+  return std::string(buf);
+}
+
+// 布局错误的 parity 文本（与 Rust 端 layout_error_name 一致）。
+inline const char* LayoutErrorName(LayoutError e) {
+  switch (e) {
+  case LayoutError::kSlotCountOutOfRange:
+    return "slot_count_out_of_range";
+  case LayoutError::kSlotSizeOutOfRange:
+    return "slot_size_out_of_range";
+  case LayoutError::kSizeOverflow:
+    return "size_overflow";
+  case LayoutError::kNone:
+    break;
+  }
+  return "none";
+}
+
+// 布局探针：跑一遍本端生成的布局算术，返回取值或 `error:<错误名>`。
+// 失败时也返回字符串而不抛异常：探针的产出要能进 diff，不能被中断。
+inline std::string LayoutProbe(uint32_t slot_count, uint32_t slot_size, const char* field) {
+  ChannelLayout out{};
+  const LayoutError e = channel_layout(slot_count, slot_size, &out);
+  if (e != LayoutError::kNone)
+    return std::string("error:") + LayoutErrorName(e);
+  const std::string f(field);
+  if (f == "desc_off")
+    return std::to_string(out.desc_off);
+  if (f == "data_off")
+    return std::to_string(out.data_off);
+  return std::to_string(out.required);
+}
+
+// 逐行 `key=value`。**顺序即比对顺序**，不得随手调整。
+inline std::vector<std::string> AbiDump() {
+  std::vector<std::string> out;
+  auto add = [&out](const char* key, const std::string& value) {
+    out.push_back(std::string(key) + "=" + value);
+  };
+  add("registry_version", std::string(kRegistryVersion));
+  add("magic_text", std::string(kMagicText));
+  add("magic_len", std::to_string(kMagicLen));
+  add("magic_be", Hex64(kMagicBE));
+  add("abi_version", std::to_string(kAbiVersion));
+  add("header_region_size", std::to_string(kHeaderRegionSize));
+  add("descriptor_step", std::to_string(kDescriptorStep));
+  add("region_alignment", std::to_string(kRegionAlignment));
+  add("default_slot_count", std::to_string(kDefaultSlotCount));
+  add("default_slot_size", std::to_string(kDefaultSlotSize));
+  add("min_slot_count", std::to_string(kMinSlotCount));
+  add("max_slot_count", std::to_string(kMaxSlotCount));
+  add("min_slot_size", std::to_string(kMinSlotSize));
+  add("max_slot_size", std::to_string(kMaxSlotSize));
+  add("struct.ChannelHeader.offset.magic", std::to_string(offsetof(ChannelHeader, magic)));
+  add("struct.ChannelHeader.offset.abi_version",
+      std::to_string(offsetof(ChannelHeader, abi_version)));
+  add("struct.ChannelHeader.offset.header_size",
+      std::to_string(offsetof(ChannelHeader, header_size)));
+  add("struct.ChannelHeader.offset.desc_off", std::to_string(offsetof(ChannelHeader, desc_off)));
+  add("struct.ChannelHeader.offset.data_off", std::to_string(offsetof(ChannelHeader, data_off)));
+  add("struct.ChannelHeader.offset.slot_count",
+      std::to_string(offsetof(ChannelHeader, slot_count)));
+  add("struct.ChannelHeader.offset.slot_size", std::to_string(offsetof(ChannelHeader, slot_size)));
+  add("struct.ChannelHeader.offset.flags", std::to_string(offsetof(ChannelHeader, flags)));
+  add("struct.ChannelHeader.offset.reserved0", std::to_string(offsetof(ChannelHeader, reserved0)));
+  add("struct.ChannelHeader.offset.head", std::to_string(offsetof(ChannelHeader, head)));
+  add("struct.ChannelHeader.offset.tail", std::to_string(offsetof(ChannelHeader, tail)));
+  add("struct.ChannelHeader.offset.published", std::to_string(offsetof(ChannelHeader, published)));
+  add("struct.ChannelHeader.offset.consumed", std::to_string(offsetof(ChannelHeader, consumed)));
+  add("struct.ChannelHeader.offset.dropped", std::to_string(offsetof(ChannelHeader, dropped)));
+  add("struct.ChannelHeader.offset.full_events",
+      std::to_string(offsetof(ChannelHeader, full_events)));
+  add("struct.ChannelHeader.offset.created_ns",
+      std::to_string(offsetof(ChannelHeader, created_ns)));
+  add("struct.ChannelHeader.offset.producer_pid",
+      std::to_string(offsetof(ChannelHeader, producer_pid)));
+  add("struct.ChannelHeader.offset.consumer_pid",
+      std::to_string(offsetof(ChannelHeader, consumer_pid)));
+  add("struct.ChannelHeader.offset.reserved1", std::to_string(offsetof(ChannelHeader, reserved1)));
+  add("struct.ChannelHeader.offset.reserved2", std::to_string(offsetof(ChannelHeader, reserved2)));
+  add("struct.ChannelHeader.offset.reserved3", std::to_string(offsetof(ChannelHeader, reserved3)));
+  add("struct.ChannelHeader.size", std::to_string(sizeof(ChannelHeader)));
+  add("struct.PacketDescriptor.offset.seq", std::to_string(offsetof(PacketDescriptor, seq)));
+  add("struct.PacketDescriptor.offset.timestamp_ns",
+      std::to_string(offsetof(PacketDescriptor, timestamp_ns)));
+  add("struct.PacketDescriptor.offset.caplen", std::to_string(offsetof(PacketDescriptor, caplen)));
+  add("struct.PacketDescriptor.offset.wirelen",
+      std::to_string(offsetof(PacketDescriptor, wirelen)));
+  add("struct.PacketDescriptor.offset.ifindex",
+      std::to_string(offsetof(PacketDescriptor, ifindex)));
+  add("struct.PacketDescriptor.offset.data_off",
+      std::to_string(offsetof(PacketDescriptor, data_off)));
+  add("struct.PacketDescriptor.offset.flags", std::to_string(offsetof(PacketDescriptor, flags)));
+  add("struct.PacketDescriptor.offset.reserved0",
+      std::to_string(offsetof(PacketDescriptor, reserved0)));
+  add("struct.PacketDescriptor.offset.reserved1",
+      std::to_string(offsetof(PacketDescriptor, reserved1)));
+  add("struct.PacketDescriptor.offset.reserved2",
+      std::to_string(offsetof(PacketDescriptor, reserved2)));
+  add("struct.PacketDescriptor.offset.reserved3",
+      std::to_string(offsetof(PacketDescriptor, reserved3)));
+  add("struct.PacketDescriptor.size", std::to_string(sizeof(PacketDescriptor)));
+  add("flag.truncated", std::to_string(flag::kTruncated));
+  add("flag.vlan_tagged", std::to_string(flag::kVlan_tagged));
+  add("flag.ipv6", std::to_string(flag::kIpv6));
+  add("flag.synthetic", std::to_string(flag::kSynthetic));
+  add("layout.default.desc_off", LayoutProbe(kDefaultSlotCount, kDefaultSlotSize, "desc_off"));
+  add("layout.default.data_off", LayoutProbe(kDefaultSlotCount, kDefaultSlotSize, "data_off"));
+  add("layout.default.required", LayoutProbe(kDefaultSlotCount, kDefaultSlotSize, "required"));
+  add("layout.probe.min_x_min.required", LayoutProbe(kMinSlotCount, kMinSlotSize, "required"));
+  add("layout.probe.1_x_default.desc_off", LayoutProbe(1u, kDefaultSlotSize, "desc_off"));
+  add("layout.probe.default_x_1.desc_off", LayoutProbe(kDefaultSlotCount, 1u, "desc_off"));
+  add("layout.probe.max_x_max.desc_off", LayoutProbe(kMaxSlotCount, kMaxSlotSize, "desc_off"));
+  add("diag.chan.uninitialized.severity",
+      std::string(to_string(diag::ChanUninitialized::severity())));
+  add("diag.chan.uninitialized.sample", diag::ChanUninitialized::sample());
+  add("diag.chan.magic_mismatch.severity",
+      std::string(to_string(diag::ChanMagicMismatch::severity())));
+  add("diag.chan.magic_mismatch.sample", diag::ChanMagicMismatch::sample());
+  add("diag.chan.abi_version_mismatch.severity",
+      std::string(to_string(diag::ChanAbiVersionMismatch::severity())));
+  add("diag.chan.abi_version_mismatch.sample", diag::ChanAbiVersionMismatch::sample());
+  add("diag.chan.header_size_mismatch.severity",
+      std::string(to_string(diag::ChanHeaderSizeMismatch::severity())));
+  add("diag.chan.header_size_mismatch.sample", diag::ChanHeaderSizeMismatch::sample());
+  add("diag.chan.layout_mismatch.severity",
+      std::string(to_string(diag::ChanLayoutMismatch::severity())));
+  add("diag.chan.layout_mismatch.sample", diag::ChanLayoutMismatch::sample());
+  add("diag.chan.slot_count_mismatch.severity",
+      std::string(to_string(diag::ChanSlotCountMismatch::severity())));
+  add("diag.chan.slot_count_mismatch.sample", diag::ChanSlotCountMismatch::sample());
+  add("diag.chan.slot_size_mismatch.severity",
+      std::string(to_string(diag::ChanSlotSizeMismatch::severity())));
+  add("diag.chan.slot_size_mismatch.sample", diag::ChanSlotSizeMismatch::sample());
+  add("diag.chan.slot_count_out_of_range.severity",
+      std::string(to_string(diag::ChanSlotCountOutOfRange::severity())));
+  add("diag.chan.slot_count_out_of_range.sample", diag::ChanSlotCountOutOfRange::sample());
+  add("diag.chan.slot_size_out_of_range.severity",
+      std::string(to_string(diag::ChanSlotSizeOutOfRange::severity())));
+  add("diag.chan.slot_size_out_of_range.sample", diag::ChanSlotSizeOutOfRange::sample());
+  add("diag.chan.size_overflow.severity",
+      std::string(to_string(diag::ChanSizeOverflow::severity())));
+  add("diag.chan.size_overflow.sample", diag::ChanSizeOverflow::sample());
+  add("diag.chan.region_too_small.severity",
+      std::string(to_string(diag::ChanRegionTooSmall::severity())));
+  add("diag.chan.region_too_small.sample", diag::ChanRegionTooSmall::sample());
+  add("diag.chan.base_not_aligned.severity",
+      std::string(to_string(diag::ChanBaseNotAligned::severity())));
+  add("diag.chan.base_not_aligned.sample", diag::ChanBaseNotAligned::sample());
+  add("diag.chan.io_error.severity", std::string(to_string(diag::ChanIoError::severity())));
+  add("diag.chan.io_error.sample", diag::ChanIoError::sample());
+  add("diag.chan.truncated_packet.severity",
+      std::string(to_string(diag::ChanTruncatedPacket::severity())));
+  add("diag.chan.truncated_packet.sample", diag::ChanTruncatedPacket::sample());
+  add("diag.chan.tail_ahead_of_head.severity",
+      std::string(to_string(diag::ChanTailAheadOfHead::severity())));
+  add("diag.chan.tail_ahead_of_head.sample", diag::ChanTailAheadOfHead::sample());
+  return out;
+}
+
+} // namespace dump
 } // namespace abi
 } // namespace channel
 } // namespace packet_engine

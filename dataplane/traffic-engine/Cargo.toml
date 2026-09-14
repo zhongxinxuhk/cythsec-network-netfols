@@ -29,6 +29,18 @@ path = "src/lib.rs"
 name = "traffic-engine"
 path = "src/main.rs"
 
+# 通道 ABI 的跨语言 parity 输出入口（CYS-PKT-024 第 3 层）。
+# 与 C++ 侧 cythsec-dump-abi 的输出逐行 diff，是唯一能发现「一侧改了、另一侧没改」的手段。
+[[bin]]
+name = "dump-abi"
+path = "src/bin/dump_abi.rs"
+
+# 共享环消费侧驱动：C++ cythsec-ring-feed 的对应读端（CYS-TRF-034）。
+# 两者配对构成「C++ 写 → 共享环 → Rust 解成 Flow」的跨语言端到端链路。
+[[bin]]
+name = "ring-consume"
+path = "src/bin/ring_consume.rs"
+
 [dependencies]
 
 # 零第三方依赖，保持最小工程可离线构建、便于工具链验证。

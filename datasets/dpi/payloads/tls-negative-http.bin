@@ -1,0 +1,5 @@
+GET /index.html HTTP/1.1
+Host: http.example.com
+User-Agent: cythsec-dpi-test/1.0
+Accept: */*
+

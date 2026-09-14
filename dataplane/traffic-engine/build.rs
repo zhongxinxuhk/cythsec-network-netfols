@@ -19,8 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     // CARGO_MANIFEST_DIR 指向 dataplane/traffic-engine，故上溯两级到仓库根。
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR 未设置（应由 cargo 注入）");
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR 未设置（应由 cargo 注入）");
     let version_file = Path::new(&manifest_dir).join("../../VERSION");
 
     // 版本文件变更必须触发重编译，否则改了 VERSION 而产物版本号不变 ——
@@ -68,7 +68,10 @@ fn git_commit() -> String {
 // 优先调用系统 `date`（Linux/macOS 均有）；不可用时回落到 Unix 秒数 ——
 // 回落值仍可比较与排序，只是不如 RFC3339 可读，故不阻断构建。
 fn build_time() -> String {
-    if let Ok(out) = Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]).output() {
+    if let Ok(out) = Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+    {
         if out.status.success() {
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !s.is_empty() {
