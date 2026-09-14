@@ -3,8 +3,12 @@
 // 基础端点（/healthz、/metrics、/api/v1/version）与中间件栈由
 // cythsec/services/pkg/controlplane 统一提供，本包只注册策略相关路由：
 //
-//	GET /api/v1/policies       列出全部策略规则
-//	GET /api/v1/policies/{id}  查询单条策略规则
+//	GET  /api/v1/policies                      列出全部策略规则
+//	GET  /api/v1/policies/{id}                 查询单条策略规则
+//	GET  /api/v1/rule-tables                   列出已装载的规则表摘要
+//	GET  /api/v1/rule-tables/{name}            查询单张规则表（含编译期诊断）
+//	POST /api/v1/rule-tables/{name}/evaluate   规则试算（dry-run，无副作用）
+//	GET  /api/v1/attributes                    属性字典与规则编写元数据
 package api
 
 import (
@@ -15,6 +19,7 @@ import (
 	"cythsec/services/pkg/controlplane"
 	"cythsec/services/pkg/metrics"
 	"cythsec/services/policyd/internal/policy"
+	"cythsec/services/policyd/internal/ruleir"
 )
 
 // ServiceName 是 policyd 在日志、健康检查与指标子系中使用的服务名。
@@ -40,6 +45,10 @@ type ServerOptions struct {
 	RuntimeMetricsRefresh func()
 	// DisableMetrics 显式关闭 /metrics 端点（优先级高于 Registry）。
 	DisableMetrics bool
+	// RuleRegistry 是规则表版本化持有器；为 nil 时规则表相关端点返回「未装载」提示。
+	RuleRegistry *ruleir.Registry
+	// DeployMode 是当前部署模式，决定哪些处置原语可用（旁路无法丢包）。
+	DeployMode ruleir.DeployMode
 }
 
 // NewRuleCountGauge 构造并登记「策略条目数」仪表。
@@ -60,6 +69,7 @@ func NewRuleCountGauge(reg *metrics.Registry) *metrics.Gauge {
 func RegisterRoutes(mux *http.ServeMux, opts ServerOptions) {
 	controlplane.Handle(mux, "GET /api/v1/policies", listPolicies(opts))
 	controlplane.Handle(mux, "GET /api/v1/policies/{id}", getPolicy(opts))
+	registerRuleRoutes(mux, opts)
 }
 
 // NewServer 构造 policyd 的 HTTP handler（供测试与嵌入使用）。

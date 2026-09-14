@@ -1,0 +1,231 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "SECURITY_RULE",
+      "service": 2,
+      "default_action": {
+        "kind": "log"
+      },
+      "rules": [
+        {
+          "uuid": "00000000-0000-0000-0000-00000000A001",
+          "name": "放行内网访问的内部域（白名单，两条件 AND）",
+          "enabled": true,
+          "evaluation_order": 10,
+          "description": "对应 TSG 后期补上的白名单保护机制：白名单在拒绝之前求值，避免误封内部服务。多条件之间是 AND（内部域 且 内网地址），条件内的 objects 之间是 OR。",
+          "conditions": [
+            {
+              "attribute": "ATTR_SERVER_FQDN",
+              "objects": [
+                { "expression": ".corp.internal", "match_method": "suffix", "format": "uncase" }
+              ]
+            },
+            {
+              "attribute": "ATTR_DST_IP",
+              "objects": [
+                { "expression": "10.0.0.0/8", "match_method": "cidr" }
+              ]
+            }
+          ],
+          "action": { "kind": "allow" }
+        },
+        {
+          "uuid": "00000000-0000-0000-0000-00000000A002",
+          "name": "阻断已知恶意域名（RST 断连）",
+          "enabled": true,
+          "evaluation_order": 20,
+          "protocol": "tcp",
+          "description": "对齐 TSG Table 2 的规则形态：属性 + 匹配语义 + 格式 + 动作参数。RST 个数与标志位可配。",
+          "conditions": [
+            {
+              "attribute": "ATTR_SERVER_FQDN",
+              "objects": [
+                { "expression": "[\"c2.example\",\"drop.example\"]", "match_method": "set", "format": "uncase" }
+              ]
+            }
+          ],
+          "action": {
+            "kind": "deny",
+            "params": {
+              "sub_actions": ["reset_stream"],
+              "reset_count": 2,
+              "reset_flags": "rst_ack"
+            }
+          }
+        },
+        {
+          "uuid": "00000000-0000-0000-0000-00000000A003",
+          "name": "阻断埋点域（排除集保护关键 CDN 域名）",
+          "enabled": true,
+          "evaluation_order": 30,
+          "protocol": "tcp",
+          "description": "命中 .tracker.example 后缀，但 cdn.tracker.example 除外：排除集解决「宽匹配 + 少量例外」而不必拆规则。",
+          "conditions": [
+            {
+              "attribute": "ATTR_SERVER_FQDN",
+              "objects": [
+                { "expression": ".tracker.example", "match_method": "suffix", "format": "uncase" }
+              ]
+            }
+          ],
+          "excludes": [
+            {
+              "attribute": "ATTR_SERVER_FQDN",
+              "objects": [
+                { "expression": "cdn.tracker.example", "match_method": "full", "format": "uncase" }
+              ]
+            }
+          ],
+          "action": {
+            "kind": "deny",
+            "params": {
+              "sub_actions": ["reset_stream"],
+              "reset_count": 1,
+              "reset_flags": "rst_ack"
+            }
+          }
+        },
+        {
+          "uuid": "00000000-0000-0000-0000-00000000A004",
+          "name": "DNS 域名引流至受控解析地址",
+          "enabled": true,
+          "evaluation_order": 40,
+          "description": "DNS 应答重定向：命中恶意域名后缀时返回受控地址，保持可观测而不直接断连。",
+          "conditions": [
+            {
+              "attribute": "ATTR_DNS_QNAME",
+              "objects": [
+                { "expression": ".malware.example", "match_method": "suffix", "format": "lower" }
+              ]
+            }
+          ],
+          "action": {
+            "kind": "redirect",
+            "params": {
+              "sub_actions": ["inject_dns_redirect"],
+              "dns_answers": ["198.51.100.9"]
+            }
+          }
+        },
+        {
+          "uuid": "00000000-0000-0000-0000-00000000A005",
+          "name": "加密隧道指纹识别（观察态，早期判定）",
+          "enabled": true,
+          "evaluation_order": 50,
+          "description": "对齐 TSG 的早期判定思路：以首包载荷前缀 + JA3 + 证书签发者组合识别，先只记录不处置。",
+          "conditions": [
+            {
+              "attribute": "ATTR_FIRST_PAYLOAD_C2S",
+              "objects": [
+                { "expression": "000000016628", "match_method": "prefix", "format": "hex" }
+              ]
+            },
+            {
+              "attribute": "ATTR_FIRST_PAYLOAD_C2S_LEN",
+              "objects": [
+                { "expression": "54", "match_method": "full" }
+              ]
+            }
+          ],
+          "action": { "kind": "log" }
+        },
+        {
+          "uuid": "00000000-0000-0000-0000-00000000A006",
+          "name": "会话级限速（仅在线模式可用，当前停用）",
+          "enabled": false,
+          "evaluation_order": 60,
+          "description": "旁路部署无法限速。停用而非删除：切到 on_path_inline 后启用即可，装载时仅给出提示级诊断。",
+          "conditions": [
+            {
+              "attribute": "ATTR_BYTES_PER_SEC",
+              "objects": [
+                { "expression": ">=104857600", "match_method": "range" }
+              ]
+            },
+            {
+              "attribute": "ATTR_DIR_SWITCH_COUNT",
+              "objects": [
+                { "expression": "0..3", "match_method": "range" }
+              ]
+            }
+          ],
+          "action": {
+            "kind": "throttle",
+            "params": {
+              "sub_actions": ["throttle_session"],
+              "throttle_bps": 1048576
+            }
+          }
+        },
+        {
+          "uuid": "00000000-0000-0000-0000-00000000A007",
+          "name": "延迟阻断丢流（仅在线模式可用，当前停用）",
+          "enabled": false,
+          "evaluation_order": 70,
+          "description": "对齐 TSG 的 after_n_packets：先观察 N 个报文再断流，给误封留出观察窗口。",
+          "conditions": [
+            {
+              "attribute": "ATTR_APP_ID",
+              "objects": [
+                { "expression": "1001,1002", "match_method": "set" }
+              ]
+            }
+          ],
+          "action": {
+            "kind": "deny",
+            "params": {
+              "sub_actions": ["drop_stream"],
+              "defer_after_packets": 32
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ALLOWLIST",
+      "service": 3,
+      "default_action": { "kind": "log" },
+      "rules": [
+        {
+          "uuid": "00000000-0000-0000-0000-00000000B001",
+          "name": "放行已授权情报源网段",
+          "enabled": true,
+          "evaluation_order": 10,
+          "description": "情报源与升级通道必须无条件放行，否则一次误封会连带切断自身的规则更新链路。",
+          "conditions": [
+            {
+              "attribute": "ATTR_DST_IP",
+              "objects": [
+                { "expression": "192.0.2.0/24,198.51.100.0/24", "match_method": "set" }
+              ]
+            }
+          ],
+          "action": { "kind": "allow" }
+        },
+        {
+          "uuid": "00000000-0000-0000-0000-00000000B002",
+          "name": "放行报文 DF 位置位的已知客户端栈",
+          "enabled": true,
+          "evaluation_order": 20,
+          "description": "布尔属性与集合属性的匹配示例（DF 位常被用作发送方栈指纹）。",
+          "conditions": [
+            {
+              "attribute": "ATTR_IP_DF_BIT",
+              "objects": [
+                { "expression": "true", "match_method": "full" }
+              ]
+            },
+            {
+              "attribute": "ATTR_SERVER_FQDN",
+              "objects": [
+                { "expression": ".gov.au", "match_method": "suffix", "format": "uncase" }
+              ]
+            }
+          ],
+          "action": { "kind": "allow" }
+        }
+      ]
+    }
+  ]
+}

@@ -64,9 +64,11 @@ test_rust() {
 }
 
 test_go() {
-  echo "==> [go] go test ./...（四个服务）"
+  echo "==> [go] go test ./...（共享包 + 四个服务）"
   local rc=0
-  for svc in routerd policyd dnsd telemetryd; do
+  # services/pkg 是共享库（属性字典、响应封装、控制面装配），有测试但原先不在门禁内；
+  # 不入门的共享包会把缺陷推迟到「某个服务恰好用到它」时才暴露。
+  for svc in pkg routerd policyd dnsd telemetryd; do
     echo "  -> services/$svc"
     # 空壳服务（尚无 Go 包）跳过，不判失败。
     local pkgs

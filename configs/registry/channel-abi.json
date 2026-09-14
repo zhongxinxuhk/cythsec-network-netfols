@@ -1,0 +1,515 @@
+{
+  "registry_version": "1.0.0",
+  "_comment": [
+    "CythSec 跨语言共享通道 ABI 唯一真源（CYS-PKT-024）。",
+    "C++ 生产端（packet-engine）与 Rust 消费端（traffic-engine）的全部布局常量、",
+    "诊断码与诊断文案均从本文件生成，任何一侧手工改动都会被 check-channel-abi.sh 拦下。",
+    "冻结规则：abi_version 一经发布不得修改语义；增减字段必须同时提升 abi_version，",
+    "并让旧版本在 attach 期明确报错（而非静默错读内存）。"
+  ],
+  "channel": {
+    "magic_bytes": "CYTHSEC1",
+    "abi_version": 1,
+    "region_alignment": 4096,
+    "default_slot_count": 1024,
+    "default_slot_size": 2048,
+    "min_slot_count": 2,
+    "max_slot_count": 1048576,
+    "min_slot_size": 64,
+    "max_slot_size": 65536,
+    "header_region_size": 4096,
+    "descriptor_step": 64
+  },
+  "header_fields": [
+    {
+      "name": "magic",
+      "type": "bytes8",
+      "offset": 0,
+      "desc": "魔数 ASCII，未初始化区域全零"
+    },
+    {
+      "name": "abi_version",
+      "type": "u32",
+      "offset": 8,
+      "desc": "ABI 版本，attach 期强校验"
+    },
+    {
+      "name": "header_size",
+      "type": "u32",
+      "offset": 12,
+      "desc": "头部区字节数（含预留），attach 期强校验"
+    },
+    {
+      "name": "desc_off",
+      "type": "u32",
+      "offset": 16,
+      "desc": "描述符区相对区域起点偏移"
+    },
+    {
+      "name": "data_off",
+      "type": "u32",
+      "offset": 20,
+      "desc": "数据区相对区域起点偏移"
+    },
+    {
+      "name": "slot_count",
+      "type": "u32",
+      "offset": 24,
+      "desc": "槽位数量（2 的幂非必需，但建议）"
+    },
+    {
+      "name": "slot_size",
+      "type": "u32",
+      "offset": 28,
+      "desc": "单槽容量（字节）"
+    },
+    {
+      "name": "flags",
+      "type": "u32",
+      "offset": 32,
+      "desc": "通道级标志位"
+    },
+    {
+      "name": "reserved0",
+      "type": "u32",
+      "offset": 36,
+      "desc": "预留"
+    },
+    {
+      "name": "head",
+      "type": "u64",
+      "offset": 40,
+      "desc": "生产者已发布总数，单调递增（不回绕）"
+    },
+    {
+      "name": "tail",
+      "type": "u64",
+      "offset": 48,
+      "desc": "消费者已消费总数，单调递增（不回绕）"
+    },
+    {
+      "name": "published",
+      "type": "u64",
+      "offset": 56,
+      "desc": "生产者累计成功发布（含已被消费）"
+    },
+    {
+      "name": "consumed",
+      "type": "u64",
+      "offset": 64,
+      "desc": "消费者累计成功消费"
+    },
+    {
+      "name": "dropped",
+      "type": "u64",
+      "offset": 72,
+      "desc": "生产者因环满/超长而丢弃的报文数"
+    },
+    {
+      "name": "full_events",
+      "type": "u64",
+      "offset": 80,
+      "desc": "生产者遇到环满的次数（非丢包数）"
+    },
+    {
+      "name": "created_ns",
+      "type": "u64",
+      "offset": 88,
+      "desc": "区域创建时间（epoch 纳秒）"
+    },
+    {
+      "name": "producer_pid",
+      "type": "u32",
+      "offset": 96,
+      "desc": "生产者 pid，供排障识别残留进程"
+    },
+    {
+      "name": "consumer_pid",
+      "type": "u32",
+      "offset": 100,
+      "desc": "消费者 pid，供排障识别残留进程"
+    },
+    {
+      "name": "reserved1",
+      "type": "u64",
+      "offset": 104,
+      "desc": "预留"
+    },
+    {
+      "name": "reserved2",
+      "type": "u64",
+      "offset": 112,
+      "desc": "预留"
+    },
+    {
+      "name": "reserved3",
+      "type": "u64",
+      "offset": 120,
+      "desc": "预留"
+    }
+  ],
+  "descriptor_fields": [
+    {
+      "name": "seq",
+      "type": "u64",
+      "offset": 0,
+      "desc": "全局单调序号，槽位索引 = seq % slot_count"
+    },
+    {
+      "name": "timestamp_ns",
+      "type": "i64",
+      "offset": 8,
+      "desc": "抓包时间戳（epoch 纳秒）"
+    },
+    {
+      "name": "caplen",
+      "type": "u32",
+      "offset": 16,
+      "desc": "实际写入数据区的字节数"
+    },
+    {
+      "name": "wirelen",
+      "type": "u32",
+      "offset": 20,
+      "desc": "线上原始长度，caplen<wirelen 表示截断捕获"
+    },
+    {
+      "name": "ifindex",
+      "type": "u32",
+      "offset": 24,
+      "desc": "接收接口索引（pcap 文件后端为 0）"
+    },
+    {
+      "name": "data_off",
+      "type": "u32",
+      "offset": 28,
+      "desc": "数据相对数据区起点偏移"
+    },
+    {
+      "name": "flags",
+      "type": "u32",
+      "offset": 32,
+      "desc": "报文级标志位（见 flags 段）"
+    },
+    {
+      "name": "reserved0",
+      "type": "u32",
+      "offset": 36,
+      "desc": "预留"
+    },
+    {
+      "name": "reserved1",
+      "type": "u64",
+      "offset": 40,
+      "desc": "预留"
+    },
+    {
+      "name": "reserved2",
+      "type": "u64",
+      "offset": 48,
+      "desc": "预留"
+    },
+    {
+      "name": "reserved3",
+      "type": "u64",
+      "offset": 56,
+      "desc": "预留"
+    }
+  ],
+  "flags": [
+    {
+      "name": "truncated",
+      "bit": 0,
+      "desc": "截断捕获（caplen < wirelen）"
+    },
+    {
+      "name": "vlan_tagged",
+      "bit": 1,
+      "desc": "含 802.1Q / QinQ VLAN 标签"
+    },
+    {
+      "name": "ipv6",
+      "bit": 2,
+      "desc": "IPv6 报文"
+    },
+    {
+      "name": "synthetic",
+      "bit": 3,
+      "desc": "合成报文（非真实抓包，供测试）"
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "chan.uninitialized",
+      "severity": "error",
+      "template": "通道区域未初始化：本端期望魔数 {local_magic}，对端为 {remote_magic}；该区域可能尚未创建，或已被清零/截断（截断文件同样呈现全零）",
+      "fields": [
+        {
+          "name": "local_magic",
+          "type": "hex64"
+        },
+        {
+          "name": "remote_magic",
+          "type": "hex64"
+        }
+      ],
+      "sample": {
+        "local_magic": 4853002743079846705,
+        "remote_magic": 0
+      }
+    },
+    {
+      "code": "chan.magic_mismatch",
+      "severity": "error",
+      "template": "通道魔数不匹配：本端 {local_magic}，对端 {remote_magic}；该区域不是 CythSec 通道区域，或两端魔数约定不一致",
+      "fields": [
+        {
+          "name": "local_magic",
+          "type": "hex64"
+        },
+        {
+          "name": "remote_magic",
+          "type": "hex64"
+        }
+      ],
+      "sample": {
+        "local_magic": 4853002743079846705,
+        "remote_magic": 3549757155296172355
+      }
+    },
+    {
+      "code": "chan.abi_version_mismatch",
+      "severity": "error",
+      "template": "通道 ABI 版本不匹配：本端 v{local}，对端 v{remote}；契约语义已变更，两端必须同时升级（禁止跨版本共享区域）",
+      "fields": [
+        {
+          "name": "local",
+          "type": "u32"
+        },
+        {
+          "name": "remote",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "local": 1,
+        "remote": 2
+      }
+    },
+    {
+      "code": "chan.header_size_mismatch",
+      "severity": "error",
+      "template": "通道头部尺寸不匹配：本端 {local} 字节，对端 {remote} 字节；描述符区与数据区偏移将随之错位",
+      "fields": [
+        {
+          "name": "local",
+          "type": "u32"
+        },
+        {
+          "name": "remote",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "local": 4096,
+        "remote": 2048
+      }
+    },
+    {
+      "code": "chan.layout_mismatch",
+      "severity": "error",
+      "template": "通道布局偏移不一致：描述符区 本端 {local_desc} 对端 {remote_desc}；数据区 本端 {local_data} 对端 {remote_data}",
+      "fields": [
+        {
+          "name": "local_desc",
+          "type": "u32"
+        },
+        {
+          "name": "remote_desc",
+          "type": "u32"
+        },
+        {
+          "name": "local_data",
+          "type": "u32"
+        },
+        {
+          "name": "remote_data",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "local_desc": 4096,
+        "remote_desc": 4128,
+        "local_data": 69632,
+        "remote_data": 69664
+      }
+    },
+    {
+      "code": "chan.slot_count_out_of_range",
+      "severity": "error",
+      "template": "通道槽位数越界：请求 {value}，允许区间 [{min_value}, {max_value}]",
+      "fields": [
+        {
+          "name": "value",
+          "type": "u32"
+        },
+        {
+          "name": "min_value",
+          "type": "u32"
+        },
+        {
+          "name": "max_value",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "value": 2097152,
+        "min_value": 2,
+        "max_value": 1048576
+      }
+    },
+    {
+      "code": "chan.slot_size_out_of_range",
+      "severity": "error",
+      "template": "通道槽容量越界：请求 {value} 字节，允许区间 [{min_value}, {max_value}]",
+      "fields": [
+        {
+          "name": "value",
+          "type": "u32"
+        },
+        {
+          "name": "min_value",
+          "type": "u32"
+        },
+        {
+          "name": "max_value",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "value": 131072,
+        "min_value": 64,
+        "max_value": 65536
+      }
+    },
+    {
+      "code": "chan.size_overflow",
+      "severity": "error",
+      "template": "通道区域尺寸计算溢出：槽位数 {slot_count} × 槽容量 {slot_size} 超出可表示范围",
+      "fields": [
+        {
+          "name": "slot_count",
+          "type": "u32"
+        },
+        {
+          "name": "slot_size",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "slot_count": 1048576,
+        "slot_size": 65536
+      }
+    },
+    {
+      "code": "chan.region_too_small",
+      "severity": "error",
+      "template": "通道区域过小：需要 {required} 字节，实际 {actual} 字节；请用匹配的槽位配置创建或检查文件是否被截断",
+      "fields": [
+        {
+          "name": "required",
+          "type": "u64"
+        },
+        {
+          "name": "actual",
+          "type": "u64"
+        }
+      ],
+      "sample": {
+        "required": 2166784,
+        "actual": 4096
+      }
+    },
+    {
+      "code": "chan.base_not_aligned",
+      "severity": "error",
+      "template": "通道区域基址未对齐：要求 {required} 字节对齐，实际余数 {remainder}；未对齐会破坏缓存行隔离并可能触发未对齐原子访问",
+      "fields": [
+        {
+          "name": "required",
+          "type": "u32"
+        },
+        {
+          "name": "remainder",
+          "type": "u64"
+        }
+      ],
+      "sample": {
+        "required": 4096,
+        "remainder": 24
+      }
+    },
+    {
+      "code": "chan.io_error",
+      "severity": "error",
+      "template": "通道区域 I/O 失败：{detail}（errno={err_no}，路径={path}）",
+      "fields": [
+        {
+          "name": "detail",
+          "type": "str"
+        },
+        {
+          "name": "err_no",
+          "type": "u32"
+        },
+        {
+          "name": "path",
+          "type": "str"
+        }
+      ],
+      "sample": {
+        "detail": "mmap 失败",
+        "err_no": 13,
+        "path": "/run/cythsec/chan0"
+      }
+    },
+    {
+      "code": "chan.truncated_packet",
+      "severity": "error",
+      "template": "报文长度 {caplen} 超过槽容量 {slot_size}：回放端应开启截断或调大 --slot-size",
+      "fields": [
+        {
+          "name": "caplen",
+          "type": "u32"
+        },
+        {
+          "name": "slot_size",
+          "type": "u32"
+        }
+      ],
+      "sample": {
+        "caplen": 9000,
+        "slot_size": 2048
+      }
+    },
+    {
+      "code": "chan.tail_ahead_of_head",
+      "severity": "error",
+      "template": "消费位置越过生产位置：消费位置 {tail} 大于生产位置 {head}；此时「待消费数」恒为 0，消费端会一直报告无数据，而报文在背后持续堆积——不报错、不崩溃，只是全部静默丢弃。成因通常是区域被上一版进程以不同槽位配置写过、或该区域被手工清零过一半",
+      "fields": [
+        {
+          "name": "tail",
+          "type": "u64"
+        },
+        {
+          "name": "head",
+          "type": "u64"
+        }
+      ],
+      "sample": {
+        "head": 0,
+        "tail": 128
+      }
+    }
+  ]
+}

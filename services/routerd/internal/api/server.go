@@ -69,10 +69,16 @@ func NewServer(opts ServerOptions) http.Handler {
 	}, RegisterRoutes)
 }
 
+// handleSystem 处理 GET /api/v1/system，返回主机基础信息
+// （hostname / os / arch / go_version / pid，见 netinfo.SystemInfo）。
+// GetSystem 纯读本机信息、无错误返回，故恒为 200。
 func handleSystem(w http.ResponseWriter, r *http.Request) {
 	apiresp.JSON(w, r, http.StatusOK, netinfo.GetSystem())
 }
 
+// handleInterfaces 处理 GET /api/v1/interfaces，返回本机网络接口列表
+// （名称、MAC、MTU、地址等，见 netinfo.InterfaceInfo）。
+// 采集失败时返回 500 + CodeInternal。
 func handleInterfaces(w http.ResponseWriter, r *http.Request) {
 	ifaces, err := netinfo.ListInterfaces()
 	if err != nil {
@@ -82,6 +88,8 @@ func handleInterfaces(w http.ResponseWriter, r *http.Request) {
 	apiresp.JSON(w, r, http.StatusOK, ifaces)
 }
 
+// handleRoutes 处理 GET /api/v1/routes，返回内核路由表。
+// 非 Linux 平台下 netinfo 返回空列表（不算错误）；仅采集失败时返回 500 + CodeInternal。
 func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	routes, err := netinfo.ListRoutes()
 	if err != nil {
@@ -91,6 +99,8 @@ func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	apiresp.JSON(w, r, http.StatusOK, routes)
 }
 
+// handleTraffic 处理 GET /api/v1/traffic，返回各接口的收发计数。
+// 非 Linux 平台下返回空列表；仅采集失败时返回 500 + CodeInternal。
 func handleTraffic(w http.ResponseWriter, r *http.Request) {
 	traf, err := netinfo.ListTraffic()
 	if err != nil {

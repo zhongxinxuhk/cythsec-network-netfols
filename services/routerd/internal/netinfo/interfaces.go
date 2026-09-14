@@ -1,4 +1,4 @@
-// interfaces.go - 网卡 / IP / 接口状态采集。
+// Package netinfo interfaces.go - 网卡 / IP / 接口状态采集。
 package netinfo
 
 import (

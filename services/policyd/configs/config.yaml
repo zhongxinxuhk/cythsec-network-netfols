@@ -23,3 +23,15 @@ policy_file: ""
 
 # 允许载入的最大规则数；0 表示不限制
 max_rules: 0
+
+# 规则表文件路径（ruleir JSON 格式，含 tables[]）；留空表示不装载规则表
+rule_tables_file: ""
+
+# 允许载入的最大规则表数；0 表示不限制
+max_rule_tables: 0
+
+# 部署模式：bypass / on_path_inline / on_path_transparent / pcap
+#
+# 默认 bypass 是刻意的：旁路（端口镜像/SPAN）不在报文路径上，无法丢包与限速。
+# 若默认成在线模式，实际旁路部署时会出现「规则命中但流量照走」的静默失效。
+deploy_mode: "bypass"

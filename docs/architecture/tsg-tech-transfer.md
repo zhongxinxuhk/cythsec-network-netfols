@@ -7,9 +7,10 @@
 >
 > - 文档域：ARC（架构）／关联 DOC、TRF、POL、TIP、PKT
 > - 任务编号：CYS-DOC-021（本方案文档）
-> - 版本：v0.2.0
+> - 版本：v0.3.0
 > - 最后更新：2026-09-14（AEST）
 > - 适用基线：`cythsec` v0.1.0（`docs/planning/BACKLOG.md` 349 任务 / 9 里程碑）
+> - **落地状态**：§3 为规划清单，§9 为**已验证的落地记录**。两者不一致时以 §9 为准。
 
 ---
 
@@ -580,7 +581,22 @@ TSG 的关键约束（F8 F26）：**旁路部署只能观测与注入，无法�
 - `capture/pcap/README.md` —— 零第三方依赖与零拷贝契约（本方案 C5/D2 的前提）。
 - `README.md` —— 分层与工程映射。
 
-### 8.4 本方案新增建议任务编号一览
+### 8.4 落地实现的代码入口（与 §9 对应）
+
+读 §9 时按下表定位实现；改规则时先看这里，避免在错误的层改动。
+
+| 想改什么 | 改哪里 | 注意 |
+| --- | --- | --- |
+| 新增/调整属性 | `configs/registry/attributes.json` | 真源；改完必须跑 `python3 tools/codegen/gen-attributes.py` 重新生成四语言绑定 |
+| 新增匹配方法或格式 | `services/policyd/internal/ruleir/match.go` | 同时更新 `MethodsFor` / `DefaultMethod` / `DefaultFormat`，否则控制台不会下发该组合 |
+| 新增处置原语 | `services/policyd/internal/ruleir/action.go` + `ir.go` 的 `SubActions()` | 三处必须同步：常量、`SubActionAvailable` 的可用性、`requiredProtocol` 的协议要求 |
+| 新增编译期校验规则 | `services/policyd/internal/ruleir/compile.go` | 诊断码用稳定标识（`rule.conflict` 等），文案可改、码不可改 |
+| 改求值顺序或轨迹文案 | `services/policyd/internal/ruleir/evaluate.go` | 轨迹形状被测试锁定，改文案需同步 `evaluate_test.go` |
+| 改装载/版本化语义 | `services/policyd/internal/ruleir/store.go` | `Install` 必须保持「全量成功或全量不生效」的原子性 |
+| 改控制面端点或响应字段 | `services/policyd/internal/api/rules.go` | 新字段一律 snake_case；契约由 `rules_test.go` 锁定 |
+| 示例规则 | `services/policyd/configs/rules.example.json` | 该文件同时是回归夹具（`example_file_test.go`），改它必须让测试仍绿 |
+
+### 8.5 本方案新增建议任务编号一览
 
 | 编号 | 任务 | 优先级 | 依赖 |
 | --- | --- | --- | --- |
@@ -615,9 +631,127 @@ TSG 的关键约束（F8 F26）：**旁路部署只能观测与注入，无法�
 
 ---
 
-## 9. 变更记录
+## 9. 实现落地记录（第一批：治理层 + 控制面）
+
+本节记录**已落地并经验证**的部分。与第 3 节的关系：第 3 节是「应该做什么」，本节是
+「已经做了什么、怎么验证的、还剩什么」。**未在本节出现的能力一律视为尚未实现**——
+方案文档与代码之间最容易出现的偏差，就是把「计划」读成「已有」。
+
+落地范围刻意限定在**治理层与控制面**：属性字典、规则 IR、编译期校验、求值引擎、
+装载与版本化、只读 API。这一层不碰数据面转发路径，因此可以在不动 `dataplane/`
+的前提下先立契约；而契约正是后续所有数据面工作的前置。
+
+### 9.1 落地清单
+
+| 编号 | 能力 | 实现位置 | 状态 |
+| --- | --- | --- | --- |
+| A1 | 属性—规则—动作三层解耦 | `configs/registry/attributes.json`（真源）+ `services/policyd/internal/ruleir/` | ✅ 已落地 |
+| A3（治理部分） | 声明式能力注册与元数据下发 | `GET /api/v1/attributes` | ✅ 已落地 |
+| A5 | 规则 IR 结构化（匹配语义/格式正交） | `ruleir/match.go`（8 种 `match_method` × 5 种 `format`） | ✅ 已落地 |
+| A5′ | 规则加载后端抽象 | `ruleir/store.go`（`memory` / `json-file` 已实现；`redis` 留接口） | ✅ 部分（后端 2/3） |
+| A6 | 规则编译期校验与热更新语义 | `ruleir/compile.go` + `Registry`（revision / checksum / rollback） | ✅ 已落地 |
+| B5 | 白名单 / 排除集一等公民 | `ruleir/evaluate.go`（allow 先行 + `excludes`） | ✅ 已落地 |
+| C4 | 规则冲突与冗余检测 | `ruleir/compile.go`（`rule.conflict` / `rule.duplicated` / `rule.subsumed` / `rule.negate_contradiction`） | ✅ 已落地 |
+| C2（部分） | 试算与回放（离线预演） | `POST /api/v1/rule-tables/{name}/evaluate` | ✅ 已落地（端点层） |
+| C5（部分） | 判断影响面 | 试算端点返回完整求值轨迹 | ✅ 已落地（端点层） |
+| D2 | 部署模式与能力收敛 | `ruleir/action.go`（4 模式 × 11 原语可用性矩阵） | ✅ 已落地（判定层；内联数据面未接） |
+| A2 / A4 / B1–B4 / C1 / C3 / D1 | 数据面、收包、检测算法、指纹卫生、性能门禁 | — | ⬜ 未落地 |
+
+### 9.2 新增文件与规模
+
+| 文件 | 行数 | 职责 |
+| --- | --- | --- |
+| `configs/registry/attributes.json` | 143 | 属性字典**唯一真源**（98 个属性，含类型 / 作用域 / 计算阶段 / 代价 / 来源） |
+| `tools/codegen/gen-attributes.py` | 805 | 由真源生成 Go / Rust / TS / Python 四语言绑定（含 `--check` 幂等校验） |
+| `scripts/verify/check-attributes.sh` | 62 | 生成物一致性关口（退出码 0/1/2/3 分语义） |
+| `services/pkg/attributes/gen.go` | 387 | Go 绑定（生成物） |
+| `services/policyd/internal/ruleir/`（实现） | 3,354 | 规则 IR、匹配语义、动作模型、编译校验、求值引擎、装载与版本化 |
+| `services/policyd/internal/ruleir/`（测试） | 1,933 | 同上；测试与实现在同一包内并列 |
+| `services/policyd/internal/api/rules.go` + `rules_test.go` | 849 | 只读控制面端点 + 契约测试 |
+| `services/policyd/configs/rules.example.json` | 231 | 示例规则（同时作为回归夹具） |
+| `dataplane/traffic-engine/src/attributes_gen.rs` | 1,155 | Rust 绑定（生成物） |
+| `web/console/src/constants/attributes.gen.ts` | 322 | TS 绑定（生成物） |
+| `ml/training/features/attributes_gen.py` | 1,051 | Python 绑定（生成物） |
+
+合计约 10,500 行（其中生成物 2,915 行，真源 + 生成器 + 关口 1,010 行）。
+
+### 9.3 关键设计决策（编码时定型，与方案文档的对应关系）
+
+1. **匹配语义与格式归一化正交分离**（对齐论文 §5.3 的 `match_method` / `format`）。
+   拆开的好处是组合空间可枚举：8 × 5 的组合由类型约束裁剪后，控制台可以只渲染合法组合，
+   而不是让使用者盲填字符串。
+2. **部署模式把「能力可用性」从文档约定提升为代码约束**。`SubActionAvailable(原语, 模式)`
+   是唯一判定入口，控制台、下发前预检、求值引擎都必须经它。旁路模式下
+   `drop_stream` / `drop_current_packet` / `throttle_*` 返回 false——**旁路物理上不在报文
+   路径上**，若不做成硬约束，「规则命中但流量照走」的静默失效一定会发生。
+3. **严重度按「是否启用」分级**：启用规则使用了当前模式不可用的原语 → 阻塞级错误，
+   拒绝装载；停用规则 → 提示级警告，允许装载。前者会让设备静默失去防护，必须拦；
+   后者是待办而非缺陷，不该拦。
+4. **白名单先于拒绝**（与论文 §4.1.2 的做法相反）。这是刻意的可用性取舍：
+   安全设备最贵的故障是误封，而「先拒绝再回头看白名单」意味着每次误封都已生效过一次。
+5. **求值轨迹必须写出「期望匹配什么」**。初版只记录命中的对象，导致未命中的条件退化为
+   `条件 X:  → 不成立` 这样的空信息行——恰好抹掉了排查「规则为什么没生效」所需的唯一线索。
+   现改为列出期望对象集（上限 3 条 + 总数提示）。
+6. **求值出错与值不匹配必须在轨迹里区分**（`求值出错: …` vs `未匹配任何对象（期望: …）`）。
+   两者的处置动作完全不同：前者改采集，后者改规则。
+7. **属性字典真源唯一**：四语言绑定全部生成，`--check` 进 lint 关口。
+   手工维护四份副本必然漂移，而漂移的表现是「Go 侧认识的属性 Rust 侧不认识」。
+8. **规则表导出/回灌的字段名一律 snake_case**。缺 JSON tag 时 Go 会按字段原名输出
+   （`Severity` / `RuleUUID`），前端取 `severity` 得到 `undefined`——不报错、不崩，
+   只是一片空白。已加契约测试锁定。
+
+### 9.4 验证结果
+
+| 关口 | 命令 | 结果 |
+| --- | --- | --- |
+| Go 格式 | `GOWORK=off gofmt -l services/` | ✅ 无输出 |
+| Go 静态检查 | `GOWORK=off go vet ./...`（各服务） | ✅ 通过 |
+| Go 测试 | `bash scripts/test/test-all.sh --go` | ✅ 全部通过（含 `pkg` + 四服务） |
+| 属性字典生成物 | `bash scripts/verify/check-attributes.sh` | ✅ 98 个属性 / 4 个目标文件一致 |
+| Rust 格式 | `cargo fmt --all -- --check` | ⚠️ 仅 `build.rs` 有差异（**既有问题，非本次改动**） |
+| Rust 测试 | `cargo test --offline` | ✅ 7 passed |
+| 端到端冒烟 | 启动 `policyd` 装载示例规则并打全部端点 | ✅ 见 9.5 |
+
+> ⚠️ **既有问题（未修）**：`dataplane/traffic-engine/build.rs` 不符合 rustfmt，
+> 因此 `bash scripts/lint/lint-all.sh` 的 Rust 段当前为红。该文件不在本次改动集内，
+> 未擅自格式化。修复只需 `cargo fmt --all`。
+
+### 9.5 端到端冒烟记录
+
+以 `-rule-tables-file configs/rules.example.json` 启动，分别在 `bypass` 与
+`on_path_inline` 两种模式下验证：
+
+| 场景 | 输入 | 结果 |
+| --- | --- | --- |
+| 白名单优先（两条件 AND） | `ATTR_SERVER_FQDN=app.corp.internal` + `ATTR_DST_IP=10.1.2.3` | `allow`，轨迹含「白名单命中，跳过其余规则」 |
+| 大小写不敏感阻断 | `ATTR_SERVER_FQDN=C2.EXAMPLE` | `deny`，原语 `reset_stream`，参数 `reset_count/reset_flags` 透传 |
+| 排除集保护 | `ATTR_SERVER_FQDN=cdn.tracker.example` | 命中规则但「排除集命中，规则不生效」→ 回落默认动作 |
+| 同一规则正常生效 | `ATTR_SERVER_FQDN=ads.tracker.example` | `deny` |
+| 协议适配校验 | `ATTR_DNS_QNAME=x.malware.example` | `redirect`，原语 `inject_dns_redirect` |
+| 前缀窗口早期判定 | 首包载荷前缀 + 长度 | 命中观察规则（`log`） |
+| 属性拼写回显 | 混入 `ATTR_TYPO_FQDN` | `unknown_attributes` 显式回显，已登记属性照常参与判定 |
+| 部署模式诊断 | 同一文件，`bypass` vs `on_path_inline` | 警告数 3 → 1（旁路下丢包/限速不可用告警消失） |
+| 404 / 400 / 503 | `GET` 不存在的表、非法体、未配置规则表 | 分别 `404/4004`、`400/4001`、`503/4004`（503 的文案指出配置项 `rule_tables_file`） |
+
+### 9.6 未落地部分与下一步
+
+1. **数据面（A2 / A4 / C1）**：`trait EnforcementBackend` 与流控制原语尚未写入
+   `dataplane/traffic-engine`。前置是 `CYS-PKT-024`（C++ ↔ Rust 通道契约）冻结。
+2. **规则下发链路**：`ruleir` 目前只在控制面内求值，尚未经通道下发到数据面执行。
+   这是 A2 与 A4 的共同前置。
+3. **Redis 加载后端**：`RedisStore` 结构已就位但未实现（缺少可用的 Redis 环境与依赖决策）。
+4. **签名注册表（`CYS-TIP-011`）**：格式双向转换尚未开始。
+5. **性能门禁（D1）**：论文无吞吐数据，必须自建可对标门禁；当前尚未建立基线与阈值。
+6. **`CYS-POL-019` 白名单/排除集的大规模匹配**：当前实现基于逐条表达式求值，
+   尚未引入 TSG 那套「1,023 CDN 段 + 56,396 FQDN」规模下的索引结构（如前缀树 / 位图）。
+   在规则量进入万级前不构成瓶颈，但需要在 `CYS-POL-019` 中显式设计。
+
+---
+
+## 10. 变更记录
 
 | 时间 | 变更 |
 | --- | --- |
 | 2026-09-14 | 初版 v0.1.0：完成论文全文（20 页英文版）事实提取（F1–F45）、TSG 架构对位矩阵、19 项技术引入清单、6 项超越维度、5 阶段路线图与合规边界 |
 | 2026-09-14 | v0.2.0：改为**全量引入**口径——移除「拒绝引入清单」，新增 §7.1 处置动作矩阵（13 类动作全集，含载荷篡改与延迟阻断）、§7.2 动作可用性矩阵（部署模式 × 动作）、§7.3 八项工程约束（G1–G8）、§7.4 变更治理、§7.5 用途声明；A4 扩展为 4 后端 × 13 动作；新增任务 `CYS-TRF-046`、`CYS-POL-020`（累计 24 项）；R2/R3/R8 风险重述为工程性风险；S6 由「许可清洁」改为「许可工程化」 |
+| 2026-09-14 | v0.3.0：新增 §9 实现落地记录——落地治理层与控制面（属性字典真源 + 四语言代码生成 + 规则 IR + 编译期校验 + 白名单优先求值 + 装载版本化 + 只读 API），记录 8 项关键设计决策、验证关口结果与端到端冒烟证据，并显式列出 6 项未落地能力 |

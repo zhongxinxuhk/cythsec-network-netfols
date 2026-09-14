@@ -55,9 +55,13 @@ func newTestServer(t *testing.T, rules ...policy.Rule) (http.Handler, *policy.St
 }
 
 // envelope 是 apiresp 的统一响应信封。
+//
+// Error 只在失败响应里出现，测试据此断言错误文案 —— 错误文案是使用者判断
+// 「配置没写对」还是「表名写错了」的唯一依据，因此值得被测试固定下来。
 type envelope struct {
-	Code int             `json:"code"`
-	Data json.RawMessage `json:"data"`
+	Code  int             `json:"code"`
+	Data  json.RawMessage `json:"data"`
+	Error string          `json:"error"`
 }
 
 // do 发起请求并返回记录器。

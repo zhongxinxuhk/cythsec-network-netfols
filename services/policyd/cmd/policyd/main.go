@@ -7,6 +7,9 @@
 //	GET /api/v1/version         版本 / commit / 构建时间 / Go 版本
 //	GET /api/v1/policies        列出全部策略规则
 //	GET /api/v1/policies/{id}   查询单条策略规则
+//	GET /api/v1/attributes      属性字典与规则编写元数据
+//	GET /api/v1/rule-tables     规则表摘要（含版本与诊断计数）
+//	POST /api/v1/rule-tables/{name}/evaluate  规则试算（dry-run）
 //
 // 基础端点与中间件栈由 cythsec/services/pkg/controlplane 统一提供；
 // 本文件只负责配置优先级解析与策略载入。
@@ -15,7 +18,9 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -26,6 +31,7 @@ import (
 	"cythsec/services/policyd/internal/api"
 	"cythsec/services/policyd/internal/config"
 	"cythsec/services/policyd/internal/policy"
+	"cythsec/services/policyd/internal/ruleir"
 )
 
 // loadConfig 按 flag > 环境变量 > YAML > 默认值 的优先级组装配置。
@@ -41,6 +47,10 @@ func loadConfig() (config.Config, bool) {
 	noMetrics := flag.Bool("no-metrics", false, "关闭 GET /metrics 端点")
 	policyFile := flag.String("policy-file", c.PolicyFile, "JSON 策略文件路径（默认不载入）")
 	maxRules := flag.Int("max-rules", c.MaxRules, "允许载入的最大规则数（0 表示不限制）")
+	ruleTablesFile := flag.String("rule-tables-file", c.RuleTablesFile, "规则表文件路径（默认不载入）")
+	maxRuleTables := flag.Int("max-rule-tables", c.MaxRuleTables, "允许载入的最大规则表数（0 表示不限制）")
+	deployMode := flag.String("deploy-mode", c.DeployMode,
+		"部署模式: bypass / on_path_inline / on_path_transparent / pcap")
 	configPath := flag.String("config", c.ConfigPath, "YAML 配置文件路径")
 	showVer := flag.Bool("version", false, "打印版本并退出")
 	flag.Parse()
@@ -90,8 +100,50 @@ func loadConfig() (config.Config, bool) {
 	if set["max-rules"] {
 		c.MaxRules = *maxRules
 	}
+	if set["rule-tables-file"] {
+		c.RuleTablesFile = *ruleTablesFile
+	}
+	if set["max-rule-tables"] {
+		c.MaxRuleTables = *maxRuleTables
+	}
+	if set["deploy-mode"] {
+		c.DeployMode = *deployMode
+	}
 
 	return c, false
+}
+
+// loadRuleTables 按配置装载规则表并返回版本化持有器。
+//
+// 失败即致命：规则表是安全策略，静默以空表启动等于把全部阻断规则失效，而这种
+// 「看起来正常」的降级最难被发现。同理，编译期诊断的 error 级问题由 ruleir 拒绝装载，
+// 这里不做任何「跳过问题规则」的宽容处理。
+func loadRuleTables(c config.Config) (*ruleir.Registry, ruleir.DeployMode, error) {
+	mode := ruleir.DeployMode(c.DeployMode)
+	if !mode.Valid() {
+		return nil, mode, fmt.Errorf("部署模式 %q 未登记（可用：bypass / on_path_inline / "+
+			"on_path_transparent / pcap）", c.DeployMode)
+	}
+
+	reg := ruleir.NewRegistry()
+	if c.RuleTablesFile == "" {
+		return reg, mode, nil
+	}
+
+	snap, err := ruleir.LoadAndInstall(context.Background(),
+		ruleir.NewFileStore(c.RuleTablesFile, c.MaxRuleTables), reg,
+		ruleir.CompileOptions{Mode: mode})
+	if err != nil {
+		return nil, mode, err
+	}
+	log.Printf("已装载规则表: 文件=%s 表数=%d revision=%d 校验和=%s 部署模式=%s",
+		c.RuleTablesFile, len(snap.Tables), snap.Version.Revision,
+		snap.Version.Checksum[:12], mode)
+	for _, d := range snap.Diagnostics {
+		// 提示级诊断直接打印：它们正是「规则可能不按预期生效」的先行指标。
+		log.Printf("规则诊断 %s", d.String())
+	}
+	return reg, mode, nil
 }
 
 // loadPolicies 按配置载入策略文件（未配置时返回空切片，即从空策略启动）。
@@ -122,6 +174,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	ruleRegistry, deployMode, err := loadRuleTables(c)
+	if err != nil {
+		log.Printf("载入规则表失败，进程退出: %v", err)
+		os.Exit(1)
+	}
+
 	var ruleCount *metrics.Gauge
 	err = controlplane.Run(controlplane.ServerConfig{
 		Service:            api.ServiceName,
@@ -136,7 +194,12 @@ func main() {
 			return nil
 		},
 	}, func(mux *http.ServeMux) {
-		api.RegisterRoutes(mux, api.ServerOptions{Store: store, RuleCount: ruleCount})
+		api.RegisterRoutes(mux, api.ServerOptions{
+			Store:        store,
+			RuleCount:    ruleCount,
+			RuleRegistry: ruleRegistry,
+			DeployMode:   deployMode,
+		})
 	})
 	if err != nil {
 		log.Printf("policyd 退出: %v", err)

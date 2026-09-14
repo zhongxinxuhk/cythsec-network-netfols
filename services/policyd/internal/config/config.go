@@ -22,7 +22,15 @@ type Config struct {
 	MetricsEnabled  bool          // 是否暴露 GET /metrics
 	PolicyFile      string        // 策略文件路径（空表示不载入，从空存储启动）
 	MaxRules        int           // 允许载入的最大规则数（0 表示不限制）
-	ConfigPath      string        // YAML 配置文件路径
+	// RuleTablesFile 是规则表文件路径（ruleir JSON 格式）；空表示不装载。
+	RuleTablesFile string
+	// MaxRuleTables 是允许载入的最大规则表数（0 表示不限制）。
+	MaxRuleTables int
+	// DeployMode 是部署模式，决定哪些处置原语可用。
+	// 默认 bypass（旁路）：旁路部署物理上无法丢包/限速，因此这是唯一「不会误以为
+	// 已生效」的默认值 —— 若默认成在线，配置成旁路时会静默地什么都没发生。
+	DeployMode string
+	ConfigPath string // YAML 配置文件路径
 }
 
 // Default 返回内置默认值。
@@ -37,6 +45,8 @@ func Default() Config {
 		LogFormat:       "json",
 		MetricsEnabled:  true,
 		MaxRules:        0,
+		MaxRuleTables:   0,
+		DeployMode:      "bypass",
 		ConfigPath:      "configs/config.yaml",
 	}
 }
@@ -56,6 +66,9 @@ func (c *Config) LoadYAML(path string) error {
 	c.MetricsEnabled = m.Bool("metrics_enabled", c.MetricsEnabled)
 	c.PolicyFile = m.Get("policy_file", c.PolicyFile)
 	c.MaxRules = m.Int("max_rules", c.MaxRules)
+	c.RuleTablesFile = m.Get("rule_tables_file", c.RuleTablesFile)
+	c.MaxRuleTables = m.Int("max_rule_tables", c.MaxRuleTables)
+	c.DeployMode = m.Get("deploy_mode", c.DeployMode)
 	return nil
 }
 
@@ -68,6 +81,9 @@ func (c *Config) ApplyEnv() {
 	c.MetricsEnabled = configutil.EnvBool(envPrefix, "metrics_enabled", c.MetricsEnabled)
 	c.PolicyFile = configutil.EnvString(envPrefix, "policy_file", c.PolicyFile)
 	c.MaxRules = configutil.EnvInt(envPrefix, "max_rules", c.MaxRules)
+	c.RuleTablesFile = configutil.EnvString(envPrefix, "rule_tables_file", c.RuleTablesFile)
+	c.MaxRuleTables = configutil.EnvInt(envPrefix, "max_rule_tables", c.MaxRuleTables)
+	c.DeployMode = configutil.EnvString(envPrefix, "deploy_mode", c.DeployMode)
 	if v, ok := configutil.FromEnv(envPrefix, "config"); ok {
 		c.ConfigPath = v
 	}

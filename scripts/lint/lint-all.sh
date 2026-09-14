@@ -84,6 +84,18 @@ else
   echo "✓ [go] 格式检查通过"
 fi
 
+# ---------- 生成物一致性 : 属性字典 ----------
+# 四语言绑定（Go/Rust/TS/Python）由 configs/registry/attributes.json 生成。
+# 归入 lint 而非 test：它校验的是「提交物与真源是否一致」，即生成物新鲜度，
+# 与格式检查同类；跑测试永远发现不了「生成物过期」——过期绑定照样能编译通过。
+echo "==> [codegen] 属性字典生成物一致性"
+if ! bash scripts/verify/check-attributes.sh; then
+  echo "✗ [codegen] 属性字典生成物与真源不一致" >&2
+  failed=$((failed+1))
+else
+  echo "✓ [codegen] 属性字典生成物一致"
+fi
+
 # ---------- 前端 : eslint ----------
 echo "==> [node] npm run lint (web/console)"
 if ! (cd web/console && npm run lint); then
