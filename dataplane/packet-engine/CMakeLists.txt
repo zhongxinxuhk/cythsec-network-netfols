@@ -15,7 +15,21 @@ cmake_minimum_required(VERSION 3.20)
 # 后端（XDP / AF_XDP / DPDK / pcap）以 option 开关预留；目录尚未实现时给出
 # INTERFACE 占位目标，保证上层链接点稳定（见下方 backend 段）。
 # ============================================================================
-project(packet-engine VERSION 0.1.0 LANGUAGES C CXX)
+# ---- 版本号：以仓库根 VERSION 为唯一真源 --------------------------------
+# 两种用法都要落到同一个值：
+#   - 由根 CMakeLists 以 add_subdirectory 引入 -> 根已 READ VERSION 并定义 CYTHSEC_VERSION
+#   - 在本目录下独立 configure            -> 此处自行读取
+# 此处**刻意不写版本字面量**：写过一次就多出一份需手工同步的副本。
+if(NOT DEFINED CYTHSEC_VERSION)
+  set(_cythsec_version_file "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION")
+  if(NOT EXISTS "${_cythsec_version_file}")
+    message(FATAL_ERROR "未找到版本真源文件: ${_cythsec_version_file}")
+  endif()
+  file(READ "${_cythsec_version_file}" _cythsec_version_raw)
+  string(STRIP "${_cythsec_version_raw}" CYTHSEC_VERSION)
+endif()
+
+project(packet-engine VERSION ${CYTHSEC_VERSION} LANGUAGES C CXX)
 
 # ---- 语言标准 -------------------------------------------------------------
 set(CMAKE_C_STANDARD 11)

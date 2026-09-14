@@ -1,7 +1,8 @@
-// Layout.tsx - 应用外壳：侧边导航 + 顶栏(含 routerd 健康状态)。
+// Layout.tsx - 应用外壳：侧边导航 + 顶栏(含 routerd 健康状态) + 底栏版本号。
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { StatusBadge } from './StatusBadge';
+import { versionLabel } from '../utils/version';
 
 type Health = 'ok' | 'err' | 'muted';
 
@@ -58,6 +59,11 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
+        {/* 版本号取自仓库根 VERSION（构建期注入），置于侧栏底部。
+            刻意显示而非仅注释：它让「前端版本与后端版本是否同源」一眼可验。 */}
+        <div className="side-foot">
+          <span className="muted small">{versionLabel()}</span>
+        </div>
       </aside>
       <div className="main-col">
         <header className="topbar">

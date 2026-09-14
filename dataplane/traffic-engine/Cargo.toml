@@ -1,9 +1,16 @@
 [package]
 name = "traffic-engine"
-version = "0.1.0"
-edition = "2021"
-license = "Proprietary"
+# 版本 / edition / license 一律继承工作区（根 Cargo.toml 的 [workspace.package]）。
+# 此处**刻意不再写字面量**：写过一次就多出一份需要手工同步的副本，
+# 而「忘了同步」的表现只是版本号悄悄不一致，难以察觉。
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Rust traffic analysis core: flow, session, reassembly, dpi, feature, behavior, risk."
+
+# 版本号实际注入由 build.rs 完成（读取仓库根 VERSION）。Cargo 的 version 字段
+# 仅供包元数据使用，产物对外报告的版本以 CYTHSEC_VERSION 为准。
+build = "build.rs"
 
 # 本阶段为单包骨架，实现最小数据链 Packet -> Flow -> Session：
 #   src/flow/    五元组 Packet 与 Flow 流模型

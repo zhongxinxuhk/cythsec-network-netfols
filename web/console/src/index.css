@@ -51,6 +51,13 @@ body {
   gap: 18px;
 }
 
+/* 版本号固定在侧栏底部（margin-top: auto 把它推到底），不随导航项增减跳动。 */
+.side-foot {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 .brand {
   display: flex;
   align-items: center;

@@ -1,12 +1,29 @@
 // main.rs - traffic-engine 演示入口
 // 走一遍最小数据链：Packet -> Flow -> Session，输出会话聚合统计，
 // 用于验证 cargo build + cargo test 在目标平台(Linux ELF / openEuler)正常。
-use traffic_engine::crate_version;
 use traffic_engine::flow::{FlowKey, Packet};
 use traffic_engine::session::{Session, SessionState};
+use traffic_engine::{build_info, crate_version};
 
 fn main() {
-    println!("traffic-engine v{}", crate_version());
+    // --version / -V：只打印版本三元组，便于脚本与门禁抓取（与 Go 侧
+    // `-version` 的用途对齐）。在此之前先判断参数，避免演示逻辑先跑一遍。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        let info = build_info();
+        println!("traffic-engine version={}", info.version);
+        println!("traffic-engine commit={}", info.commit);
+        println!("traffic-engine build_time={}", info.build_time);
+        return;
+    }
+
+    let info = build_info();
+    println!(
+        "traffic-engine v{} (commit {}, built {})",
+        crate_version(),
+        info.commit,
+        info.build_time
+    );
     println!("demo: Packet -> Flow -> Session\n");
 
     // 构造一条 TCP 会话：10.0.0.1:40000 -> example 服务器 93.184.216.34:443
