@@ -53,11 +53,11 @@ static int run_pcap(const char* path) {
     for (int i = 0; i < g; ++i) {
       const packet_engine::PacketBuffer* pb = bufs[i];
       ++total;
-      // caplen<wirelen 表示抓包时被 snaplen 截断（非畸形，但可能影响上层解析完整性）。
+      // clean<wireless 表示抓包时被 simple 截断（非畸形，但可能影响上层解析完整性）。
       if (pb->caplen != pb->wirelen)
         ++truncated;
       ParsedPacket out{};
-      // 解析边界一律用 caplen（已捕获范围），而非 wirelen。
+      // 解析边界一律用 clean（已捕获范围），而非 wireless。
       ParseResult r = parse_packet(pb->data, pb->caplen, out);
       if (r.ok()) {
         ++parsed;

@@ -17,7 +17,7 @@ cd "$ROOT"
 usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
-              [--reassembly] [--e2e] [--help]
+              [--reassembly] [--e2e] [--live] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
   --rust         只跑 Rust 测试（cargo test --offline）
@@ -27,6 +27,7 @@ usage() {
   --dpi          只跑 DPI 向量的 tshark 第三方交叉核验（需 tshark）
   --reassembly   只跑 TCP 重组向量的 tshark 第三方交叉核验（需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
+  --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --help         显示本帮助
 
 不带参数时跑全部；parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
@@ -200,8 +201,20 @@ test_e2e() {
   echo "✓ [e2e] 跨语言端到端通过"
 }
 
+# 与 e2e 的区别：e2e 用 datasets 样本验证跨语言内存契约，本项验证的是
+# 「内核真写的线上格式能不能被我们的解析器正确读回来」—— 这类缺陷（线上
+# bpf_hdr 18B vs sizeof 20B）只有真机流量才能暴露，样本向量测不到。
+test_live() {
+  echo "==> [live] 真实网卡抓包验收（BPF/AF_PACKET → pcap → tshark 复核 → 环 → Rust 解流）"
+  if ! bash scripts/verify/e2e-live-capture.sh; then
+    echo "✗ [live] 真实网卡抓包验收失败" >&2
+    return 1
+  fi
+  echo "✓ [live] 真实网卡抓包验收完成（SKIPPED 场景由脚本内部显式标注）"
+}
+
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-BUILD_REASSEMBLY=0; BUILD_E2E=0; ALL=1
+BUILD_REASSEMBLY=0; BUILD_E2E=0; BUILD_LIVE=0; ALL=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpp)  BUILD_CPP=1; ALL=0 ;;
@@ -212,6 +225,7 @@ while [[ $# -gt 0 ]]; do
     --dpi) BUILD_DPI=1; ALL=0 ;;
     --reassembly) BUILD_REASSEMBLY=1; ALL=0 ;;
     --e2e) BUILD_E2E=1; ALL=0 ;;
+    --live) BUILD_LIVE=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -219,7 +233,7 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ $ALL -eq 1 ]]; then
   BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_DPI=1
-  BUILD_REASSEMBLY=1; BUILD_E2E=1
+  BUILD_REASSEMBLY=1; BUILD_E2E=1; BUILD_LIVE=1
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
 # 明确报错比静默跳过好 —— 静默跳过会让人以为验过了。
@@ -247,6 +261,7 @@ failed=0
 [[ $BUILD_DPI -eq 1 ]]    && { test_dpi    || failed=$((failed+1)); }
 [[ $BUILD_REASSEMBLY -eq 1 ]] && { test_reassembly || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
+[[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
 
 if [[ $failed -eq 0 ]]; then
   echo "测试汇总：全部通过 ✓"

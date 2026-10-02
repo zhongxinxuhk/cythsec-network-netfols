@@ -91,12 +91,28 @@ detect_default() { # detect_default <iface|gateway>
   fi
 }
 
-# 从邻居表找第一个可 ping 的 IPv4（跳过 incomplete/无效项）。
+# 从邻居表找第一个可 ping 的 IPv4，且它必须落在「真以太网口」上：本机实测
+# bridge100/101（虚拟化桥口）的 ARP 条目排在最前，不按所在接口过滤就会把
+# 采集目标选到虚拟桥上。排除回环/隧道/桥接/虚拟化接口名后再取首个。
 detect_neighbor() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    arp -a -n 2>/dev/null | awk '/incomplete/{next} {gsub(/[()]/,"",$2); if ($2 ~ /^(([0-9]{1,3}\.){3}[0-9]{1,3})$/ && $2 !~ /^127\./) {print $2; exit}}'
+    arp -a -n 2>/dev/null | awk '
+      /incomplete/ {next}
+      {
+        gsub(/[()]/, "", $2)
+        onif = ""
+        for (i = 1; i <= NF; i++) { if ($i == "on") { onif = $(i+1); break } }
+        if ($2 ~ /^(([0-9]{1,3}\.){3}[0-9]{1,3})$/ && $2 !~ /^127\./ &&
+            onif != "" && onif !~ /^(lo|utun|anpi|awdl|llw|gif|stf|bridge|vmnet|pfh|feth)/) {
+          print $2; exit
+        }
+      }'
   else
-    ip -4 neigh 2>/dev/null | awk '$1 ~ /^(([0-9]{1,3}\.){3}[0-9]{1,3})$/ && $1 !~ /^127\./ {print $1; exit}'
+    ip -4 neigh 2>/dev/null | awk '
+      $1 ~ /^(([0-9]{1,3}\.){3}[0-9]{1,3})$/ && $1 !~ /^127\./ &&
+      ($3 == "REACHABLE" || $3 == "PERMANENT" || $4 == "REACHABLE" || $4 == "PERMANENT") {
+        print $1; exit
+      }'
   fi
 }
 
@@ -123,8 +139,9 @@ if [[ -z "${IFACE}" ]]; then
   fi
 fi
 if [[ -z "${IFACE}" ]]; then
-  # 最后兜底：首个非回环非隧道的 IPv4 接口；无目标则不发 ping，依环境流量验收。
-  IFACE="$(ifconfig -a 2>/dev/null | awk '/^[a-z0-9]+:/{iface=$1} /inet [0-9]/{gsub(":","",iface); if (iface !~ /^lo/ && iface !~ /^utun|^ipsec|^ppp|^tun|^tap|^gif|^stf|^anpi|^awdl|^llw|^bridge/) {print iface; exit}}')"
+  # 最后兜底：首个非回环非隧道非桥接非虚拟化、且持有 IPv4 的接口；无目标则不发 ping，
+  # 依环境流量验收（链路类型仍由 A 段的 link_value 硬校验把关，非以太网会明确报错）。
+  IFACE="$(ifconfig -a 2>/dev/null | awk '/^[a-z0-9]+:/{iface=$1} /inet [0-9]/{gsub(":","",iface); if (iface !~ /^(lo|utun|anpi|awdl|llw|gif|stf|bridge|vmnet|pfh|feth)/) {print iface; exit}}')"
 fi
 [[ -n "${IFACE}" ]] || { echo "✗ [live] 无法确定抓包接口" >&2; exit 4; }
 
@@ -201,8 +218,10 @@ CAP_PID=""
 cleanup() { [[ -n "${CAP_PID}" ]] && kill "${CAP_PID}" 2>/dev/null || true; }
 trap cleanup EXIT
 
-# 先起采集再起流量：反过来的话前几个包必然漏，断言就得依赖竞态顺序。
-"${CAP_BIN}" -i "${IFACE}" -n 200 --timeout 20 -w "${PCAP}" -q >"${CAP_OUT}" 2>&1 &
+# 先起采集再起流量：反过来的话前几个包必然漏。
+# 不设 -n 上限：本机实测繁忙口上环境流量 684ms 就能凑满 200 包，采集会在注入
+# 开始前结束 —— 只靠 --timeout 窗口覆盖流量注入全程。包数天然有抖动，故断言下界。
+"${CAP_BIN}" -i "${IFACE}" --timeout 15 -w "${PCAP}" -q >"${CAP_OUT}" 2>&1 &
 CAP_PID=$!
 sleep 1
 if [[ -n "${TARGET}" ]]; then
@@ -230,20 +249,37 @@ dropped="$(field "${CAP_OUT}" "capture stats" dropped)"
 errors="$(field "${CAP_OUT}" "capture stats" errors)"
 mode="$(field "${CAP_OUT}" "capture mode" value)"
 written="$(field "${CAP_OUT}" "capture pcap" written)"
+link_value="$(field "${CAP_OUT}" "capture iface" link_value)"
+# 丢包如实报告但不硬断言 0：繁忙真机口上单消费者边写盘边收，内核缓冲必然有
+# 溢出（本机实测 15s/62k 包环境流量下 bs_drop ~2.5%）；零丢包属于吞吐关口的
+# 命题（Linux AF_PACKET bench），在这里只会把环境差异误报成代码缺陷。
+
+# 链路类型硬校验：PcapWriter 的 -w 路径固定按 DLT_EN10MB 落盘（见 capture_main.cpp
+# 注释），非以太网接口写出的 pcap 是错标的：tshark/解析器会按错误链路解包。
+# 与其让 B/C 段拿错标文件做无意义对比，不如在这里明确拒绝并提示换口。
+if [[ "${link_value}" != "1" ]]; then
+  echo "✗ [live] 接口 ${IFACE} 链路类型为 ${link_value:-<空>}（非 EN10MB=1）："\
+"当前 -w 只支持以太网落盘，请用 CYTHSEC_LIVE_IFACE 指定物理/以太网接口" >&2
+  exit 4
+fi
 
 check "A 采集结果状态" "${status}" "ok"
 check "A 退出码" "${CAP_RC}" "0"
 check "A 采集模式非默认占位" "$( [[ -n "${mode}" ]] && echo nonempty || echo empty )" "nonempty"
 check_ge "A 收到报文数" "${packets}" "${MIN_PACKETS}"
-check "A 内核/环丢包应为 0" "${dropped}" "0"
+if [[ "${dropped:-0}" != "0" ]]; then
+  echo "  ⚠ A 内核缓冲丢包 ${dropped}（繁忙口正常现象，吞吐命题由 Linux bench 把关）"
+fi
 check "A 解析错误应为 0" "${errors}" "0"
 
 # ---------- B. tshark 第三方独立复核 ----------
 echo "==> [live] B. tshark 独立复核 -w 产物"
 if command -v tshark >/dev/null 2>&1; then
   tshark -r "${PCAP}" -q -z io,phs >"${OUT_DIR}/tshark-phs.txt" 2>&1 || true
-  ts_icmp="$(tshark -r "${PCAP}" -Y "icmp || icmp6" -T fields -e frame.number 2>/dev/null | wc -l | tr -d ' ')"
-  ts_frames="$(tshark -r "${PCAP}" -T fields -e frame.number 2>/dev/null | tail -1)"
+  # 注意：Wireshark 4.x 的 ICMPv6 显示筛选器名是 **icmpv6**；写 icmp6 会让
+  # 整个表达式报错退出，表现为「一条都没匹配」——本机实测踩到。
+  ts_icmp="$(tshark -r "${PCAP}" -Y "icmp || icmpv6" -T fields -e frame.number 2>/dev/null | wc -l | tr -d ' ' || true)"
+  ts_frames="$(tshark -r "${PCAP}" -T fields -e frame.number 2>/dev/null | tail -1 || true)"
   if [[ -n "${TARGET}" ]]; then
     check_ge "B 注入的 ICMP 在产物中可见" "${ts_icmp}" "2"
   else
@@ -264,11 +300,9 @@ fi
 
 # ---------- C. 自家解析器回读：三方对同一批字节的计数一致 ----------
 echo "==> [live] C. cythsec-parse 回读计数核对"
+parse_cnt=""; unsupported_l2=""
 if [[ -s "${PCAP}" ]]; then
   "${PARSE_BIN}" -r "${PCAP}" >"${OUT_DIR}/parse.txt" 2>&1 || true
-  parsed="$(awk '/解析成功|parsed|成功报文/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/){print $i; exit}}' \
-    "${OUT_DIR}/parse.txt" | head -1)"
-  # 解析行格式随版本变，取不到时退回字节数对比：文件大小非零且首魔数正确也算回读成立。
   magic="$(head -c4 "${PCAP}" | od -An -tx1 | tr -d ' \n')"
   total=$((total + 1))
   if [[ "${magic}" == a1b23c4d || "${magic}" == 4d3cb2a1 || "${magic}" == a1b2c3d4 || "${magic}" == d4c3b2a1 ]]; then
@@ -277,12 +311,16 @@ if [[ -s "${PCAP}" ]]; then
     echo "  ✗ C pcap 魔数异常: ${magic}" >&2
     failed=$((failed + 1))
   fi
-  if [[ -n "${parsed}" && "${parsed}" == "${written}" ]]; then
-    total=$((total + 1))
-    echo "  ✓ C 解析计数与采集 written 一致: ${parsed}"
-  elif [[ -n "${parsed}" ]]; then
-    total=$((total + 1))
-    echo "  ✗ C 解析计数(${parsed}) != 采集 written(${written})" >&2
+  # 计数口径：可解 IP 帧 = IPv4+IPv6；不可解 = 「不支持L2」（ARP/LLDP 等非 IP 链路帧）。
+  # 两者相加必须等于采集写盘数：写盘/读盘/计数三方对同一批字节的共识。
+  counts="$(awk '/^L3:/ {for(i=1;i<=NF;i++){if($i~/^IPv4=/){split($i,a,"=");v4=a[2]}if($i~/^IPv6=/){split($i,a,"=");v6=a[2]}}} /不支持L2/ {u=$NF} END {print v4+v6, u+0}' "${OUT_DIR}/parse.txt" 2>/dev/null || true)"
+  parse_cnt="${counts%% *}"
+  unsupported_l2="${counts##* }"
+  total=$((total + 1))
+  if [[ -n "${parse_cnt}" && "$((parse_cnt + unsupported_l2))" == "${written}" ]]; then
+    echo "  ✓ C 可解 IP 帧(${parse_cnt}) + 不支持 L2 帧(${unsupported_l2}) == written(${written})"
+  else
+    echo "  ✗ C 计数不闭合：可解=${parse_cnt:-<空>} 非IP=${unsupported_l2:-<空>} written=${written:-<空>}" >&2
     failed=$((failed + 1))
   fi
 else
@@ -296,16 +334,31 @@ if [[ "${RUST_READY}" == "1" && -s "${PCAP}" ]]; then
   RING="${OUT_DIR}/ring-live.bin"
   rm -f "${RING}"
   FEED_OUT="${OUT_DIR}/feed-live.txt"
-  "${FEED_BIN}" -q -r "${PCAP}" --ring "${RING}" --recreate >"${FEED_OUT}" 2>&1 || true
   CONS_OUT="${OUT_DIR}/consume-live.txt"
+  # 环容量 1024：全量灌入时后段必然被丢（环满属正确行为，不是验收项）。
+  # 取前缀窗口 LIMIT 条，把「消费数、非 IP 帧判定」放在同一窗口内对账。
+  LIMIT=500
+  if [[ "${packets:-0}" -lt "${LIMIT}" ]]; then
+    LIMIT="${packets}"
+  fi
+  "${FEED_BIN}" -q -r "${PCAP}" --ring "${RING}" --recreate --limit "${LIMIT}" >"${FEED_OUT}" 2>&1 || true
   if "${CONSUME_BIN}" --ring "${RING}" >"${CONS_OUT}" 2>&1; then
     fed="$(field "${FEED_OUT}" "ring-feed summary" published)"
     got="$(field "${CONS_OUT}" "ring-consume summary" packets)"
     flows="$(field "${CONS_OUT}" "ring-consume summary" flows)"
     dfail="$(field "${CONS_OUT}" "ring-consume summary" decode_fail)"
-    check "D 环内消费数 == 采集交付数" "${got}" "${packets}"
-    check "D 解码失败应为 0" "${dfail}" "0"
+    check "D 灌入数 == 前缀窗口" "${fed}" "${LIMIT}"
+    check "D 环内消费数 == 灌入数" "${got}" "${fed}"
     check_ge "D 解出的 Flow 条数" "${flows}" "1"
+    # 非 IP 帧（ARP/VLAN/LLDP 等）解不出五元组是**正确行为**，不断言 dfail=0；
+    # 要验的是 Rust 与 C++ 两个独立实现对「哪些帧不可解」的判定一致：
+    # tshark 按 eth.type 取同一窗口的非 IP 帧数作第三方裁判。
+    if command -v tshark >/dev/null 2>&1 && [[ "${LIMIT}" != "0" ]]; then
+      prefix_nonip="$(tshark -r "${PCAP}" -c "${LIMIT}" -T fields -e eth.type 2>/dev/null | awk 'NF {t=tolower($0); if (t!="0x0800" && t!="0x86dd") c++} END {print c+0}' || true)"
+      check "D Rust decode_fail == tshark 前缀非IP帧数（三实现判定一致）" "${dfail}" "${prefix_nonip}"
+    else
+      echo "  ⚠ 无 tshark：decode_fail 一致性项未核验（不计为通过）"
+    fi
   else
     echo "  ✗ D Rust 消费失败：" >&2; tail -5 "${CONS_OUT}" >&2
     total=$((total + 1)); failed=$((failed + 1))
