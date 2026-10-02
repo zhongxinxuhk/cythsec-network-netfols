@@ -62,8 +62,8 @@ struct PcapBuilder {
     put32(magic);
     put16(vmaj);
     put16(vmin);
-    put32(0); // thiszone
-    put32(0); // sigfigs
+    put32(0); // this zone
+    put32(0); // sings
     put32(snaplen);
     put32(linktype);
   }

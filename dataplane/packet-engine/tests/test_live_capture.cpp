@@ -2,8 +2,9 @@
 //
 // === 为什么本文件的断言刻意避开「真抓包」 ===
 //
-// CI 与开发机通常既无 root 也无 CAP_NET_RAW（macOS 的 /dev/bpf* 是 root:wheel 600；
-// Linux 建 AF_PACKET socket 需 CAP_NET_RAW）。若一个测试只在有特权时才有断言，它
+// CI 与开发机通常无 root，且 CAP_NET_RAW/access_bpf 这类能力并不保证存在（Linux
+// 建 AF_PACKET socket 需 CAP_NET_RAW；macOS 的 /dev/bpf* 历史上是 root:wheel 600，
+// 14+ 改为 root:access_bpf 660 —— 成员可免 root 抓包，但 CI 镜像仍常无该组）。若一个测试只在有特权时才有断言，它
 // 在绝大多数环境里就等价于不存在 —— 这正是本项目反复遇到的那类「假绿灯」：
 // 输出是绿的，但绿的含义是「没检查」而非「检查通过」。
 //
@@ -23,10 +24,22 @@
 //
 // 真抓包路径由 scripts/verify/e2e-live-capture.sh 覆盖，且无特权时显式标记为
 // SKIPPED 而非 ✓ —— 见该脚本头注释。
+//
+// 例外：第 6 节的 BPF 批解析断言不需要任何特权与流量 —— 解析器对字节序列负责，
+// 自造缓冲即可驱动。把解析层做成纯函数正是为了这一点：线上头 18 字节/用户态
+// sizeof=20 的误判曾让后端在真机上「0 包入、数千 errors」却在无特权断言下全绿，
+// 若解析层可离线测试，该缺陷在写下的当天就会被抓。
 #include "packet_engine/backend.h"
 #include "packet_engine/backends/iface_list.h"
 #include "packet_engine/backends/link_type.h"
 #include "test_util.h"
+
+// BPF 批解析断言只在编译入了 bpf_capture.cpp 的平台上可用（见 CMakeLists 条件），
+// 故用同一组编译宏把测试段与实现段一起收放，避免 Linux 上链接失败。
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#include "packet_engine/backends/bpf_capture.h"
+#define CYTH_BPF_PARSE_TESTABLE 1
+#endif
 
 #include <cctype>
 #include <cstring>
@@ -611,6 +624,171 @@ void test_link_type_names() {
         "未知链路类型的可读名回显原始编号（便于直接查证）");
 }
 
+// ---------------------------------------------------------------------------
+// 6. BPF 批解析（仅 BSD/macOS）：线上头布局必须用内核写的 bh_hdrlen，而非 SDK
+//    的 sizeof(struct bpf_hdr)。本批真机实测：内核写 18，SDK sizeof=20，旧实现
+//    用 20 做下界把每一个正常包误判为畸形（症状：read 返回数据但 0 包交付）。
+// ---------------------------------------------------------------------------
+#ifdef CYTH_BPF_PARSE_TESTABLE
+
+using packet_engine::BpfCaptureBackend;
+
+void put_u16le(std::vector<uint8_t>* v, uint16_t x) {
+  v->push_back(static_cast<uint8_t>(x & 0xffu));
+  v->push_back(static_cast<uint8_t>(x >> 8));
+}
+
+void put_u32le(std::vector<uint8_t>* v, uint32_t x) {
+  for (int i = 0; i < 4; ++i) {
+    v->push_back(static_cast<uint8_t>((x >> (8 * i)) & 0xffu));
+  }
+}
+
+size_t bpf_align4(size_t n) {
+  return (n + 3) & ~static_cast<size_t>(3);
+}
+
+// 构造一条线上一致的记录。caplen_declared 与 payload_written 故意分开：
+// 后者小于前者即可造出「声明长度超出缓冲尾部」的畸形样本，而正常样本传相等值。
+size_t append_bpf_record(std::vector<uint8_t>* v, uint32_t sec, uint32_t usec,
+                         uint32_t caplen_declared, uint32_t wirelen, uint16_t hdrlen,
+                         uint32_t payload_written, uint8_t seed) {
+  const size_t start = v->size();
+  put_u32le(v, sec);
+  put_u32le(v, usec);
+  put_u32le(v, caplen_declared);
+  put_u32le(v, wirelen);
+  put_u16le(v, hdrlen);
+  for (size_t k = 18; k < hdrlen; ++k) {
+    v->push_back(0xA5); // hdrlen>18 时头内的填充区
+  }
+  for (uint32_t k = 0; k < payload_written; ++k) {
+    v->push_back(static_cast<uint8_t>(seed + k));
+  }
+  while (v->size() < start + bpf_align4(static_cast<size_t>(hdrlen) + payload_written)) {
+    v->push_back(0x00); // 记录间的 4 字节对齐填充
+  }
+  return start;
+}
+
+void test_bpf_batch_parse() {
+  using BR = BpfCaptureBackend::BatchResult;
+
+  // --- 6.1 两包正常批：第二包含需对齐的奇数长度载荷，验证步进与偏移 ---
+  std::vector<uint8_t> buf;
+  append_bpf_record(&buf, 1790936008u, 4151u, 20, 20, 18, 20, 0x10);
+  const size_t off2 = append_bpf_record(&buf, 1u, 500u, 5, 999, 18, 5, 0x60);
+  std::vector<packet_engine::PacketBuffer> views;
+  BR r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 64, 14, 0, &views);
+  check(r.packets == 2,
+        "线上 18 字节头的两条记录全部解出（旧实现按 sizeof=20 判下界会全数误判畸形）");
+  check(!r.malformed, "正常批不被标为畸形");
+  check(views.size() == 2, "views 数量与返回包数一致");
+  if (views.size() == 2) {
+    check(views[0].data == buf.data() + 18,
+          "首包数据偏移 = 内核写的 bh_hdrlen(18)，非 SDK 尾部对齐后的 20");
+    check(views[1].data == buf.data() + off2 + 18,
+          "第二包落在 WORDALIGN 步进后的正确位置（错位即字节全乱）");
+    check(views[0].data[0] == 0x10 && views[1].data[0] == 0x60 && views[1].data[4] == 0x64,
+          "两包载荷字节逐一对得上（未把对齐填充当数据）");
+    check(views[1].caplen == 5 && views[1].wirelen == 999, "wirelen 保留线长，caplen 为捕获长度");
+    check(views[0].timestamp_ns == 1790936008LL * 1000000000LL + 4151LL * 1000LL,
+          "秒+微秒正确合成纳秒时间戳");
+    check(views[1].timestamp_ns == 1000500000LL, "第二包时间戳独立解码（1s + 500µs）");
+    check(views[0].ifindex == 14 && views[1].ifindex == 14, "ifindex 透传到每个视图");
+  }
+  check(r.bytes == 20 + 999, "bytes 按 wirelen 累计（而非截断后的 caplen）");
+
+  // --- 6.2 hdrlen=20（其它 BSD 变体写尾部对齐值）同样必须正确解析 ---
+  buf.clear();
+  views.clear();
+  append_bpf_record(&buf, 7u, 0u, 8, 8, 20, 8, 0x20);
+  r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 64, 1, 0, &views);
+  check(r.packets == 1 && !r.malformed,
+        "hdrlen=20 的记录同样被接受（解析尊重内核写的值，不假定固定宽度）");
+  if (!views.empty()) {
+    check(views[0].data == buf.data() + 20, "hdrlen=20 时数据偏移随之后移");
+  }
+
+  // --- 6.3 尾部不足一个最小头的残留字节：只能忽略，不能计为畸形 ---
+  buf.clear();
+  views.clear();
+  append_bpf_record(&buf, 2u, 0u, 4, 4, 18, 4, 0x30);
+  for (int k = 0; k < 17; ++k) {
+    buf.push_back(0x77); // 17 < 18：无法再构成任何头
+  }
+  r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 64, 1, 0, &views);
+  check(r.packets == 1 && !r.malformed, "尾部 17 字节残留被静默忽略且不误报畸形");
+
+  // --- 6.4 hdrlen=17 必须被抓出（缓冲真错位时的唯一线索）---
+  buf.clear();
+  views.clear();
+  append_bpf_record(&buf, 3u, 0u, 0, 0, 17, 0, 0x00);
+  r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 64, 1, 0, &views);
+  check(r.malformed && r.packets == 0, "hdrlen=17 被判畸形且零交付（错位缓冲不得产出垃圾报文）");
+
+  // --- 6.5 声明长度超出缓冲尾部：已解出的前包保留，畸形尾部报错 ---
+  buf.clear();
+  views.clear();
+  append_bpf_record(&buf, 4u, 0u, 6, 6, 18, 6, 0x40);
+  const size_t trunc_at = buf.size();
+  put_u32le(&buf, 9u);
+  put_u32le(&buf, 0u);
+  put_u32le(&buf, 100u); // 声明 100 字节
+  put_u32le(&buf, 100u);
+  put_u16le(&buf, 18);
+  for (int k = 0; k < 30; ++k) {
+    buf.push_back(0x55); // 实际只有 30 字节
+  }
+  r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 64, 1, 0, &views);
+  check(r.packets == 1 && r.malformed, "caplen 超界：前一包保留、畸形留痕（截尾不弃全批）");
+  check(trunc_at == 24, "畸形样本构造点本身落在对齐边界上（断言前提成立：18+6=24）");
+
+  // --- 6.6 snaplen 截断：caplen 被裁、wirelen 保留、bytes 仍按线长计 ---
+  buf.clear();
+  views.clear();
+  append_bpf_record(&buf, 5u, 0u, 40, 40, 18, 40, 0x50);
+  r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 64, 1, 10, &views);
+  check(r.packets == 1 && !views.empty() && views[0].caplen == 10 && views[0].wirelen == 40,
+        "snaplen 只裁交付视图的 caplen，wirelen 与统计不受影响");
+  check(r.bytes == 40, "截断批的 bytes 仍按完整线长累计");
+
+  // --- 6.7 max 小于批内包数：超出部分计 overflow（内核已取出，无法退回）---
+  buf.clear();
+  views.clear();
+  append_bpf_record(&buf, 6u, 0u, 4, 4, 18, 4, 0x60);
+  append_bpf_record(&buf, 6u, 0u, 4, 4, 18, 4, 0x70);
+  r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 1, 1, 0, &views);
+  check(r.packets == 1 && r.overflow == 1 && !r.malformed,
+        "max=1 时第二包计入 overflow 而非静默消失");
+
+  // --- 6.8 零长载荷记录：步进退化为头对齐，后继记录仍必须落在正确偏移 ---
+  buf.clear();
+  views.clear();
+  append_bpf_record(&buf, 8u, 0u, 0, 0, 18, 0, 0x00);
+  append_bpf_record(&buf, 9u, 0u, 4, 4, 18, 4, 0x80);
+  r = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 64, 1, 0, &views);
+  check(r.packets == 2 && !r.malformed, "caplen=0 的记录不破坏步进（WORDALIGN(18)=20）");
+  if (r.packets == 2 && views[1].data[0] == 0x80) {
+    check(true, "零长记录后的数据字节不错位");
+  } else {
+    check(false, "零长记录后的数据字节不错位");
+  }
+
+  // --- 6.9 平凡输入不得崩 ---
+  BR e0 = BpfCaptureBackend::parse_batch(nullptr, 0, 64, 1, 0, &views);
+  check(e0.packets == 0 && !e0.malformed, "空指针/零长输入：平凡返回而非崩溃");
+  std::vector<uint8_t> tiny(17, 0x11);
+  views.clear();
+  BR e1 = BpfCaptureBackend::parse_batch(tiny.data(), tiny.size(), 64, 1, 0, &views);
+  check(e1.packets == 0 && !e1.malformed, "不足一个头的缓冲：无事发生");
+  views.clear();
+  BR e2 = BpfCaptureBackend::parse_batch(buf.data(), buf.size(), 0, 1, 0, &views);
+  check(e2.packets == 0, "max=0 不交付任何包");
+}
+
+#endif // CYTH_BPF_PARSE_TESTABLE
+
 } // namespace
 
 int main() {
@@ -633,6 +811,11 @@ int main() {
 
   std::printf("\n--- 5. 链路类型名 ---\n");
   test_link_type_names();
+
+#ifdef CYTH_BPF_PARSE_TESTABLE
+  std::printf("\n--- 6. BPF 批解析（线上头布局，无需特权）---\n");
+  test_bpf_batch_parse();
+#endif
 
   return packet_engine::test::summary("test_live_capture");
 }

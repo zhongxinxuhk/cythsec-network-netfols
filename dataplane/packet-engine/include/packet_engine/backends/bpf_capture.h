@@ -92,6 +92,23 @@ public:
   // 打开前配置。返回**本后端不支持的项**的可读描述（空串表示全部接受）。
   std::string configure(const CaptureOptions& options) override;
 
+  // === read() 缓冲的批量解析（不依赖 fd，可用自造字节序列直接驱动断言）===
+  //
+  // 为何做成独立的纯函数：解析类缺陷只有真实报文才能暴露，而真机路径需要特权
+  // 与流量，CI 不可复现 —— 本项目 18/20 字节头误判（见 parse_batch 实现注释）
+  // 正是在 73 项无特权断言下长期存活的活例，故把解析层做成可离线测试。
+  //
+  // 语义与 rx_burst 的契约一致：views 中 data 指针指向 data 入参内部，
+  // 仅在调用方保证 data 存活期间有效。
+  struct BatchResult {
+    uint32_t packets = 0;   // 实际交付的视图数
+    uint32_t bytes = 0;     // 交付视图的 wirelen 合计（按完整线长，非截断后）
+    uint32_t overflow = 0;  // 内核已取出但超出 max 无法交付的包数（计入丢弃）
+    bool malformed = false; // 遇到畸形 bpf_hdr，本批剩余部分已停止解析
+  };
+  static BatchResult parse_batch(const uint8_t* data, size_t len, uint32_t max, uint32_t ifindex,
+                                 uint32_t snap_len, std::vector<PacketBuffer>* views);
+
   const std::string& device() const { return device_; }
   // 链路层类型（DLT_* 值，取自 BIOCGDLT）。DLT_EN10MB(1) 表示以太网。
   uint32_t link_type() const { return link_type_; }

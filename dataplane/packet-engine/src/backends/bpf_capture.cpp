@@ -14,9 +14,15 @@
 // 参数类型取错不会编译报错（ioctl 是可变参数），只会在运行时读到垃圾或失败，
 // 因此这里逐个核对过而非按记忆书写。
 //
-// bpf_hdr 在本平台实测：sizeof=20（timeval 8 + caplen 4 + datalen 4 + hdrlen 2 + 2 填充），
-// BPF_ALIGNMENT=4，故下一包偏移必须用 BPF_WORDALIGN(bh_hdrlen + bh_caplen)。
-// 少了这一步对齐，从第二个包起读到的就是错位的垃圾 —— 且不会报任何错误。
+// bpf_hdr 在本平台实测（macOS 15 / arm64，内核侧对照 XNU bsd/net/bpf.c）：
+// 用户态 SDK 的 sizeof(struct bpf_hdr)=20（timeval(2×u32) 8 + caplen 4 + datalen 4
+// + hdrlen 2 + 2 尾部填充），但**内核写到线上的 bh_hdrlen 是 18**（紧凑长度，
+// 不含尾部填充）。因此一切边界判断必须用 18 字节的「最小头长」，用 20 会把
+// **每一个正常包误判成畸形** —— 这正是本后端曾在真机实测中「0 包入、数千
+// errors」且被误归因为「接口无流量」的根因。解析永远以内核给的 bh_hdrlen 为
+// 准（不同 BSD 变体可能写 18/20/24），BPF_ALIGNMENT=4，下一包偏移必须用
+// BPF_WORDALIGN(bh_hdrlen + bh_caplen)；少了这一步对齐，从第二个包起读到的
+// 就是错位的垃圾 —— 且不会报任何错误。
 #include "packet_engine/backends/bpf_capture.h"
 
 #include "packet_engine/backends/link_type.h"
@@ -28,6 +34,7 @@
 #include <net/bpf.h>
 #include <net/if.h>
 #include <poll.h>
+#include <stddef.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -47,6 +54,12 @@ constexpr int kMaxBpfDevices = 256;
 
 // 默认读缓冲 256 KiB：足以容纳千兆链路上毫秒级的突发，又不至于让每次 read 拷贝过多。
 constexpr uint32_t kDefaultBufSize = 256u * 1024u;
+
+// 线上最小头长：与 XNU bpf.c 自用公式一致（offsetof(bh_hdrlen)+sizeof(bh_hdrlen)）。
+// 绝不可用 sizeof(struct bpf_hdr)(=20) 替代：内核写 hdrlen=18，用 20 做下界会把
+// 所有正常包误判为畸形（真机实测踩过，症状是 read 返回数据却全部丢弃+计错）。
+constexpr size_t kMinBpfHdrLen =
+    offsetof(struct bpf_hdr, bh_hdrlen) + sizeof(((struct bpf_hdr*)nullptr)->bh_hdrlen);
 
 } // namespace
 
@@ -188,10 +201,12 @@ int BpfCaptureBackend::open(const char* source) {
     if (errno == EPERM || errno == EACCES) {
       // 权限不足不会因为换设备而改变，立即返回以免白试 255 次。
       char buf[512];
-      std::snprintf(buf, sizeof(buf),
-                    "打开 %s 被拒（%s）：捕获原始报文需要特权。请以 root 运行，"
-                    "或对可执行文件授权（如 setcap/sudo）。本设备权限通常为 root:wheel 600",
-                    path, std::strerror(errno));
+      std::snprintf(
+          buf, sizeof(buf),
+          "打开 %s 被拒（%s）：捕获原始报文需要特权。macOS 14+ 的最小权限做法是把用户加入 "
+          "access_bpf 组（/dev/bpf* 实为 root:access_bpf 660，组成员免 root 即可抓包）："
+          "sudo dseditgroup -o edit -a <用户名> -t user access_bpf；或以 root 运行",
+          path, std::strerror(errno));
       set_error(BpfStatus::kPermission, buf);
       return -1;
     }
@@ -327,8 +342,10 @@ int BpfCaptureBackend::open(const char* source) {
     }
   }
 
-  // 读缓冲按内核实际采纳的大小分配。read 长度小于该值在 macOS 上会失败，
-  // 故必须一致。
+  // 读缓冲必须按内核实际采纳的大小分配，且 read 的字节数必须与它**恰好相等**
+  // 而非仅不小于：XNU bpfread() 对 uio_resid != bd_bufsize 直接返回 EINVAL
+  // （与 FreeBSD/Linux 的「够用即可」语义不同）。不等则 read 永远瞬时失败，
+  // 一个包也取不回来。
   buf_.assign(buf_size_, 0);
   views_.reserve(1024);
 
@@ -350,6 +367,71 @@ void BpfCaptureBackend::close() {
   buf_size_ = 0;
   link_type_ = 0;
   ifindex_ = 0;
+}
+
+BpfCaptureBackend::BatchResult BpfCaptureBackend::parse_batch(const uint8_t* data, size_t len,
+                                                              uint32_t max, uint32_t ifindex,
+                                                              uint32_t snap_len,
+                                                              std::vector<PacketBuffer>* views) {
+  BatchResult out;
+  if (data == nullptr || len == 0 || max == 0 || views == nullptr) {
+    return out;
+  }
+
+  const uint8_t* p = data;
+  const uint8_t* const end = data + len;
+
+  while (p + kMinBpfHdrLen <= end) {
+    const auto* hdr = reinterpret_cast<const struct bpf_hdr*>(p);
+
+    // hdrlen 是内核给的头部长度（含字段间对齐填充，但不含结构体尾部填充）。
+    // 下界必须用 kMinBpfHdrLen(=18)：内核写的就是紧凑的 18，若用
+    // sizeof(struct bpf_hdr)(=20) 会把每个正常包误判成畸形。若 hdrlen 连 18
+    // 都不到，说明缓冲内容已错位 —— 继续解析只会产出垃圾，必须停下并报出，
+    // 而不是把垃圾当报文交给上层。
+    if (hdr->bh_hdrlen < kMinBpfHdrLen) {
+      out.malformed = true;
+      break;
+    }
+    const uint8_t* pkt = p + hdr->bh_hdrlen;
+    if (pkt > end || static_cast<size_t>(end - pkt) < hdr->bh_caplen) {
+      out.malformed = true;
+      break;
+    }
+
+    if (out.packets >= max) {
+      // 本轮 read 已把内核缓冲里的包全部取出，未被交付的部分无法在下次读回，
+      // 只能计入丢弃。这是 rx_burst 的调用契约：max 应足够大。
+      ++out.overflow;
+    } else {
+      PacketBuffer v;
+      v.data = const_cast<uint8_t*>(pkt);
+      // snaplen 截断：BPF 无 per-packet snaplen，故在交付视图时截断 caplen，而
+      // wirelen 保留完整值。语义与其它后端一致：caplen < wirelen 即表示截断。
+      // 注意截断只影响交付长度，不省内核到用户态的拷贝。
+      uint32_t cap = hdr->bh_caplen;
+      if (snap_len != 0 && cap > snap_len) {
+        cap = snap_len;
+      }
+      v.caplen = cap;
+      v.wirelen = hdr->bh_datalen;
+      v.ifindex = ifindex;
+      // bh_tstamp 在本平台是 2×u32（bpf_timeval），转纳秒。
+      const auto& ts = hdr->bh_tstamp;
+      v.timestamp_ns = static_cast<int64_t>(ts.tv_sec) * 1000000000LL +
+                       static_cast<int64_t>(ts.tv_usec) * 1000LL;
+      views->push_back(v);
+      ++out.packets;
+      out.bytes += hdr->bh_datalen;
+    }
+
+    // 下一包偏移必须做 4 字节对齐：bpf_hdr 之后是数据，数据之后到下一个
+    // bpf_hdr 之间存在对齐填充（实测 BPF_ALIGNMENT=4）。漏掉这一步会从
+    // 第二个包起持续读到错位数据，且不会产生任何错误。
+    p += BPF_WORDALIGN(static_cast<size_t>(hdr->bh_hdrlen) + hdr->bh_caplen);
+  }
+
+  return out;
 }
 
 int BpfCaptureBackend::rx_burst(PacketBuffer** pkts, uint32_t max) {
@@ -382,77 +464,25 @@ int BpfCaptureBackend::rx_burst(PacketBuffer** pkts, uint32_t max) {
     return 0; // 超时且无数据
   }
 
-  const uint8_t* p = buf_.data();
-  const uint8_t* const end = buf_.data() + n;
-  uint32_t count = 0;
-  uint32_t overflow = 0; // 超出 max 而未被交付的包数
-  bool malformed = false;
+  const BatchResult r =
+      parse_batch(buf_.data(), static_cast<size_t>(n), max, ifindex_, snap_len_, &views_);
 
-  while (p + sizeof(struct bpf_hdr) <= end) {
-    const auto* hdr = reinterpret_cast<const struct bpf_hdr*>(p);
-
-    // hdrlen 是内核给的头部长度（含对齐填充），正常情况下 == sizeof(bpf_hdr)。
-    // 若小于结构体本身，说明缓冲区内容已错位 —— 继续解析只会产出垃圾，
-    // 必须停下并报出，而不是把垃圾当报文交给上层。
-    if (hdr->bh_hdrlen < sizeof(struct bpf_hdr)) {
-      malformed = true;
-      break;
-    }
-    const uint8_t* data = p + hdr->bh_hdrlen;
-    if (data > end || static_cast<size_t>(end - data) < hdr->bh_caplen) {
-      malformed = true;
-      break;
-    }
-
-    if (count >= max) {
-      // 本轮 read 已把内核缓冲里的包全部取出，未被交付的部分无法在下次读回，
-      // 只能计入丢弃。这是 rx_burst 的调用契约：max 应足够大。
-      ++overflow;
-    } else {
-      PacketBuffer v;
-      v.data = const_cast<uint8_t*>(data);
-      // snaplen 截断：BPF 无 per-packet snaplen，故在交付视图时截断 caplen，而
-      // wirelen 保留完整值。语义与其它后端一致：caplen < wirelen 即表示截断。
-      // 注意截断只影响交付长度，不省内核到用户态的拷贝。
-      uint32_t cap = hdr->bh_caplen;
-      if (snap_len_ != 0 && cap > snap_len_) {
-        cap = snap_len_;
-      }
-      v.caplen = cap;
-      v.wirelen = hdr->bh_datalen;
-      v.ifindex = ifindex_;
-      // bh_tstamp 是本平台 BPF_TIMEVAL（64 位为 timeval），转纳秒。
-      const auto& ts = hdr->bh_tstamp;
-      v.timestamp_ns = static_cast<int64_t>(ts.tv_sec) * 1000000000LL +
-                       static_cast<int64_t>(ts.tv_usec) * 1000LL;
-      views_.push_back(v);
-      ++count;
-
-      stats_.rx_packets += 1;
-      stats_.rx_bytes += hdr->bh_datalen;
-    }
-
-    // 下一包偏移必须做 4 字节对齐：bpf_hdr 之后是数据，数据之后到下一个
-    // bpf_hdr 之间存在对齐填充（实测 BPF_ALIGNMENT=4）。漏掉这一步会从
-    // 第二个包起持续读到错位数据，且不会产生任何错误。
-    const size_t step = BPF_WORDALIGN(static_cast<size_t>(hdr->bh_hdrlen) + hdr->bh_caplen);
-    p += step;
+  stats_.rx_packets += r.packets;
+  stats_.rx_bytes += r.bytes;
+  if (r.overflow > 0) {
+    stats_.rx_dropped += r.overflow;
   }
-
-  if (overflow > 0) {
-    stats_.rx_dropped += overflow;
-  }
-  if (malformed) {
+  if (r.malformed) {
     // 不中断已解出的包：本批中已解析的部分是可信的，丢弃畸形尾部即可。
     // 但错误必须留痕，否则「莫名其妙少收包」将无从排查。
     stats_.rx_errors += 1;
     set_error(BpfStatus::kIoError, "读缓冲中出现畸形 bpf_hdr：已停止解析本批剩余部分");
   }
 
-  for (uint32_t i = 0; i < count; ++i) {
+  for (uint32_t i = 0; i < r.packets; ++i) {
     pkts[i] = &views_[i];
   }
-  return static_cast<int>(count);
+  return static_cast<int>(r.packets);
 }
 
 BackendStats BpfCaptureBackend::stats() {
