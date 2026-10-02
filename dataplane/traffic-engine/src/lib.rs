@@ -9,7 +9,12 @@ pub mod attributes_gen;
 pub mod channel;
 pub mod dpi;
 pub mod flow;
+pub mod reassembly;
 pub mod session;
+
+/// 测试专用的最小 JSON 解析器，供各向量驱动测试共用。
+#[cfg(test)]
+pub mod testjson;
 
 /// 包版本号。
 ///

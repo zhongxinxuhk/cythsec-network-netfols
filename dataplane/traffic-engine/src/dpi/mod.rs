@@ -38,8 +38,11 @@ pub use types::{AppId, Confidence, Detect, Detection, Outcome};
 /// 取 512 是"覆盖绝大多数首包"与"每包拷贝开销"之间的折中。
 pub const DEFAULT_INSPECT_BYTES: usize = 512;
 
-const IPPROTO_TCP: u8 = 6;
-const IPPROTO_UDP: u8 = 17;
+// `pub` 是刻意的：重组层（reassembly）在把流拼好之后要调用 `identify`，
+// 它必须能引用同一个协议号常量。若各写一份 `6`，两边迟早会漂移，
+// 而漂移的表现只是"某些端口的识别顺序变了"，极难定位。
+pub const IPPROTO_TCP: u8 = 6;
+pub const IPPROTO_UDP: u8 = 17;
 
 const PORT_DNS: u16 = 53;
 const PORT_HTTP: u16 = 80;
