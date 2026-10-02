@@ -29,6 +29,13 @@
 7. **状态标记与实现同批提交**；刷新滞后状态时逐项核对验收标准，不凭印象批量打勾
 8. **文档里的数字与结论当场复跑**；沿用的旧结论必须重新验证
 
+## 测试环境
+
+- **Linux 侧测试机**：macOS（VMware Fusion）上的 Rocky Linux 10.2 aarch64 虚拟机（主机名 `hkcfw`），
+  用于真实抓包 / 真实网卡验证（`CYS-PKT-007` / `CYS-PKT-008` / `CYS-TRF-034`）与 aarch64 64 KiB 页路径。
+  凭据不入本仓库；登录信息与网络拓扑见本地知识库：
+  `/Users/xuzhongxin/Documents/智能体长期神经网络/SuperAGIRAS/50-Environment/VMware-Rocky-TestVM.md`
+
 ## 已知偏差（不要在报告里抹平）
 
 - `BACKLOG.md` §3.4 M4 控制平面状态**滞后于代码**（`policyd` / `dnsd` / `telemetryd` / `pkg`
