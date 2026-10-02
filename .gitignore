@@ -40,6 +40,8 @@ web/console/dist/
 web/console/.vite/
 # TS 增量编译缓存：随 tsc -b / composite 项目生成，机器相关，不入仓
 *.tsbuildinfo
+# vitest 转译 TS 配置时生成的临时配置（运行后偶有残留，机器相关，不入仓）
+*.timestamp-*.mjs
 
 # --- Python (ML) ---
 __pycache__/
