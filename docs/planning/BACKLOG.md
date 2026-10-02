@@ -207,8 +207,8 @@
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
 | ☑ | CYS-PKT-006 | pcap 文件后端 | `src/backends/pcap_file.cpp`；libpcap 离线读取，用于回放与离线单测；支持 `-r file.pcap` CLI | 能完整读完 `datasets/pcap/` 样本且计数正确 | CYS-PKT-005 | P0/M |
-| ⬜ | CYS-PKT-007 | pcap 实时后端 | libpcap live capture（兼容模式，非零拷贝，作为兜底与对照基线） | 能抓到本机真实流量 | CYS-PKT-006 | P1/S |
-| ⬜ | CYS-PKT-008 | AF_PACKET 后端 | `src/backends/af_packet.cpp`；`TPACKET_V3` + `PACKET_MMAP` 环形缓冲、block 超时 | 抓包吞吐显著高于 pcap live；零拷贝路径无额外 memcpy | CYS-PKT-005 | P0/L |
+| ◐ | CYS-PKT-007 | pcap 实时后端 | libpcap live capture（兼容模式，非零拷贝，作为兜底与对照基线）。**语义偏离需说明**：本机 macOS 无 libpcap（`/usr/lib/libpcap*` 与 SDK 均无），故以**原生 BPF** 实现等价能力 —— `src/backends/bpf_capture.cpp`（`/dev/bpf0..255` 逐个尝试、`BIOCSBLEN` 后**回读实际值**、`BIOCSETIF`/`BIOCIMMEDIATE`/`BIOCPROMISC`、`bpf_hdr` 20 字节与 `BPF_WORDALIGN` 步进）。Linux 侧 libpcap live 仍未开始 | 已达成：macOS 无特权环境 73 项断言全过（含权限类错误的诊断文案与 `setcap`/`sudo` 提示）。**未达成**：macOS 真实抓包（`/dev/bpf*` 属 `root:wheel 600`、本机无免密 sudo），该路径在 e2e 中显式标 `SKIPPED` 而非显绿 | CYS-PKT-006 | P1/S |
+| ◐ | CYS-PKT-008 | AF_PACKET 后端 | `src/backends/af_packet.cpp`；`TPACKET_V3` + `PACKET_MMAP` 环形缓冲、block 超时。**已落地**：运行时 `setsockopt(PACKET_VERSION)` 探测的 V3→V2→`recvfrom` 降级链、`PACKET_RX_RING` 页对齐与整除约束修正、`poll` 等待可读；`configure` 支持 promisc / ignore_outgoing / allow_fallback / 环参数。**未达成**：验收标准要求的「抓包吞吐显著高于 pcap live」尚无实测数据（缺对照基准），且 `PACKET_STATISTICS` 丢包可观测未接 | 已达成：Ubuntu 24.04(6.8) / Rocky Linux 9(5.14) / openEuler 24.03(6.6) 三发行版容器内**零错误零警告**编译（页大小均 4096），容器内真实抓包通过。**未达成**：吞吐对比实测 | CYS-PKT-005 | P0/L |
 | ⬜ | CYS-PKT-009 | AF_PACKET 多队列与分流 | `PACKET_FANOUT` 按 RSS/流哈希分流；队列数与 CPU 数对齐 | 多核线性扩展（≥ 0.7 线性度） | CYS-PKT-008 | P1/M |
 | ⬜ | CYS-PKT-010 | 收包线程 CPU 亲和 | 线程绑核 + `SO_INCOMING_CPU`；避免跨 NUMA 访问 | `perf` 显示无跨核迁移热点 | CYS-PKT-009 | P1/M |
 | ⬜ | CYS-PKT-011 | XDP 程序骨架 | `xdp/xdp_main.c`；`XDP_PASS`/`XDP_DROP` 分流，编译为 `.o` 供 `ip link` 挂载 | 可挂载到 veth 并观测计数 | CYS-PKT-015 | P1/M |
@@ -235,7 +235,7 @@
 | ⬜ | CYS-PKT-027 | 内存/UB 检测构建 | ASan + UBSan 构建预设，纳入 CI | 全测试在 ASan 下通过 | CYS-INF-033 | P1/M |
 | ⬜ | CYS-PKT-028 | 线程检测构建 | TSan 预设（针对 dispatcher/ring 并发） | 无 data race 报告 | CYS-PKT-027 | P2/M |
 | ⬜ | CYS-PKT-029 | 微基准框架 | `bench/`：收包吞吐、解析延迟、池分配延迟；输出可比较的 JSON | 基准结果可跨 commit 对比 | CYS-PKT-025 | P2/M |
-| ⬜ | CYS-PKT-030 | CLI 能力扩展 | 现有 `hello_packet` 保留为冒烟；新增 `cythsec-capture` CLI（`-i`、`-r`、`-f` 过滤、`-n` 计数、`-w` 落盘） | 命令可实际抓包并落盘 | CYS-PKT-006 | P1/M |
+| ◐ | CYS-PKT-030 | CLI 能力扩展 | 现有 `hello_packet` 保留为冒烟；新增 `cythsec-capture` CLI（`-i`、`-r`、`-f` 过滤、`-n` 计数、`-w` 落盘）。**已落地**：`--list-ifaces` / `--list-backends` / `-i` / `-n` / `--timeout` / `-w` / `--promisc` / `--quiet`，统一后端工厂按平台路由（`live` → Linux `af-packet` / macOS `bpf`）。**未落地**：`-f` 过滤（依赖 CYS-PKT-022 BPF 过滤器） | 已达成：接口枚举 27 个、CLI 各子命令实测通过、产物 `-w` 落盘可被 tshark 打开。**未达成**：`-f` 过滤与「命令可实际抓包」（macOS 受 `/dev/bpf*` 权限阻塞，见 CYS-PKT-007） | CYS-PKT-006 | P1/M |
 | ⬜ | CYS-PKT-031 | 文档与注释 | `docs/dataplane/packet-engine.md`：架构、后端对比、性能数据 | 文档含实测数据表 | CYS-PKT-029 | P2/M |
 
 #### 3.2.4 采集抽象（`CAP`）
@@ -258,7 +258,7 @@
 
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ⬜ | CYS-TRF-001 | 重构为 cargo workspace | `dataplane/traffic-engine/crates/{common,flow,session,reassembly,protocol,dpi,feature,behavior,risk}`；根 `Cargo.toml` 的 `members` 同步更新 | 结构与 README 描述一致；`cargo build` 通过 | — | P1/L |
+| ⬜ | CYS-TRF-001 | 重构为 cargo workspace | `dataplane/traffic-engine/crates/{common,flow,session,reassembly,protocol,dpi,feature,behavior,risk}`；根 `Cargo.toml` 的 `members` 同步更新。**【顺序决策】为何先落 DPI、暂不拆 workspace**：拆分本身不产生任何新的识别能力，只是挪目录；而 DPI 是「省网级流量分析」需求的关键路径。当前在单包内以 `src/dpi/`（与 `flow`/`session`/`channel` 同级）把算法与测试向量做实，待本任务执行时是**纯目录搬移**（模块边界已按 crate 语义划分好）。反向顺序（先拆九个空 crate 再填实现）会让跨 crate 的裁决语义长期无法统一 | 结构与 README 描述一致；`cargo build` 通过 | — | P1/L |
 | ⬜ | CYS-TRF-002 | 错误类型体系 | `crates/common`：`thiserror` 定义 `TrafError`，统一 `Result`；禁止 `unwrap()` 出现在非测试路径 | `cargo clippy -D clippy::unwrap_used` 通过 | CYS-TRF-001 | P1/M |
 | ⬜ | CYS-TRF-003 | 时间与时钟抽象 | `crates/common::clock`：`Clock` trait + `MonotonicClock`/`TestClock`，替换 `timestamp_us: u64` 哨兵 | 时间相关测试可确定性注入 | CYS-DBT-004 | P1/M |
 | ⬜ | CYS-TRF-004 | 协议number 类型化 | 用 `Proto` 枚举（或 `num_enum`）替换裸 `u8`，与 IANA 号对齐 | 无死代码；`Proto::from(6) == Proto::Tcp` | CYS-DBT-003 | P1/S |
@@ -283,14 +283,14 @@
 
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ⬜ | CYS-TRF-016 | TCP 乱序重组 | `crates/reassembly`：序号区间树、重叠裁剪、空洞追踪、内存上限 | 乱序样本重组正确；内存上限触发时降级 | CYS-TRF-012 | P0/XL |
+| ⬜ | CYS-TRF-016 | TCP 乱序重组 | `crates/reassembly`：序号区间树、重叠裁剪、空洞追踪、内存上限。**【与 DPI 的关系】** 当前 DPI 刻意只做**首包判定**（纯函数、不重组）：省网要在连接建立后几百微秒内出结果，等流拼完整 SLA 已过。代价是被 TCP 分段切开的首包会判 `NeedMore`。要覆盖这类流量，必须依赖本任务提供的重组能力（重组后再喂给同一个纯函数解析器，无需改解析器） | 乱序样本重组正确；内存上限触发时降级 | CYS-TRF-012 | P0/XL |
 | ⬜ | CYS-TRF-017 | TCP 选项解析 | MSS、窗口缩放、SACK、时间戳 | 选项可读 | CYS-TRF-016 | P2/S |
 | ⬜ | CYS-TRF-018 | IP 分片重组 | IPv4/IPv6 分片表、超时、重叠策略（BSD/Linux 语义可选） | 分片样本重组正确 | CYS-TRF-016 | P1/L |
-| ⬜ | CYS-TRF-019 | 协议识别（端口+启发式） | `crates/dpi::identify`；端口表 → 载荷特征 → 兜底 unknown，输出置信度 | 对样本集识别准确率 ≥ 95% | CYS-TRF-016 | P0/L |
-| ⬜ | CYS-TRF-020 | HTTP/1.1 解析器 | 方法、URI、Host、UA、状态码、Content-Type、Content-Length | 对 HTTP 样本解析通过率 ≥ 99% | CYS-TRF-019 | P1/L |
-| ⬜ | CYS-TRF-021 | TLS ClientHello 解析 | 版本、SNI、密码套件、扩展；JA3 指纹计算 | JA3 与 `ja3` 参考实现一致 | CYS-TRF-019 | P1/L |
+| ◐ | CYS-TRF-019 | 协议识别（端口+启发式） | `crates/dpi::identify`；端口表 → 载荷特征 → 兜底 unknown，输出置信度。**已落地**：`src/dpi/`（`mod.rs` 三级递进框架 + 端口提示排序 + 检测器编排），裁决语义为四态 `Identified / NeedMore / Malformed / Unknown`，刻意不用 `Result`（"不是我的协议"与"我的协议解析坏了"在统计上后果相反）。**未落地**：尚未迁入 `crates/dpi`（见 CYS-TRF-001 的顺序决策）；「样本集准确率 ≥ 95%」未有样本集 | 已达成：21 条向量（9 TLS / 9 DNS / 3 HTTP）全部命中预期裁决。**未达成**：准确率指标（缺大样本集） | CYS-TRF-016 | P0/L |
+| ◐ | CYS-TRF-020 | HTTP/1.1 解析器 | 方法、URI、Host、UA、状态码、Content-Type、Content-Length。**已落地**：请求行三元组（方法/URI/版本）+ Host 头（端口剥离、大小写归一）；「头部未结束」判 `NeedMore` 而非「无 Host」。**未落地**：UA、状态码、Content-Type、Content-Length，以及响应侧解析 | 已达成：3 条 HTTP 向量 + tshark 三方一致。**未达成**：覆盖率指标（仅 3 条样本） | CYS-TRF-019 | P1/L |
+| ◐ | CYS-TRF-021 | TLS ClientHello 解析 | 版本、SNI、密码套件、扩展；JA3 指纹计算。**已落地**：记录层/握手层逐层 checked 解析（握手长度为 **3 字节**，从偏移 6 起）、GREASE 剔除、`supported_versions` 修正 TLS 1.3 版本判定、ECH 扩展识别（真实 SNI 不可见是预期而非故障）；MD5 自实现（零第三方依赖）并用 RFC 1321 向量锁定。**未落地**：证书解析（CYS-TRF-022） | 已达成：JA3 与 **tshark 4.6.7 独立实现**逐条一致（22 项比对）。**已知例外**：ECH 向量 `tls-ech-no-outer-sni` 无法用 tshark 交叉核验（其 ECH 解析器认不出手工构造的 ECH 体，会连整包 JA3 一起抑制），已在 `expected.json` 显式标注 `tshark.verified=false` 并有测试守门，不冒充「已核验」 | CYS-TRF-019 | P1/L |
 | ⬜ | CYS-TRF-022 | TLS 证书解析 | 服务端证书链中的 CN/SAN/签发者/有效期（明文可见部分） | 从样本中提取 SNI 与 CN | CYS-TRF-021 | P2/M |
-| ⬜ | CYS-TRF-023 | DNS 解析器 | 查询/响应、QTYPE、QNAME、RCODE、EDNS0 | 与 `dig` 输出比对一致 | CYS-TRF-019 | P1/M |
+| ◐ | CYS-TRF-023 | DNS 解析器 | 查询/响应、QTYPE、QNAME、RCODE、EDNS0。**已落地**：标签序列（≤63 / 总长 ≤255）、`0xC0` 压缩指针（**跳数上限 128** 破环，同时天然限制每次解析的 work 量）、指针越界判畸形、QNAME 小写归一；「查询报文 qdcount ≠ 1」判"不是 DNS"而非"解析失败"。**未落地**：RCODE、EDNS0、响应侧 ANSWER 解析 | 已达成：9 条 DNS 向量（含压缩指针响应、指针成环、垃圾负例）+ tshark 三方一致。**未达成**：EDNS0 与 RCODE | CYS-TRF-019 | P1/M |
 | ⬜ | CYS-TRF-024 | QUIC 解析 | Initial 包解密后的 SNI / 版本协商（需密钥派生） | 对 QUIC 样本提取 SNI | CYS-TRF-021 | P3/XL |
 | ⬜ | CYS-TRF-025 | SSH / SMTP / FTP 识别 | 版本 banner 与命令识别 | 样本验证通过 | CYS-TRF-019 | P2/M |
 | ⬜ | CYS-TRF-026 | 协议解析模糊测试 | `cargo-fuzz` 对 HTTP/TLS/DNS 解析器 | 24h 无崩溃 | CYS-TRF-020 | P1/M |
@@ -306,7 +306,7 @@
 | ⬜ | CYS-TRF-031 | 风险评分引擎 | `crates/risk`：加权评分、规则命中累加、阈值分级（低/中/高/危急） | 评分可解释（含命中明细） | CYS-TRF-030 | P1/L |
 | ⬜ | CYS-TRF-032 | 规则 DSL | 简洁规则语法（条件 + 动作），支持热加载 | 规则文件改动后无需重启生效 | CYS-TRF-031 | P2/L |
 | ⬜ | CYS-TRF-033 | 输出 FlowRecord schema | 与 `storage/clickhouse` 对齐的列式 schema，含所有特征与评分 | schema 冻结并版本化 | CYS-TRF-027 | P0/M |
-| ◐ | CYS-TRF-034 | 共享内存接入 | 从 `packet-engine` 的共享环消费真实报文（CYS-PKT-024 的消费端）。**已落地**：Rust `src/bin/ring_consume.rs`（attach 既有环 / `--from-head` 跳过积压 / `--expect-*` 断言开关）、`scripts/verify/e2e-shared-ring.sh`（C++ 进程写 → 环 → Rust 进程读并解 Flow，4 阶段 19 项断言，含两端记账与区域计数的交叉核对），已挂入 `test-all.sh --e2e`。**未达成**：真实网卡接入 —— 当前只跑通 `datasets/pcap/` 的真实报文；网卡侧依赖 CYS-PKT-007（pcap live）/ CYS-PKT-008（AF_PACKET），两者均未开始，且 `xdp/`、`af_xdp/`、`dpdk/` 三个目录仍为空占位 | 已达成：真实 pcap → 共享环 → Flow 端到端（19 项断言）。待达成：真实网卡 → Flow（受 CYS-PKT-007/008 阻塞） | CYS-PKT-024 | P0/L |
+| ◐ | CYS-TRF-034 | 共享内存接入 | 从 `packet-engine` 的共享环消费真实报文（CYS-PKT-024 的消费端）。**已落地**：Rust `src/bin/ring_consume.rs`（attach 既有环 / `--from-head` 跳过积压 / `--expect-*` 断言开关）、`scripts/verify/e2e-shared-ring.sh`（C++ 进程写 → 环 → Rust 进程读并解 Flow，4 阶段 19 项断言，含两端记账与区域计数的交叉核对），已挂入 `test-all.sh --e2e`。**未达成**：真实网卡接入 —— 当前只跑通 `datasets/pcap/` 的真实报文；网卡侧依赖 CYS-PKT-007（pcap live）/ CYS-PKT-008（AF_PACKET），两者本轮已推进到 ◐（Linux AF_PACKET 三发行版编译通过、macOS 原生 BPF 落地），但均**未完成各自的验收标准**，`xdp/`、`af_xdp/`、`dpdk/` 三个目录仍为空占位 | 已达成：真实 pcap → 共享环 → Flow 端到端（19 项断言）。待达成：真实网卡 → Flow（受 CYS-PKT-007/008 阻塞） | CYS-PKT-024 | P0/L |
 | ⬜ | CYS-TRF-035 | 离线 pcap 处理 CLI | `cythsec-analyze -r x.pcap -o flows.jsonl`，输出 FlowRecord 流 | 对 `datasets/pcap/` 全样本可批量处理 | CYS-TRF-033 | P0/M |
 | ⬜ | CYS-TRF-036 | 可观测性 | `tracing` + `metrics`：处理速率、丢包、内存占用、各阶段延迟 | 指标可被 telemetryd 抓取 | CYS-TRF-034 | P1/M |
 | ⬜ | CYS-TRF-037 | Criterion 基准 | 流表插入/查询、重组吞吐、特征提取吞吐 | 基准可跨 commit 对比 | CYS-TRF-027 | P2/M |
@@ -759,8 +759,8 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 327 |
-| 进行中 | 1 |
+| 未开始 | 320 |
+| 进行中 | 8 |
 | 已完成 | 21 |
 
 ### 6.6 里程碑完成度
@@ -806,3 +806,6 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 | 2026-09-14 | **修复 `attributes.gen.ts` 生成物编译不过（前端 `typecheck`/`build` 双红）** | `tools/codegen/gen-attributes.py` 生成的三个说明表（`ATTR_VALUE_TYPE_DESC` / `ATTR_SCOPE_DESC` / `ATTR_STAGE_DESC`）用了 PascalCase 派生名作键，而它们的类型是 `Record<AttrValueType, string>` —— 键须取自枚举映射的**值**联合（`"string"` / `"l2"` / `"packet"`），故 TS 报 6 处 TS2561。修生成器（键改用规范标识），并在 `TS_HEADER` 中写明「两类对象的键取法刻意不同」的理由，把这条踩过的坑留在生成物注释里。同时补装 `@types/node`（构建配置需要）、把 `tsc --noEmit -p tsconfig.node.json` 纳入 `lint-all.sh`、清理未入库的 `*.tsbuildinfo`。验证：前端 typecheck 0 错、测试 25/25、生产构建通过 |
 | 2026-09-14 | **`CYS-PKT-024` 转 ☑：补齐 C++ 生产端并打通跨语言端到端（`CYS-TRF-034` → ◐）** | 此前该契约**只有 Rust 侧有实现**，C++ 侧仅有一份从未被 include 的 header，所谓「跨语言」实际从未跑起来过。本轮：① 新增 C++ 共享区域层 `include/packet_engine/channel/region.h` + `src/channel/region.cpp`（普通文件 `open`/`ftruncate`/`mmap(MAP_SHARED)`，与 Rust 侧 `Region::map` 同机制；attach 期全部诊断复用生成物的 `diag` 命名空间，保证两端报错逐字一致）；② 新增 C++ 生产端 `producer.h/.cpp`（SPSC 语义严格对齐 Rust `tests.rs` 的 `TestProducer`：先数据后描述符、release 序发布 head、超长帧只计 `dropped` 不计 `full_events`、环满同时计两者并丢新帧、绝不触碰消费端专属字段）；③ 新增 `cli/ring_feed_main.cpp`（pcap → 环，支持多源）与 Rust `src/bin/ring_consume.rs`（attach 既有环 / `--from-head` / `--expect-*` 断言）；④ 新增 `scripts/verify/e2e-shared-ring.sh`（**C++ 进程写 → mmap 文件 → Rust 进程读并解 Flow**，4 阶段 19 项断言）并挂入 `test-all.sh --e2e`。**注入验证抓到两处真实缺口**：一是注入「`desc.data_off` 误用区域相对偏移」后诊断如期报错，但输出里暴露出诊断文案含一长串游离空格（行连接符展开后的残留，仅出现在面向排障者的文案里，已全仓扫描修净）；二是注入「生产端 `published` 双计」时 **19 项断言全部通过 —— 关口存在漏洞**：两端 CLI 各自报的都是本地计数，无人核对区域内实际落下的计数器，而那正是运维排障唯一能看的字段。据此补上「区域共享计数」记录与本地/区域交叉核对断言，重做同一注入后如期被抓。另修正 e2e 汇总行**写死的断言数**（原写 17、实为 19）为动态累计。`CYS-TRF-034` 只转 ◐ 而非 ☑：其验收标准含「真实网卡 → Flow」，而网卡侧依赖 `CYS-PKT-007`/`008`（均未开始，`xdp/`、`af_xdp/`、`dpdk/` 仍为空占位），本轮达成的是「真实 pcap → 环 → Flow」，已在条目中显式标注，不含糊成已完成 |
 
+| 2026-10-02 | **网卡通用版：Linux AF_PACKET + macOS 原生 BPF 双后端落地（`CYS-PKT-007`→◐ / `CYS-PKT-008`→◐ / `CYS-PKT-030`→◐）** | 需求为「openEuler / Ubuntu / Rocky Linux 通用 + 开发机 macOS 也能抓」。① `iface_list.{h,cpp}` 跨平台接口枚举（`getifaddrs`；Linux `SIOCGIFHWADDR` / macOS `AF_LINK`），实测 macOS 上 `getifaddrs` 与 `sysctl(NET_RT_IFLIST)` **两条路径都返回占位 MAC** `02:00:00:00:00:00`（`ifconfig` 显示真值），故加 `mac_hidden` 标志把「平台隐藏」与「本就无 MAC」分开显示，避免全列 `-` 被误认为枚举 bug。② `af_packet.{h,cpp}`：运行时 `setsockopt(PACKET_VERSION)` 探测的 **V3→V2→`recvfrom` 降级链**，`PACKET_RX_RING` 页对齐与整除约束修正。③ `bpf_capture.{h,cpp}`：macOS 原生 BPF（**本机无 libpcap**，故不走 libpcap），`/dev/bpf0..255` 逐个尝试、`BIOCSBLEN` 后回读实际值、`bpf_hdr` 20 字节 + `BPF_WORDALIGN` 步进。④ 统一后端工厂按平台路由 `live`（Linux→`af-packet` / macOS→`bpf`），平台不匹配时返回明确错误而非静默 `nullptr`；新增 `wait_readable` 虚接口避免忙等。⑤ `cythsec-capture` CLI + `pcap_writer`（`-w` 落盘）。**验证**：Ubuntu 24.04(6.8) / Rocky 9(5.14) / openEuler 24.03(6.6) 三发行版 Docker 容器内**零错误零警告**编译并真实抓包（容器内 `apt`/`dnf` 装依赖须与编译在**同一次 `docker run`** 内完成，否则容器退出即丢失）；macOS 侧新增 `test_live_capture.cpp` **73 项断言**全过，CTest 6/6。**诚实标注**：macOS 真抓包未达成（`/dev/bpf*` 属 `root:wheel 600` 且本机无免密 sudo），该路径在 e2e 中显式标 `SKIPPED` 不显绿；`CYS-PKT-008` 只转 ◐ 是因为验收标准要求的「吞吐显著高于 pcap live」**尚无实测对照数据**。另修 CLI 三处缺陷：`--list-ifaces`/`--list-backends` 污染输出 `capture result`（会让 e2e 抓取误判）、`--list-backends` 自指（输出「live 路由到 live」，实际应为 `bpf`）、MAC 全显示 `-` |
+| 2026-10-02 | **DPI 深度包检测落地：TLS/JA3（CYS-TRF-021）、DNS QNAME（CYS-TRF-023）、HTTP Host（CYS-TRF-020）、识别框架（CYS-TRF-019）** | 起因：「pcap 这个流量一大就不行了」—— 实测 `pcap_file.cpp` 在 open 时把**整个文件**读进 `std::vector<PacketBuffer>`，非流式、无界内存且不报丢包，省网 100G 物理上走不通。本轮补的是**识别能力**这一侧：① 新增 `datasets/dpi/` 测试向量体系（`generate-dpi-samples.py` 确定性生成器 + 21 个 `payloads/*.bin` + 3 个 pcap + `expected.json`），期望值由**构造参数**推出而非解析产出，避免"自己解析自己"的循环论证；② 新增 `scripts/verify/check-dpi-vectors.sh` 用 **tshark 4.6.7 独立实现**作第三方互证（22 项 SNI/JA3/QNAME/Host 逐条一致），挂入 `test-all.sh --dpi`。③ Rust `src/dpi/`：`mod.rs` 三级递进框架、`tls.rs`（ClientHello + JA3）、`dns.rs`、`http.rs`、`attributes.rs`、`md5.rs`（自实现，零第三方依赖）。**修复的六个真实缺陷**：MD5 的 B 初值 `0xEFCD89AB` 应为 `0xEFCDAB89`；MD5 摘要逐 u32 输出时字节序写反；MD5 第 3 轮 G 表抄错一格（`3i+5` 应得 `5,8,11,14…`）；握手长度是 **3 字节且从偏移 6 起**（按 2 字节从偏移 5 读会整体错位）；`Cursor` 忘了跳到握手体起点偏移 9；SNI 与 `supported_groups` 扩展体的**长度头**被当成列表元素（表现为指纹里多出一个来路不明的小数字）。**修生成器自身一处缺陷**：`tls-bad-inner-len` 的偏移写成 `5+2+32+1=40`，漏算 4 字节握手头，实际改坏的是 random 而非 cipher_suites 长度 —— 这条「畸形」样本其实完全合法，是测试期望 `malformed` 才把它暴露出来（畸形样本必须真的畸形，否则测的是空气）。**注入验证**：改坏期望值 → 脚本与 Rust 测试双双报错；去掉 GREASE 过滤 → `tls-grease` 如期失败；两次均恢复现场并做字节级 `cmp` 比对。**已知例外不冒充通过**：ECH 向量 `tls-ech-no-outer-sni` 无法用 tshark 交叉核验（tshark 对手工构造的 ECH 体一律判畸形并抑制整包 JA3），已在 `expected.json` 显式标 `tshark.verified=false` + 原因，并由测试守门防止该标记被悄悄改回 `true`。④ **闭合「契约层已有、实现层为零」的缺口**：`attributes.rs` 首次真正产出 `ATTR_TLS_SNI`/`ATTR_TLS_JA3`/`ATTR_DNS_QNAME`/`ATTR_APP_ID` 等属性（此前它们只存在于字典、生成物与示例规则里，没有任何生产者），约束为「只产出已登记属性 + 常量引用 `attributes_gen` 不手写 + 未识别**不产出**空串属性」 |
+| 2026-10-02 | 修复 C++ lint 门禁复发的成片不合规 | 上一批新增的 C++ 文件（`iface_list` / `af_packet` / `bpf_capture` / `backend` / `capture_main` / `pcap_writer` 等）未执行 `clang-format`，`lint-all.sh` 的 C++ 段持续报红（历史同类事故：29/30 文件不合规却被静默跳过）。已对全仓 50 个 C/C++ 文件执行 `clang-format -i` 并复检 0 违规，**行为中性已验证**：cmake 重建 0 错、CTest **6/6 通过**（`packet_engine_unit` / `parser` / `pcap` / `channel_abi` / `channel_producer` / `live_capture`） |

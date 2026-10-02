@@ -55,16 +55,16 @@ namespace packet_engine {
 // 也不同（查容器 capability / 查接口名 / 查内核版本与页大小）。
 enum class AfPacketStatus {
   kOk = 0,
-  kNotSupported,   // 非 Linux 平台 —— 属配置错误而非运行故障
-  kSocketFailed,   // socket(AF_PACKET, ...) 失败
-  kPermission,     // EPERM/EACCES —— 缺 CAP_NET_RAW
-  kNoSuchIface,    // 接口不存在（ENODEV / if_nametoindex 返回 0）
-  kIfaceDown,      // 接口存在但未 UP（无 IFF_UP）
-  kBindFailed,     // bind 失败（含协议不支持）
-  kVersionFailed,  // PACKET_VERSION 设置失败（内核不支持任何已知版本）
-  kRingFailed,     // PACKET_RX_RING 失败（尺寸约束不满足 / 内存不足）
-  kMmapFailed,     // mmap 环形缓冲区失败
-  kIoError,        // 读失败
+  kNotSupported,  // 非 Linux 平台 —— 属配置错误而非运行故障
+  kSocketFailed,  // socket(AF_PACKET, ...) 失败
+  kPermission,    // EPERM/EACCES —— 缺 CAP_NET_RAW
+  kNoSuchIface,   // 接口不存在（ENODEV / if_nametoindex 返回 0）
+  kIfaceDown,     // 接口存在但未 UP（无 IFF_UP）
+  kBindFailed,    // bind 失败（含协议不支持）
+  kVersionFailed, // PACKET_VERSION 设置失败（内核不支持任何已知版本）
+  kRingFailed,    // PACKET_RX_RING 失败（尺寸约束不满足 / 内存不足）
+  kMmapFailed,    // mmap 环形缓冲区失败
+  kIoError,       // 读失败
 };
 
 // 实际生效的采集模式。按代价从低到高排列。
@@ -163,8 +163,8 @@ private:
   int fd_ = -1;
   uint32_t ifindex_ = 0;
   uint32_t link_type_ = 0;
-  std::string source_;   // 用户传入的原始 source，用于诊断回显
-  std::string iface_;    // 解析后的接口名（按索引指定时回填名字）
+  std::string source_; // 用户传入的原始 source，用于诊断回显
+  std::string iface_;  // 解析后的接口名（按索引指定时回填名字）
 
   RingMode mode_ = RingMode::kRecvfrom;
   std::string fallback_reason_;
@@ -181,8 +181,8 @@ private:
   std::vector<uint32_t> pending_retire_;
   uint32_t cur_block_ = 0;
   uint32_t cur_frame_ = 0;
-  uint32_t cur_off_ = 0;     // V3：块内当前包的字节偏移
-  uint32_t cur_pkts_ = 0;    // V3：本块内已处理的包数
+  uint32_t cur_off_ = 0;      // V3：块内当前包的字节偏移
+  uint32_t cur_pkts_ = 0;     // V3：本块内已处理的包数
   uint32_t cur_num_pkts_ = 0; // V3：本块的 num_pkts 快照
   uint32_t cur_next_off_ = 0; // V3：下一包的偏移（0 = 本块已空）
 

@@ -223,9 +223,8 @@ void AfPacketBackend::fail_errno(AfPacketStatus default_status, const char* what
     status = AfPacketStatus::kNoSuchIface;
     break;
   case EOPNOTSUPP:
-    set_error(default_status,
-              std::string(what) + " 不被内核支持（" + std::strerror(err) +
-                  "）：该接口类型（如某些隧道/虚拟接口）不支持 AF_PACKET 收包");
+    set_error(default_status, std::string(what) + " 不被内核支持（" + std::strerror(err) +
+                                  "）：该接口类型（如某些隧道/虚拟接口）不支持 AF_PACKET 收包");
     return;
   case ENOBUFS:
   case ENOMEM:
@@ -298,8 +297,7 @@ bool AfPacketBackend::configure_interface() {
     if (::if_indextoname(ifindex_, namebuf) != nullptr) {
       iface_ = namebuf;
     } else {
-      set_error(AfPacketStatus::kNoSuchIface,
-                "接口索引 " + num + " 在本网络命名空间内不存在");
+      set_error(AfPacketStatus::kNoSuchIface, "接口索引 " + num + " 在本网络命名空间内不存在");
       return false;
     }
   } else {
@@ -308,9 +306,9 @@ bool AfPacketBackend::configure_interface() {
       return false;
     }
     if (src.size() >= IF_NAMESIZE) {
-      set_error(AfPacketStatus::kNoSuchIface,
-                "接口名过长: \"" + src + "\"（内核上限 " + std::to_string(IF_NAMESIZE - 1) +
-                    " 字符，请确认是否误把路径当成了接口名）");
+      set_error(AfPacketStatus::kNoSuchIface, "接口名过长: \"" + src + "\"（内核上限 " +
+                                                  std::to_string(IF_NAMESIZE - 1) +
+                                                  " 字符，请确认是否误把路径当成了接口名）");
       return false;
     }
     iface_ = src;
@@ -337,9 +335,10 @@ bool AfPacketBackend::configure_interface() {
           ::close(chk);
           // 「接口存在但 down」与「接口不存在」是两件事：前者是环境未就绪（可等待），
           // 后者是配置错误。合并上报会让自动化脚本无法据以决定「重试」还是「报错退出」。
-          set_error(AfPacketStatus::kIfaceDown,
-                    "接口 \"" + iface_ + "\" 存在但未启用（缺少 IFF_UP）。"
-                    "请先 ip link set " + iface_ + " up（或检查网线/上层网桥状态）");
+          set_error(AfPacketStatus::kIfaceDown, "接口 \"" + iface_ +
+                                                    "\" 存在但未启用（缺少 IFF_UP）。"
+                                                    "请先 ip link set " +
+                                                    iface_ + " up（或检查网线/上层网桥状态）");
           return false;
         }
       }
@@ -455,8 +454,8 @@ bool AfPacketBackend::setup_v3() {
   if (::setsockopt(fd_, SOL_PACKET, PACKET_VERSION, &ver, sizeof(ver)) != 0) {
     // 内核不支持 V3（3.2 以前）。这是**环境能力差异**而非配置错误，故不设 err_，
     // 只把原因追加到降级说明里 —— 上层会继续尝试 V2。
-    fallback_reason_ += "TPACKET_V3 不可用（PACKET_VERSION 被拒：" +
-                        std::string(std::strerror(errno)) + "）；";
+    fallback_reason_ +=
+        "TPACKET_V3 不可用（PACKET_VERSION 被拒：" + std::string(std::strerror(errno)) + "）；";
     ::close(fd_);
     fd_ = -1;
     return false;
@@ -503,8 +502,8 @@ bool AfPacketBackend::setup_v3() {
 
   if (!ring_ok) {
     fallback_reason_ += std::string("TPACKET_V3 环申请被拒（") + std::strerror(last_errno) +
-                        "，block_size=" + std::to_string(bs) +
-                        " block_nr=" + std::to_string(bn) + "）；";
+                        "，block_size=" + std::to_string(bs) + " block_nr=" + std::to_string(bn) +
+                        "）；";
     ::close(fd_);
     fd_ = -1;
     return false;
@@ -580,8 +579,8 @@ bool AfPacketBackend::setup_v2() {
 
   if (!ring_ok) {
     fallback_reason_ += std::string("TPACKET_V2 环申请被拒（") + std::strerror(last_errno) +
-                        "，block_size=" + std::to_string(bs) +
-                        " frame_size=" + std::to_string(fs) + "）；";
+                        "，block_size=" + std::to_string(bs) + " frame_size=" + std::to_string(fs) +
+                        "）；";
     ::close(fd_);
     fd_ = -1;
     return false;
@@ -725,8 +724,8 @@ void AfPacketBackend::retire_pending() {
   }
   if (mode_ == RingMode::kTpacketV3) {
     for (uint32_t bi : pending_retire_) {
-      auto* bd = reinterpret_cast<struct tpacket_block_desc*>(ring_ +
-                                                             static_cast<size_t>(bi) * block_size_);
+      auto* bd = reinterpret_cast<struct tpacket_block_desc*>(ring_ + static_cast<size_t>(bi) *
+                                                                          block_size_);
       __sync_synchronize(); // 确保对包数据的读取已完成，再交还所有权
       bd->hdr.bh1.block_status = TP_STATUS_KERNEL;
     }
@@ -775,9 +774,8 @@ uint32_t AfPacketBackend::drain_v3_block(PacketBuffer** pkts, uint32_t max) {
       if (count >= max) {
         return count; // 本批已满；块内余量留待下次调用
       }
-      auto* h = reinterpret_cast<struct tpacket3_hdr*>(ring_ +
-                                                       static_cast<size_t>(cur_block_) * block_size_ +
-                                                       cur_off_);
+      auto* h = reinterpret_cast<struct tpacket3_hdr*>(
+          ring_ + static_cast<size_t>(cur_block_) * block_size_ + cur_off_);
       const uint32_t next = h->tp_next_offset;
       const uint32_t snaplen = h->tp_snaplen;
       const uint32_t macoff = h->tp_mac;
@@ -791,8 +789,8 @@ uint32_t AfPacketBackend::drain_v3_block(PacketBuffer** pkts, uint32_t max) {
         break;
       }
 
-      const uint8_t* payload = ring_ + static_cast<size_t>(cur_block_) * block_size_ + cur_off_ +
-                               macoff;
+      const uint8_t* payload =
+          ring_ + static_cast<size_t>(cur_block_) * block_size_ + cur_off_ + macoff;
       PacketBuffer* out = &views_[count];
       out->data = const_cast<uint8_t*>(payload);
       out->caplen = snaplen;

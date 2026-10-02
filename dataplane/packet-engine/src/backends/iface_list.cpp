@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #if defined(__APPLE__)
-#include <net/if_dl.h> // sockaddr_dl（AF_LINK）
+#include <net/if_dl.h>  // sockaddr_dl（AF_LINK）
 #include <sys/sockio.h> // SIOCGIFMTU
 #else
 #include <linux/sockios.h> // SIOCGIFHWADDR / SIOCGIFMTU
@@ -134,8 +134,7 @@ void fill_mac_linux(int fd, IfaceInfo* info) {
   struct ifreq req;
   std::snprintf(req.ifr_name, sizeof(req.ifr_name), "%s", info->name.c_str());
   if (::ioctl(fd, SIOCGIFHWADDR, &req) == 0) {
-    const std::string v =
-        format_mac(reinterpret_cast<const uint8_t*>(req.ifr_hwaddr.sa_data), 6);
+    const std::string v = format_mac(reinterpret_cast<const uint8_t*>(req.ifr_hwaddr.sa_data), 6);
     // Linux 不对普通进程隐藏链路层地址，故此处不会出现「隐藏」情形。占位值只
     // 出现在 lo 一类接口上（内核给的 hwaddr 全 0），那是「本就没有以太网地址」
     // 这个事实本身，不置 mac_hidden —— 否则会把系统正常行为报成异常。

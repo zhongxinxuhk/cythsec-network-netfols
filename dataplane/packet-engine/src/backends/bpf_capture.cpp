@@ -141,7 +141,8 @@ int BpfCaptureBackend::open(const char* source) {
   err_reason_ = "ok";
 
   if (source == nullptr || *source == '\0') {
-    set_error(BpfStatus::kNoSuchIface, "接口名为空：请用 -i <接口名> 指定，可用 --list-ifaces 查看本机接口");
+    set_error(BpfStatus::kNoSuchIface,
+              "接口名为空：请用 -i <接口名> 指定，可用 --list-ifaces 查看本机接口");
     return -1;
   }
 
@@ -262,8 +263,7 @@ int BpfCaptureBackend::open(const char* source) {
       char buf[512];
       if (e == ENXIO) {
         std::snprintf(buf, sizeof(buf),
-                      "绑定接口 %s 失败（ENXIO）：接口可能已被移除或处于 down 状态",
-                      want.c_str());
+                      "绑定接口 %s 失败（ENXIO）：接口可能已被移除或处于 down 状态", want.c_str());
         set_error(BpfStatus::kIfaceDown, buf);
       } else {
         std::snprintf(buf, sizeof(buf), "BIOCSETIF(%s) 失败：%s (errno=%d)", want.c_str(),
@@ -423,8 +423,8 @@ int BpfCaptureBackend::rx_burst(PacketBuffer** pkts, uint32_t max) {
       v.ifindex = ifindex_;
       // bh_tstamp 是本平台 BPF_TIMEVAL（64 位为 timeval），转纳秒。
       const auto& ts = hdr->bh_tstamp;
-      v.timestamp_ns =
-          static_cast<int64_t>(ts.tv_sec) * 1000000000LL + static_cast<int64_t>(ts.tv_usec) * 1000LL;
+      v.timestamp_ns = static_cast<int64_t>(ts.tv_sec) * 1000000000LL +
+                       static_cast<int64_t>(ts.tv_usec) * 1000LL;
       views_.push_back(v);
       ++count;
 

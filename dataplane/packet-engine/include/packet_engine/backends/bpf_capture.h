@@ -34,14 +34,14 @@ namespace packet_engine {
 // 是完全不同的两件事，排障动作也不同（前者查权限，后者查接口名/网卡状态）。
 enum class BpfStatus {
   kOk = 0,
-  kNotSupported,  // 本平台无 BPF（例如 Linux）—— 属配置错误而非运行故障
-  kNoDevice,      // /dev/bpf* 全部不存在（内核未启用 bpf 或不支持的平台）
-  kPermission,    // 打开 /dev/bpf* 被拒（EPERM/EACCES）—— 需要 root 或相应权限
-  kDeviceBusy,    // 所有 /dev/bpf* 均被占用（EBUSY）
-  kNoSuchIface,   // 接口不存在（无效名字）
-  kIfaceDown,     // 接口存在但未启用（link down / 未 up）
-  kIoctlFailed,   // BIOCSBLEN/BIOCSETIF 等配置 ioctl 失败
-  kIoError,       // 读失败
+  kNotSupported, // 本平台无 BPF（例如 Linux）—— 属配置错误而非运行故障
+  kNoDevice,     // /dev/bpf* 全部不存在（内核未启用 bpf 或不支持的平台）
+  kPermission,   // 打开 /dev/bpf* 被拒（EPERM/EACCES）—— 需要 root 或相应权限
+  kDeviceBusy,   // 所有 /dev/bpf* 均被占用（EBUSY）
+  kNoSuchIface,  // 接口不存在（无效名字）
+  kIfaceDown,    // 接口存在但未启用（link down / 未 up）
+  kIoctlFailed,  // BIOCSBLEN/BIOCSETIF 等配置 ioctl 失败
+  kIoError,      // 读失败
 };
 
 // 「看到本机发出的包」设置。三态而非 bool：各 BSD 系对该开关的取值语义并不一致

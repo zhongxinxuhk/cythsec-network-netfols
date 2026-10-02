@@ -73,9 +73,9 @@ bool PcapWriter::open(const char* path, uint32_t linktype, uint32_t snaplen) {
   put32(gh + 0, kMagicNanoNative);
   put16(gh + 4, kVersionMajor);
   put16(gh + 6, kVersionMinor);
-  put32(gh + 8, 0);       // thiszone：UTC 偏移，恒 0（现代约定）
-  put32(gh + 12, 0);      // sigfigs：时间戳精度，恒 0
-  put32(gh + 16, snaplen); // snaplen
+  put32(gh + 8, 0);         // thiszone：UTC 偏移，恒 0（现代约定）
+  put32(gh + 12, 0);        // sigfigs：时间戳精度，恒 0
+  put32(gh + 16, snaplen);  // snaplen
   put32(gh + 20, linktype); // network
 
   if (std::fwrite(gh, 1, sizeof(gh), fp_) != sizeof(gh)) {

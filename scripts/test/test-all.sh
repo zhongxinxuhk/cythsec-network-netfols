@@ -16,13 +16,14 @@ cd "$ROOT"
 
 usage() {
   cat <<'EOF'
-用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--e2e] [--help]
+用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] [--e2e] [--help]
 
   --cpp     只跑 C/C++ 测试（ctest）
   --rust    只跑 Rust 测试（cargo test --offline）
   --go      只跑 Go 测试（go test ./...）
   --node    只跑前端测试（npm test = vitest run）
   --parity  只跑通道 ABI 跨语言 parity（需同时能构建 C++ 与 Rust）
+  --dpi     只跑 DPI 向量的 tshark 第三方交叉核验（需 tshark）
   --e2e     只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --help    显示本帮助
 
@@ -118,6 +119,30 @@ test_parity() {
   echo "✓ [parity] 通道 ABI 两端一致"
 }
 
+# DPI 向量的第三方交叉核验（CYS-TRF-021 / CYS-TRF-023）。
+#
+# 与 cargo test 里的 DPI 单测的区别：单测比对的是「Rust 实现 vs 生成器期望」，
+# 两边都出自我们对 JA3 / SNI 规范的理解 —— 理解错了也是一致地错。
+# 这一项引入 tshark 这个**独立实现**作为第三方，是发现"一致地错"的唯一手段。
+#
+# 缺 tshark 时明确报「未核验」并计入 skipped：装不装 tshark 是环境问题，不是代码缺陷，
+# 但绝不能把它显示成"通过" —— 那等于让一次根本没跑的核验冒充绿灯。
+test_dpi() {
+  echo "==> [dpi] DPI 向量第三方交叉核验（tshark）"
+  local rc=0
+  bash scripts/verify/check-dpi-vectors.sh || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    echo "✓ [dpi] 交叉核验通过"
+    return 0
+  fi
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [dpi] 未核验：环境缺少 tshark（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  echo "✗ [dpi] 交叉核验失败" >&2
+  return 1
+}
+
 # 跨语言共享环端到端（CYS-TRF-034）。
 #
 # 与 parity 的区别：parity 比的是**契约取值**（两端对同一份 ABI 的常量理解是否一致），
@@ -132,7 +157,7 @@ test_e2e() {
   echo "✓ [e2e] 跨语言端到端通过"
 }
 
-BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_E2E=0; ALL=1
+BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0; BUILD_E2E=0; ALL=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpp)  BUILD_CPP=1; ALL=0 ;;
@@ -140,6 +165,7 @@ while [[ $# -gt 0 ]]; do
     --go)   BUILD_GO=1; ALL=0 ;;
     --node) BUILD_NODE=1; ALL=0 ;;
     --parity) BUILD_PARITY=1; ALL=0 ;;
+    --dpi) BUILD_DPI=1; ALL=0 ;;
     --e2e) BUILD_E2E=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -147,7 +173,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 if [[ $ALL -eq 1 ]]; then
-  BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_E2E=1
+  BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_DPI=1; BUILD_E2E=1
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
 # 明确报错比静默跳过好 —— 静默跳过会让人以为验过了。
@@ -167,6 +193,7 @@ failed=0
 [[ $BUILD_GO -eq 1 ]]    && { test_go    || failed=$((failed+1)); }
 [[ $BUILD_NODE -eq 1 ]]  && { test_node  || failed=$((failed+1)); }
 [[ $BUILD_PARITY -eq 1 ]] && { test_parity || failed=$((failed+1)); }
+[[ $BUILD_DPI -eq 1 ]]    && { test_dpi    || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 
 if [[ $failed -eq 0 ]]; then

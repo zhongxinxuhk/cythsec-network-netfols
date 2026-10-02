@@ -112,9 +112,8 @@ PacketBackend* create_backend(const char* name) {
 #else
   if (std::strcmp(name, "af-packet") == 0) {
     // 不回退到 BPF：静默换实现会让调用方以为验的是 AF_PACKET 路径。
-    g_backend_error =
-        "packet-engine: af-packet 是 Linux 专属后端，当前平台（" + std::string(platform_name()) +
-        "）不支持；跨平台请用 live";
+    g_backend_error = "packet-engine: af-packet 是 Linux 专属后端，当前平台（" +
+                      std::string(platform_name()) + "）不支持；跨平台请用 live";
     return nullptr;
   }
 #endif
@@ -178,13 +177,20 @@ std::string PacketBackend::configure(const CaptureOptions& options) {
     }
     rejected += name;
   };
-  if (options.promisc) note("promisc");
-  if (options.ignore_outgoing) note("ignore_outgoing");
-  if (!options.allow_fallback) note("no_fallback");
-  if (options.buffer_bytes != 0) note("buffer");
-  if (options.retire_ms != 0) note("retire_ms");
-  if (options.read_timeout_ms != 0) note("read_timeout_ms");
-  if (options.snap_len != 0) note("snap_len");
+  if (options.promisc)
+    note("promisc");
+  if (options.ignore_outgoing)
+    note("ignore_outgoing");
+  if (!options.allow_fallback)
+    note("no_fallback");
+  if (options.buffer_bytes != 0)
+    note("buffer");
+  if (options.retire_ms != 0)
+    note("retire_ms");
+  if (options.read_timeout_ms != 0)
+    note("read_timeout_ms");
+  if (options.snap_len != 0)
+    note("snap_len");
   if (rejected.empty()) {
     return ""; // 用户什么都没要求，不存在「不支持」的问题
   }

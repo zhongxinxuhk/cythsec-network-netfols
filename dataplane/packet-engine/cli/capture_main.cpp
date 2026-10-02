@@ -55,7 +55,7 @@ using packet_engine::PacketBuffer;
 
 namespace {
 
-constexpr uint32_t kDefaultCount = 0;      // 0 = 不限
+constexpr uint32_t kDefaultCount = 0;       // 0 = 不限
 constexpr uint32_t kDefaultTimeoutSec = 10; // 默认总时限
 constexpr uint32_t kDefaultSnaplen = 2048;
 constexpr uint32_t kMaxBurst = 256;
@@ -138,33 +138,39 @@ bool parse_args(int argc, char** argv, Options* o) {
       o->list_backends = true;
     } else if (std::strcmp(a, "-i") == 0 || std::strcmp(a, "--iface") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       o->iface = v;
     } else if (std::strcmp(a, "-b") == 0 || std::strcmp(a, "--backend") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       o->backend = v;
     } else if (std::strcmp(a, "-n") == 0 || std::strcmp(a, "--count") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       if (!parse_u64(v, &o->count)) {
         std::fprintf(stderr, "错误: --count 取值非法: %s\n", v);
         return false;
       }
     } else if (std::strcmp(a, "-t") == 0 || std::strcmp(a, "--timeout") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       if (!parse_u64(v, &o->timeout_sec)) {
         std::fprintf(stderr, "错误: --timeout 取值非法: %s\n", v);
         return false;
       }
     } else if (std::strcmp(a, "-w") == 0 || std::strcmp(a, "--write") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       o->write_path = v;
     } else if (std::strcmp(a, "-s") == 0 || std::strcmp(a, "--snaplen") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       uint64_t n = 0;
       if (!parse_u64(v, &n)) {
         std::fprintf(stderr, "错误: --snaplen 取值非法: %s\n", v);
@@ -173,7 +179,8 @@ bool parse_args(int argc, char** argv, Options* o) {
       o->snaplen = static_cast<uint32_t>(n);
     } else if (std::strcmp(a, "--buffer") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       uint64_t n = 0;
       if (!parse_u64(v, &n)) {
         std::fprintf(stderr, "错误: --buffer 取值非法: %s\n", v);
@@ -182,7 +189,8 @@ bool parse_args(int argc, char** argv, Options* o) {
       o->buffer_bytes = static_cast<uint32_t>(n);
     } else if (std::strcmp(a, "--retire-ms") == 0) {
       const char* v = nullptr;
-      if (!need_value(&v)) return false;
+      if (!need_value(&v))
+        return false;
       uint64_t n = 0;
       if (!parse_u64(v, &n)) {
         std::fprintf(stderr, "错误: --retire-ms 取值非法: %s\n", v);
@@ -275,8 +283,8 @@ int do_list_ifaces() {
 }
 
 int do_list_backends() {
-  std::printf("capture backends list=%s platform=%s\n",
-              packet_engine::available_backends_joined(), platform_tag());
+  std::printf("capture backends list=%s platform=%s\n", packet_engine::available_backends_joined(),
+              platform_tag());
   std::printf("本平台可用后端: %s\n", packet_engine::available_backends_joined());
   // 路由目标由后端层给出，不从列表下标猜（曾因 names[1] 打印出
   // 「live 会按平台自动路由到 live」）。空串表示本平台根本没有实时后端。
@@ -365,8 +373,8 @@ int main(int argc, char** argv) {
   const uint32_t link = be->bound_link_type();
   {
     const std::string lname = packet_engine::link_type_name(link);
-    std::printf("capture iface name=%s index=%u link=%s link_value=%u\n", opt.iface.c_str(), ifindex,
-                lname.c_str(), link);
+    std::printf("capture iface name=%s index=%u link=%s link_value=%u\n", opt.iface.c_str(),
+                ifindex, lname.c_str(), link);
   }
   {
     // 如实上报本条采集路径与降级原因：只报「成功」而不报路径，降级就无法归因
@@ -424,8 +432,8 @@ int main(int argc, char** argv) {
     if (n == 0) {
       // 无数据：交给后端等待。各后端等待能力不同，见 PacketBackend::wait_readable
       // 的说明 —— 统一到这里，CLI 不需要知道自己跑在哪个后端上。
-      const uint32_t slice = static_cast<uint32_t>(remain_ms < 50 ? (remain_ms < 0 ? 0 : remain_ms)
-                                                                 : 50);
+      const uint32_t slice =
+          static_cast<uint32_t>(remain_ms < 50 ? (remain_ms < 0 ? 0 : remain_ms) : 50);
       const int w = be->wait_readable(slice);
       if (w < 0) {
         std::fprintf(stderr, "等待失败: %s\n", be->error_reason());
@@ -456,8 +464,7 @@ int main(int argc, char** argv) {
   }
 
   const auto t1 = std::chrono::steady_clock::now();
-  const auto dur_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+  const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
   const BackendStats st = be->stats();
   std::printf("capture stats packets=%llu bytes=%llu dropped=%llu errors=%llu duration_ms=%lld\n",

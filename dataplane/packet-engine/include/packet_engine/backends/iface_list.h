@@ -29,9 +29,9 @@ struct IfaceAddr {
 
 // 单个网络接口的信息快照。
 struct IfaceInfo {
-  std::string name;        // 接口名，如 ens33 / eth0 / en0 / lo（可直接传给后端 open()）
-  uint32_t index = 0;      // 系统接口索引（Linux if_nametoindex；macOS 由名字查询得到）
-  std::string mac;         // 链路层地址，形如 "aa:bb:cc:dd:ee:ff"；无 MAC 或平台隐藏时为空
+  std::string name;   // 接口名，如 ens33 / eth0 / en0 / lo（可直接传给后端 open()）
+  uint32_t index = 0; // 系统接口索引（Linux if_nametoindex；macOS 由名字查询得到）
+  std::string mac;    // 链路层地址，形如 "aa:bb:cc:dd:ee:ff"；无 MAC 或平台隐藏时为空
   // 链路层地址**存在但被平台隐藏**（mac 因此为空），与「该接口本就没有链路层地址」
   // 是两件事，必须分开：
   //   - lo0 / utun* / gif* 等：结构上就没有以太网地址，空值是事实本身；
@@ -42,11 +42,11 @@ struct IfaceInfo {
   // 坏了」还是「系统不让看」——而这两者的处置方式完全不同（前者要修代码，
   // 后者只能 sudo 或改用别的途径）。故把「为什么空」作为一等信息保留下来。
   bool mac_hidden = false;
-  uint32_t mtu = 0;        // MTU（仅 Linux 可经 ioctl 取得；取不到为 0）
-  bool up = false;         // IFF_UP：接口已启用
-  bool running = false;    // IFF_RUNNING：链路已就绪（网线插好/关联已建立）
-  bool loopback = false;   // IFF_LOOPBACK
-  uint32_t flags = 0;      // 原始 IFF_* 标志位，供调用方做更细判断
+  uint32_t mtu = 0;      // MTU（仅 Linux 可经 ioctl 取得；取不到为 0）
+  bool up = false;       // IFF_UP：接口已启用
+  bool running = false;  // IFF_RUNNING：链路已就绪（网线插好/关联已建立）
+  bool loopback = false; // IFF_LOOPBACK
+  uint32_t flags = 0;    // 原始 IFF_* 标志位，供调用方做更细判断
   std::vector<IfaceAddr> addrs;
 };
 

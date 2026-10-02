@@ -43,8 +43,8 @@ using packet_engine::format_iface_line;
 using packet_engine::IfaceInfo;
 using packet_engine::link_type_name;
 using packet_engine::list_interfaces;
-using packet_engine::native_live_backend_name;
 using packet_engine::list_interfaces_error;
+using packet_engine::native_live_backend_name;
 using packet_engine::PacketBackend;
 using packet_engine::test::check;
 
@@ -121,8 +121,7 @@ void test_iface_enumeration() {
   check(!ifaces.empty(), "接口枚举非空（本机至少有一个网络接口）");
   check(std::strcmp(list_interfaces_error(), "ok") == 0,
         "枚举成功时 list_interfaces_error() 返回 \"ok\"");
-  check(!ifaces.empty() && ifaces.front().index > 0,
-        "枚举结果按 index 升序（首项 index > 0）");
+  check(!ifaces.empty() && ifaces.front().index > 0, "枚举结果按 index 升序（首项 index > 0）");
 
   // index 升序：输出稳定性是「可 diff」的前提，而可 diff 是自动化断言的前提。
   bool sorted = true;
@@ -196,8 +195,8 @@ void test_iface_enumeration() {
         ++empty_but_not_hidden;
       }
     }
-    std::string msg = "mac 空值可归因：被隐藏 " + std::to_string(hidden_count) +
-                      " 个、本无地址 " + std::to_string(empty_but_not_hidden) + " 个";
+    std::string msg = "mac 空值可归因：被隐藏 " + std::to_string(hidden_count) + " 个、本无地址 " +
+                      std::to_string(empty_but_not_hidden) + " 个";
     // 两者之和等于「mac 为空」的总数 —— 即每个空值都有明确归属，没有第三种
     // 无声的空。这条把「区分」这个设计意图固定下来，而不只是记录当下数字。
     check(hidden_count + empty_but_not_hidden <= ifaces.size(), msg.c_str());
@@ -282,8 +281,7 @@ void test_iface_lookup() {
   {
     const std::string line = format_iface_line(ifaces.front());
     check(!line.empty(), "format_iface_line 输出非空");
-    check(line.find(ifaces.front().name) != std::string::npos,
-          "format_iface_line 输出含接口名");
+    check(line.find(ifaces.front().name) != std::string::npos, "format_iface_line 输出含接口名");
     check(line.find("idx=") != std::string::npos,
           "format_iface_line 含 idx= 字段（供 grep 与断言定位）");
   }
@@ -388,8 +386,7 @@ void test_backend_factory() {
     const bool native_expected_present = host_is_linux() || host_is_bsd_like();
     check((live != nullptr) == native_expected_present,
           "live 在本平台可创建（Linux→af-packet / macOS,BSD→bpf）");
-    check((native != nullptr) == native_expected_present,
-          "本平台原生实时后端名可创建");
+    check((native != nullptr) == native_expected_present, "本平台原生实时后端名可创建");
     check((live != nullptr) == (native != nullptr),
           "live 可创建 ⟺ 平台原生实时后端可创建（路由不引入额外失败点）");
 
@@ -415,10 +412,8 @@ void test_backend_factory() {
     if (!other_is_native) {
       check(be == nullptr, "非本平台专属后端名创建失败（不做静默回退）");
       const std::string err = create_backend_error();
-      check(err.find("live") != std::string::npos,
-            "平台错配的诊断指引到跨平台名 live");
-      check(err.find(other) != std::string::npos,
-            "平台错配的诊断回显被请求的后端名");
+      check(err.find("live") != std::string::npos, "平台错配的诊断指引到跨平台名 live");
+      check(err.find(other) != std::string::npos, "平台错配的诊断回显被请求的后端名");
     }
     delete be;
   }
@@ -434,8 +429,7 @@ void test_backend_factory() {
     const std::string err2 = create_backend_error();
     check(err2.find("no-such-backend-name") != std::string::npos,
           "未知后端名的诊断回显该名字（便于发现拼写错误）");
-    check(err2.find("pcap-file") != std::string::npos,
-          "未知后端名的诊断列出实际可用的后端名");
+    check(err2.find("pcap-file") != std::string::npos, "未知后端名的诊断列出实际可用的后端名");
 
     check(create_backend(nullptr) == nullptr, "nullptr 后端名创建失败而非崩溃");
     check(std::strlen(create_backend_error()) > 0, "nullptr 后端名失败时原因非空");
@@ -459,8 +453,7 @@ void test_failure_diagnostics() {
       check(rc != 0, "绑定不存在的接口失败");
       const std::string reason = be->error_reason();
       check(!reason.empty(), "绑定失败提供了原因");
-      check(reason != kBaseDefaultReason(),
-            "原因来自具体后端而非基类占位串（证明覆写生效）");
+      check(reason != kBaseDefaultReason(), "原因来自具体后端而非基类占位串（证明覆写生效）");
       check(reason.find(kNoSuchIface) != std::string::npos,
             "原因回显了写错的接口名（否则用户不知道是哪个名字错了）");
 
@@ -544,8 +537,7 @@ void test_failure_diagnostics() {
         } else {
           // 非权限类失败也必须可归因，且不能被误标为权限类。
           check(std::strlen(be->error_reason()) > 0, "非权限类失败仍提供了原因");
-          check(be->error_reason() != kBaseDefaultReason(),
-                "非权限类失败的原因来自具体后端");
+          check(be->error_reason() != kBaseDefaultReason(), "非权限类失败的原因来自具体后端");
         }
       } else {
         check(false, "未找到回环接口，无法验证绑定路径");
@@ -583,8 +575,7 @@ void test_failure_diagnostics() {
         opt.retire_ms = 50;
         const std::string r = be->configure(opt);
         check(!r.empty(), "BPF 对 retire_ms 如实回报不支持（BPF 无块概念）");
-        check(r.find("retire_ms") != std::string::npos,
-              "不支持项的报告点出了具体参数名 retire_ms");
+        check(r.find("retire_ms") != std::string::npos, "不支持项的报告点出了具体参数名 retire_ms");
 
         // 反向：allow_fallback 在 BPF 上只有一条路径，属「恒已满足」而非「不支持」。
         // 报它会让每个 macOS 用户都看到一条无意义警告 —— 噪声会淹没真信号。

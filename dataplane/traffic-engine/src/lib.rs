@@ -7,6 +7,7 @@
 // 只依赖其 FlowKey 类型，因此单独成模块、可独立测试。
 pub mod attributes_gen;
 pub mod channel;
+pub mod dpi;
 pub mod flow;
 pub mod session;
 

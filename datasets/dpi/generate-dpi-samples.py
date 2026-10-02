@@ -183,8 +183,15 @@ def ja3_of(version, ciphers, exts, groups, fmts) -> str:
     return raw, hashlib.md5(raw.encode("ascii")).hexdigest()
 
 
-def tls_case(name, payload: bytes, expect: str, **kw):
-    """组装一个 TLS 用例：期望值由**构造参数**推出，不解析 payload。"""
+def tls_case(name, payload: bytes, expect: str, tshark_verified=True,
+             tshark_note=None, **kw):
+    """组装一个 TLS 用例：期望值由**构造参数**推出，不解析 payload。
+
+    tshark_verified 用于标注「这一条**无法**用 tshark 交叉核验」。
+    三方互证的价值建立在"每条都有独立实现复核"上；若某条静默跳过核验，
+    它就成了只有生成器一个证据的独白。因此这里必须**显式**标出来、写清原因，
+    而不是让它悄悄失去交叉验证。
+    """
     ciphers = kw.get("ciphers")
     if ciphers is None:
         ciphers = [0x1301, 0x1302, 0x1303, 0xC02B, 0xC02F, 0x009C, 0x009D]
@@ -218,6 +225,9 @@ def tls_case(name, payload: bytes, expect: str, **kw):
         "extensions": exts,
         "groups": groups,
         "ec_point_formats": fmts,
+        # tshark 交叉核验标记：verified=False 的条目不参与 check-dpi-vectors.sh 的比对，
+        # 原因写在 note 里（不是"没做"，是"这一条独立实现也判不出来"）。
+        "tshark": {"verified": bool(tshark_verified), "note": tshark_note},
     }
     if expect == "identified":
         raw, digest = ja3_of(entry["version"], ciphers, exts, groups, fmts)
@@ -262,7 +272,12 @@ def build_tls_cases():
     # 6. 内层长度矛盾（握手长度自洽，但 cipher_suites 长度声称 200 实际只有 14）：
     #    这是真畸形，任何分片补齐都救不了，必须报 malformed。
     payload = bytearray(client_hello(host="bad-inner.example"))
-    pos = 5 + 2 + 32 + 1  # 握手头(5) + version(2) + random(32) + session_id_len(1)
+    # 偏移量必须把**整个握手头的 4 字节**算进去：记录头 5 字节 + 握手头 4 字节，
+    # 之后才是握手体（version 2 / random 32 / session_id_len 1）。
+    # 早期版本写成 5+2+32+1=40，漏了 3 个字节，结果改坏的是 random 而不是 cipher_suites
+    # 长度 —— 于是这条"畸形"样本其实完全合法，解析器正确地识别了它，
+    # 而测试因为期望 malformed 才暴露出来。**畸形样本必须真的畸形**，否则它测的是空气。
+    pos = 5 + 4 + 2 + 32 + 1
     payload[pos:pos + 2] = struct.pack("!H", 200)
     cases.append(tls_case("tls-bad-inner-len", bytes(payload), "malformed",
                           host="bad-inner.example"))
@@ -274,9 +289,22 @@ def build_tls_cases():
 
     # 8. ECH 扩展（0xfe0d）存在但无外层 SNI：ECH 会把真实 SNI 加密，
     #    外层不可见 —— 应正常识别为 TLS 且 SNI 缺失，不能报错。
+    #
+    # 【已知的交叉核验例外】tshark 4.6.7 的 ECH 解析器对 draft 版本敏感：任何手工构造的
+    # ECH 体（空体 / 4 字节 / 18 字节 / draft13 / config_id 单字节，均试过）都会被它判为
+    # malformed，进而**抑制整包的 JA3**——连带连 SNI 也不给。这不是本向量的问题：
+    # 未分配扩展 0x1234 带非空 body、以及 GREASE 扩展都能正常产出 JA3 且与自算一致，
+    # 说明 tshark 只是拒收"它不认识的 ECH 格式"。
+    # 按 JA3 规范，0xFE0D 就是个不透明扩展号、应计入 extensions 段，故本条期望值取
+    # 生成器自算（ja3=5ed85fdff2e6244597c946c694915a30），**不模仿 tshark 放弃整包**。
     payload = client_hello(host=None, alpn=[b"h2"], extra_exts=[ext_generic(0xFE0D)])
     cases.append(tls_case("tls-ech-no-outer-sni", payload, "identified", host=None,
-                          alpn=[b"h2"], extra_exts=[ext_generic(0xFE0D)]))
+                          alpn=[b"h2"], extra_exts=[ext_generic(0xFE0D)],
+                          tshark_verified=False,
+                          tshark_note="tshark 4.6.7 的 ECH 解析器认不出手工构造的 ECH 体，"
+                                      "会连整包 JA3 一起抑制；按 JA3 规范 0xFE0D 应为"
+                                      "不透明扩展计入 extensions，故只做生成器自算，"
+                                      "不跟随 tshark 放弃整包。"))
 
     # 9. 非 TLS 载荷（HTTP 请求）：作为 TLS 检测器的负例，防"看到 \x16 就当 TLS"
     http = (b"GET /index.html HTTP/1.1\r\n"
@@ -403,7 +431,9 @@ def main():
     manifest = {
         "generated_by": "datasets/dpi/generate-dpi-samples.py",
         "note": "期望值由构造参数推出（非解析产出）；SNI/JA3/QNAME 由 "
-                "scripts/verify/check-dpi-vectors.sh 用 tshark 独立复核。",
+                "scripts/verify/check-dpi-vectors.sh 用 tshark 独立复核。"
+                "tls[].tshark.verified=false 的条目属已知例外（仅生成器自算），"
+                "原因见该字段的 note —— 未被核验的条目必须显式列出，不能默认通过。",
         "tls": [],
         "dns": [],
         "http": [],
