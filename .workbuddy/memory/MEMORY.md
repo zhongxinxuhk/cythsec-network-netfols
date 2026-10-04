@@ -50,6 +50,10 @@
   - `ssh cythsec-dev` → NAT `172.16.191.129`（用户给的地址）
   - `ssh cythsec-dev-ho` → Host-Only `172.16.135.128`（抖动更小，**大文件传输优先用它**）
   - 私钥 `~/.ssh/id_ed25519_cythsec_dev`（**只在本机**；别名写在 `~/.ssh/config`）
+  - **`ssh <host> '命令'` 是非交互 shell，PATH 里没有 `~/.cargo/bin`** → 直接跑门禁会报
+    `✗ 工具链缺失: cargo`（交互登录却正常）。一律写成
+    `ssh cythsec-dev-ho 'export PATH="$HOME/.cargo/bin:$PATH"; cd /root/CythSec && …'`。
+    预检没有错（非交互环境里确实没有 cargo），要改的是调用姿势
 - **规格与能力边界（决定在这台机上跑什么之前先看这条）**：**2 vCPU / 3 GB 内存 / 45 GB 磁盘 / 无 NUMA**。
   已装（2026-10-05 补齐后）：`rustup 1.97.1`（与本机**逐位同版本**，含 rustfmt）+ `gcc`/`g++ 14.3.1` + `cmake 3.31.8`
   + `git 2.52` + `tshark 4.4.2` + `golang` + `nodejs`/`npm` + `python3.12` —— 即**全套门禁依赖已齐**，
@@ -91,7 +95,10 @@
   平台值 0.393 s 就是派发端（读盘+解帧+分片+入队）→ **2.33 Mpps ≈ 10G 最坏帧（64B/14.88 Mpps）
   的 16%，且加核解决不了**。要线性必须让"读包+解帧"也分掉（每队列一环 = `CYS-PKT-009`）。
   在线路径 `ring-consume` **仍是单表单线程**；分片模式下每个 worker 各持 `--max-sessions`
-  额度，一旦发生逐出，输出与 `--workers 1` 不再逐字节一致（CLI 每次打印 `evicted=`）
+  额度，一旦发生逐出，输出与 `--workers 1` 不再逐字节一致（CLI 每次打印 `evicted=`）。
+  **跨机**：Linux 2 vCPU 测试机上同一脚本单核 0.883 Mpps（与 M1 Pro 0.918 持平），
+  但 2/4 worker 只有 **1.00×/1.11×** —— 核少时派发端把收益全吃掉；脚本的 `D=最优档位`
+  归因**要求 worker 数 ≥ 核数**，否则会把线程争抢误算成派发端
 
 - `BACKLOG.md` §3.4 M4 控制平面状态**滞后于代码**（`policyd` / `dnsd` / `telemetryd` / `pkg`
   已存在且 19 个 Go 测试包全过，真实缺口在**落地侧**：nftables / 原子回滚 / PG / 版本化 /
