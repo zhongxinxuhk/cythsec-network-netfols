@@ -53,7 +53,7 @@
 | 流记录的 tshark 核验 + 反向故障注入 | **725 项一致**（跳过 7 项，全部有理由；17 项注入全部被检出） | `--flows` |
 | 跨语言 e2e | 4 阶段 / 19 项断言通过 | `--e2e`（须同时选 `--cpp --rust`） |
 | 数据面基准回归门禁 + 反向故障注入 | 12 项回归下限全过；注入 3/3 检出；需求目标 4/12 | `--bench`（**默认不跑**，见 §4） |
-| lint（格式 + 真源一致性） | 7 项全过 | `scripts/lint/lint-all.sh` |
+| lint（格式 + 生成物一致性 + 版本真源） | 8 项全过 | `scripts/lint/lint-all.sh` |
 
 > ⚠ **本机唯一必红的一项**：`test-all.sh --node` 里的 `npm ci` 会被环境的
 > `safe-delete` 钩子拦下（它要删 `node_modules/.bin`，7884 个目标 > 阈值 50），
@@ -61,7 +61,7 @@
 > 前端代码本身是绿的：`cd web/console && npm test` → 25 项通过。
 > 详见 §7.1。**除这一项外，其余各栈单独跑均全绿**（含不带参数跑时的其余部分）。
 
-待办表状态（`count-backlog.sh`）：349 任务 / 9 里程碑 —— 未开始 302 · 进行中 14 · 已完成 33（M3 12/39）。
+待办表状态（`count-backlog.sh`）：349 任务 / 9 里程碑 —— 未开始 299 · 进行中 14 · 已完成 36（M3 12/39）。
 
 ---
 
@@ -310,7 +310,7 @@ PostgreSQL 持久化、策略版本化、命中统计、审计日志、服务间
 ```bash
 bash scripts/test/test-all.sh            # 全部（含向量自动生成）
 bash scripts/test/test-all.sh --rust --dpi --reassembly --flows   # 日常快速回路
-bash scripts/lint/lint-all.sh            # 七项格式 / 真源一致性
+bash scripts/lint/lint-all.sh            # 八项：格式 / 生成物一致性 / 版本真源 + 检查器自证
 ```
 
 | 开关 | 拦什么 | 当前结果 |
@@ -338,8 +338,9 @@ bash scripts/lint/lint-all.sh            # 七项格式 / 真源一致性
   进默认集合只会变成"随机红的门禁"，而随机红等于没有门禁。换机器后先
   `--report-only` 看真实数字再重标定。
 
-**lint 七项明细**：`[cpp] clang-format` · `[rust] cargo fmt` · `[go] gofmt` ·
+**lint 八项明细**：`[cpp] clang-format` · `[rust] cargo fmt` · `[go] gofmt` ·
 `[codegen] 属性字典生成物一致性` · `[codegen] 通道 ABI 双端契约一致性` ·
+`[version] 版本单一真源一致性`（这一项跑两步：真实校验 + 检查器自证）·
 `[node] 前端类型检查（vue-tsc / tsc --noEmit）` · `[node] eslint`。
 
 **`test-all.sh` 现在会先自动生成向量**（`gen_datasets`）。
@@ -408,12 +409,18 @@ tshark 是唯一能发现「一致地错」的手段。
    （新写的 `check-flow-bench.sh` 里 `$ROUNDS）` 直接把右括号并进变量名）。
    新脚本一律先按 `\$([A-Za-z_][A-Za-z0-9_]*)` → `${...}` 批量加花括号，再 `bash -n` 验证。
 
-3. **注释里声称「有脚本会拦下」的，该脚本必须真实存在并挂在门禁上**
+3. **注释里声称「有脚本会拦下」的，该脚本必须真实存在、在版本控制里、并挂在门禁上**（三条缺一条都等于没有）
    历史事故：4 处注释这么写，而那个脚本**并不存在**。
 
 4. **真源单一**：`configs/registry/*.json` 是唯一真源。
    四语言侧只允许**引用生成物**（`attributes_gen` / `abi_gen`），
    禁止手写 `"ATTR_..."` 之类字面量。
+
+   **本批给出这条约定的两个真实反例**（都发生在同一天、同一个脚本上）：
+   `scripts/release/check-version.sh` 正确且存在，但 ① 没有任何门禁调用它，
+   ② 它所在的 `scripts/release/` 被 `.gitignore` 的裸 `release/` 规则整个忽略、
+   **从未入库**。"有检查器"和"检查器会跑"和"检查器在仓库里"是三件事，
+   任何一件缺失，绿色的门禁都与"没检查"无法区分。
 
 5. **未识别 ≠ 识别为无**：SNI 为 `None` 时**不产出** `ATTR_TLS_SNI`，
    而不是产出一个空串属性。空串在下游会被当成「确实没有」，语义相反。
@@ -466,7 +473,7 @@ tshark 是唯一能发现「一致地错」的手段。
 | `CYS-TRF-028` | 特征定义仍是「Rust 代码里一份」 | 与训练侧对齐（单一来源 + 双端生成）未做，Python 侧一旦手抄就会各自漂移 |
 | `CYS-TRF-033` | 与 `storage/clickhouse` 建表 DDL 未对齐 | storage 侧尚未落地；现在只保证列名 + `schema_version` |
 | `CYS-TRF-035` | 无真实省网 pcap 上的批量验证 | 现有样本是确定性生成的合成流量，只覆盖已知边界 |
-| — | `VERSION=9.9.9` 与 `Cargo.toml`/`package.json` 的 `0.1.0` 不一致 | `scripts/release/check-version.sh` **当前会失败**，发版前必须定哪个是真值 |
+| — | ~~`VERSION=9.9.9` 与 `Cargo.toml`/`package.json` 的 `0.1.0` 不一致~~ | **已修**（`64f4079` 定真源 `VERSION=0.1.0`，四端全部改为派生）。**本批补齐了"它不会再悄悄坏掉"这一步，而且挖出比"没人跑"更深的一层**：`scripts/release/check-version.sh` 此前**没有任何门禁调用它**（检查器存在但没人跑，等于没有；现已挂成 `lint-all.sh` 第 6 条），更糟的是**它自己从未入库** —— `.gitignore` 里不带前导斜杠的 `release/` 会匹配任意层级同名目录，把 `scripts/release/` 整个忽略了：`scripts/README.md` 与本文件都在引用它，`git status` 却看不见它，**全新克隆里根本没有这个文件**。已把规则改为 `/release/`（只忽略根目录打包输出）并让两份脚本入库。挂门禁 + 加 `--self-test`（临时最小仓库树 + 注入 3 处不一致，要求分别判红并指出位置）+ `check-version-bump.sh`（真改真源重建四端）。四端已逐个**以产物级证据**复核：`cythsec-analyze --version` → `version=0.1.0`；`build/dataplane/packet-engine/hello_packet --version` → `version : 0.1.0`；`policyd -version` → `policyd 0.1.0 (commit …, go1.26.2 darwin/arm64)`；前端 `version.test.ts` 直接读根 `VERSION` 比对（经构建期 `define` 注入）。**踩到的坑**：`cmake-build-debug/` 是 IDE 的陈旧构建树（配置于 `VERSION=9.9.9` 时期），它的 `hello_packet --version` 仍打印 `9.9.9` —— 拿它验收会以为修复没生效，见 §7.6 |
 | policyd 落地侧 | nftables 下发 / 原子生效与回滚 / PostgreSQL 持久化 / 策略版本化 / 命中统计 / 审计日志 / 服务间联动 **全部未做** | 引擎内核已就绪（§3），缺口在「把判定结果落到内核与库」这一段 |
 | `dnsd` / `telemetryd` | 领域模型与 API 在，但与 policyd 的策略模型未统一、无真实后端 | 见 BACKLOG `CYS-DNS-014` / `CYS-TEL-010` 一类联动任务 |
 | **待办表本身** | `BACKLOG.md` 的控制平面部分滞后于代码（见 §1 顶部提醒） | `8e0fb03` 等并行提交未回写状态；刷新时需**逐项对代码核实**，不要凭印象批量打勾 |
@@ -485,18 +492,24 @@ tshark 是唯一能发现「一致地错」的手段。
    **这句话是误导**：不是网络问题，装包并不需要联网（依赖已缓存）。
    更糟的是它会让人去查网络、查 registry，而真正的原因在删除阶段。
 
-   处置（按优先级）：
-   - 只想验前端代码：`cd web/console && npm test` → 25 项通过。
-   - 需要重装依赖：手动跑 `npm ci --no-audit --no-fund`（会触发沙箱升级确认，
-     批准后 `added 311 packages in 22s`）。**已被拦的 `npm ci` 不会破坏现场**——
-     拦截发生在删除阶段之前，`node_modules/.bin` 实测 23 个文件完好。
-   - 建议的根治（留给下一棒）：把 `test_node()` 改成「`node_modules/.bin` 存在
-     就直接 `npm test`，不存在才 `npm ci`」，并把被拦截的错误单独报成
-     「环境拦截，未执行」而不是「失败」。
+   **已修（2026-10-04）**，三处改动：
+   - `test_node()` 先看 `web/console/node_modules/.bin/vitest`：在位就直接 `npm test`，
+     不在位才 `npm ci`（本机常态是前者，于是根本不会碰到删除阶段）。
+   - 失败分类独立成函数 `classify_npm_ci_failure()`（stdin 吃 npm 输出 →
+     `ENV_INTERCEPTED` / `REAL_FAILURE`）：含 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`
+     才报「环境拦截（不是网络问题）」，其余一律报「真失败」—— **不许拿环境当挡箭牌**。
+     抽成函数是为了能自证：写在 `if` 里就只能靠"真的触发一次批量删除保护"来验证。
+   - `test-all.sh --self-test`（挂在 `--node` 前自动跑）：用一个 stub `npm` +
+     `CYTHSEC_FORCE_NPM_CI=1` 把**此前从未执行过**的那条分支真正跑一遍，4 个场景
+     （分类×2、拦截、真失败、成功）必须全部符合预期。
+   - 仍然可用的退路：只想验前端就 `cd web/console && npm test`；需要重装依赖就手动
+     `npm ci --no-audit --no-fund`。**已被拦的 `npm ci` 不会破坏现场**：拦截发生在
+     删除阶段之前，`node_modules/.bin` 实测 23 个文件完好。
 
    > 历史记录：早先 e2e 也曾在全量跑时报红，曾被一并归入此项。**2026-10-02 复测
-   > 已不成立**：`bash scripts/test/test-all.sh --cpp --rust --e2e` →
-   > `测试汇总：全部通过 ✓`。所以本机现在**只有 `--node` 一项会红**。
+   > 已不成立**：`bash scripts/test/test-all.sh --cpp --rust --e2e` → `全部通过 ✓`。
+   > **2026-10-04 复测**：`bash scripts/test/test-all.sh --node` → 自证 4 场景 +
+   > 前端 25 项全绿，`测试汇总：全部通过 ✓`。即全量门禁（含 `--node`）现在真的能全绿。
 
 2. **`rm -rf` 与批量操作优先走回收站**，且逐批确认。
 
@@ -507,6 +520,21 @@ tshark 是唯一能发现「一致地错」的手段。
 
 5. **`datasets/` 下的 pcap 与 json 是生成物**（`.gitignore` 覆盖）。
    改动向量定义后要重新跑生成器，并把 `expected.json` 的变化与实现改动一起提交。
+
+7. **`.gitignore` 里的裸目录名会吃掉同名的源码目录**。`release/`（无前导斜杠）按
+   gitignore 规则匹配**任意层级**的 `release` 目录，于是 `scripts/release/` 被整体忽略：
+   文件在磁盘上、执行权限正常、`bash scripts/release/check-version.sh` 本地跑得通，
+   但它不在版本控制里，**全新克隆里没有它**，`git status` 也永远不提示。
+   本批已把该规则改成 `/release/`，并全仓复查过其余被忽略项（只剩刻意忽略的生成物）。
+   **新增目录后请立刻 `git check-ignore -v <path>` 确认它不是"沉默的未跟踪"**；
+   同理，`git status --short` 看不见某个自己刚写的文件时，先怀疑 ignore 规则而不是编辑器。
+
+6. **陈旧构建树会让你以为修复没生效**。`cmake-build-debug/` 是 IDE 的离树缓存，
+   配置于 `VERSION=9.9.9` 时期；里面的 `hello_packet --version` 至今打印 `9.9.9`，
+   而源码与门禁用的 `build/` 树都是 `0.1.0`。**验收一律用 `build/`**（`test_cpp`
+   每轮重新 `cmake -S . -B build` 并重建，正是为了避免"拿上一次的产物验当前源码"
+   这种假绿）。同类坑：产物版本号是**构建期**烙进去的，改了 `VERSION` 必须重新构建
+   才能看到变化 —— 看到旧版本号时先问一句"这个二进制是什么时候构建的"。
 
 ---
 
@@ -519,9 +547,9 @@ tshark 是唯一能发现「一致地错」的手段。
 | ~~1~~ | ~~**`evict_lru` 的 O(每分片容量)**~~ **已于 2026-10-04 第二段落地** | 结论与预期相反：**不需要语义决策** —— 分片内改成"槽位数组 + 双向链表"后仍是精确 LRU、仍确定性，逐出摘表头即 O(1)（0.21µs@256 / 0.34µs@8192）。而真正会改语义的**采样 LRU 被实测否掉**（热点命中率 58.4% vs 99.9%）。教训：先量再决定，别把"看起来最省事的近似"当成默认选项 |
 | **1** | **稳态吞吐与 10G 的差距**（原 5b 提为第一项） | 现有数字：update 5.6 / query-hit 5.0 / query-miss 13.8 Mops/s vs 需求 14.88 Mpps（达成 34~38%）。先做一个便宜实验（每核一个独立流表实例，证明近线性扩展），再决定"多实例分核"还是"条目拆热/冷字段"。**别在没有实验数据的情况下直接重构流表** |
 | 2 | `CYS-PKT-007/008` 收尾：`e2e-live-capture.sh` + 吞吐对照实测 | 唯一阻塞 `CYS-TRF-034` 验收的项；吞吐数据是省网需求的核心论据 |
-| 3 | `VERSION` 不一致 | 发版路径现在就是红的，越晚改越痛 |
+| ~~3~~ | ~~`VERSION` 不一致~~ **已落地**（`64f4079` 定真源 + 2026-10-04 挂进门禁 + 自证） | 真源 `VERSION=0.1.0`，四端全部派生；`check-version.sh` 成为 `lint-all.sh` 第 6 条并带 `--self-test`（3 处注入必须判红）。教训：**检查器不挂门禁等于没有检查器** —— 它当时已存在且能跑，但没有任何脚本调用它 |
 | 4 | `CYS-TRF-020/023` 补全（HTTP 响应侧与 UA、DNS RCODE/EDNS0） | 已落地部分的自然延伸，向量体系现成，加样本成本低 |
-| 5 | 修 `test_node()` 的 `npm ci` 拦截（见 §7.1） | 每一项全量门禁都会撞一次这个假红灯，且报错信息指向"网络"这个错方向。改动约十行，收益是「全量跑真的能全绿」 |
+| ~~5~~ | ~~修 `test_node()` 的 `npm ci` 拦截（见 §7.1）~~ **已落地**（2026-10-04） | 见 §7.1：改成"依赖在位就跳过 `npm ci`"，并把失败分类抽成可自证函数 + `--self-test` 4 场景（含此前从未执行过的拦截分支）。`--node` 现在全绿 |
 
 > 建议把 `clang-format` 与 `cargo fmt` 装成 pre-commit 钩子。本批已是第二次
 > 因忘记格式化导致 lint 成片报红。
@@ -596,28 +624,33 @@ bash scripts/test/test-all.sh --bench
 #    换机器/换核数后先跑：bash scripts/verify/check-flow-bench.sh --report-only 看真实数字
 
 # 3. 格式与真源一致性（前端类型检查也在这里）
-bash scripts/lint/lint-all.sh             # 期望：七项全过（含 node 类型检查与 eslint）
+bash scripts/lint/lint-all.sh             # 期望：八项全过（含版本真源 + node 检查）
 
 # 4. 端到端 + ABI parity（两者都必须带上 --cpp --rust）
 bash scripts/test/test-all.sh --cpp --rust --parity --e2e
 #    期望：parity 89 行一致 + e2e 4 阶段 / 19 项断言 + 测试汇总全部通过
 
-# 5. 前端单测（不要用 --node，它会先跑 npm ci 并被环境拦）
-(cd web/console && npm test)              # 期望：4 文件 / 25 项通过
+# 5. 前端单测（--node 现在可直接用：自证 4 场景 + 前端 25 项）
+bash scripts/test/test-all.sh --node
 
 # 6. 待办表状态
 bash docs/planning/scripts/count-backlog.sh | tail -20
-#    期望：未开始 302 · 进行中 14 · 已完成 33
+#    期望：未开始 299 · 进行中 14 · 已完成 36
 python3 docs/planning/scripts/check-deps.py
 #    期望：无环、无悬空、无自依赖；5 处状态不一致全部是**已记录**项：
 #      - CYS-PKT-006 / CYS-PKT-024：既有项（前置的接口部分已交付，属语义重叠）
 #      - CYS-TRF-008 / 010 / 014：前置 CYS-TRF-006/007 为 ◐ —— 依赖的是分片流表与超时的
 #        **功能**（已可用）；`CYS-TRF-037` 已落地并给出数字，只是 006/007 仍有未达成项
 #        （每包路径吞吐、小时级长稳），故仍标 ◐ 而不是批量打勾
+
+# 7. 反查「检查器真的在仓库里」（本批的教训：文件在磁盘上不等于在版本控制里）
+git ls-files scripts/release/            # 期望：check-version.sh / check-version-bump.sh
+bash scripts/release/check-version.sh --self-test   # 期望：自证通过（4 场景）
 ```
 
-**若看到 `✗ [node] npm ci 失败（可能需要网络）`**：那是 §7.1 的环境拦截，
-不是网络问题也不是代码缺陷——照上面第 5 步单独跑 `npm test` 即可。
+**若看到 `✗ [node] npm ci 被环境拦截（ENV_INTERCEPTED…）`**：那是 §7.1 的批量删除
+保护，不是网络问题也不是代码缺陷（这条文案已经被修成明确指向环境；看到 `REAL_FAILURE`
+才是真失败）。依赖在位时脚本会自动跳过 `npm ci`，所以本机常态下不会出现。
 
 **环境依赖**：`cmake` / `cargo` / `go` / `node` / `npm` / `python3` / `tshark`（4.6.7）。
 缺 `tshark` 时三道核验会明确打印「未核验…不计为通过」并返回 0 ——

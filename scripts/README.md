@@ -23,9 +23,15 @@
 
 ## release/
 
+> **这两份脚本此前不在版本控制里**：`.gitignore` 曾写不带前导斜杠的 `release/`，
+> 按 gitignore 规则会匹配**任意层级**名为 `release` 的目录，于是 `scripts/release/`
+> 被整体忽略 —— README 与本目录都在引用它，`git status` 却看不见，全新克隆里没有它。
+> 规则已改为 `/release/`。新增目录后请 `git check-ignore -v <path>` 自查。
+
 | 脚本 | 用途 |
 | --- | --- |
-| `check-version.sh` | 校验版本单一真源：`Cargo.toml` 与 `package.json` 必须等于根 `VERSION` |
+| `check-version.sh` | 校验版本单一真源：`Cargo.toml` 与 `package.json` 必须等于根 `VERSION`；`--self-test` 反向注入自证（临时最小仓库树 + 3 处不一致必须判红）。已挂在 `lint-all.sh` 第 6 条 |
+| `check-version-bump.sh` | **产物级**验收：把根 `VERSION` 临时改成候选值并重建四端，要求四个产物各报该值、且 `check-version.sh` 在该状态下判红，随后自动复原真源。约 1~3 分钟，刻意不进默认门禁（发版前 / 改版本机制后手跑） |
 
 ## security/
 

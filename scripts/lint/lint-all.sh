@@ -17,6 +17,7 @@ usage() { cat <<'EOF'
     - gofmt -l（Go，services/ 下）
     - 属性字典生成物一致性（scripts/verify/check-attributes.sh）
     - 通道 ABI 双端契约一致性（scripts/verify/check-channel-abi.sh）
+    - 版本单一真源一致性 + 检查器自证（scripts/release/check-version.sh [--self-test]）
     - 前端类型检查（web/console：src/tests + 构建配置两份 tsconfig）
     - npm run lint（前端 eslint，web/console）
   任一检查未通过则整体非 0 退出。
@@ -110,6 +111,31 @@ if ! bash scripts/verify/check-channel-abi.sh; then
   failed=$((failed+1))
 else
   echo "✓ [codegen] 通道 ABI 双端契约一致"
+fi
+
+# ---------- 生成物一致性 : 版本单一真源 ----------
+# 归入 lint 而非 test：它校验的是「提交物里的版本副本/派生点是否与真源一致」，
+# 与属性字典、通道 ABI 同类，都是"不跑测试也能判"的静态一致性。
+#
+# **为什么必须挂进门禁**：`scripts/release/check-version.sh` 早就存在，但此前
+# 没有任何门禁调用它 —— 于是 2ecf512 把根 `VERSION` 改成 9.9.9 时 lint/test 全绿，
+# 只有"发版前手动跑一次"才会发现四端版本号已经不一致。没人执行的检查器等于没有。
+#
+# 这一条跑两步：真实校验 + `--self-test`。后者在临时目录里构造最小仓库树并注入
+# 三处不一致，要求检查器**分别判红并指出位置** —— 否则"检查器恒返回成功"也会
+# 一路绿灯：绿色的「通过」与绿色的「没跑」长得一模一样。
+echo "==> [version] 版本单一真源一致性"
+if ! bash scripts/release/check-version.sh; then
+  echo "✗ [version] 版本副本/派生点与根 VERSION 不一致（见上方具体位置）" >&2
+  failed=$((failed+1))
+else
+  echo "✓ [version] 版本单一真源一致（四端已派生或同步）"
+fi
+if ! bash scripts/release/check-version.sh --self-test >/dev/null; then
+  echo "✗ [version] 检查器自证失败：它对注入的不一致视而不见（见上方输出）" >&2
+  failed=$((failed+1))
+else
+  echo "✓ [version] 检查器自证通过（注入不一致会被判红并指出位置）"
 fi
 
 # ---------- 前端 : 类型检查 ----------

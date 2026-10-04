@@ -11,7 +11,13 @@ cmake-build-*/
 *.exe
 out/
 dist/
-release/
+# 只忽略**根目录**的打包输出。此前写的是不带前导斜杠的 `release/`，
+# 它按 gitignore 规则匹配**任意层级**名为 release 的目录 —— 于是
+# `scripts/release/` 整个被忽略，`check-version.sh`（版本单一真源自检）
+# 从未入库：文档、README 都在引用它，`git status` 却看不见它，
+# 全新克隆里根本没有这个文件。同类模式（out/、dist/）目前没有撞到
+# 真实源码目录，但新增目录前请先 `git check-ignore -v <path>` 确认。
+/release/
 
 # --- C/C++ ---
 *.cmake

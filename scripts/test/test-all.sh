@@ -17,7 +17,7 @@ cd "$ROOT"
 usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
-              [--reassembly] [--flows] [--e2e] [--live] [--bench] [--help]
+              [--reassembly] [--flows] [--e2e] [--live] [--bench] [--self-test] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
   --rust         只跑 Rust 测试（cargo test --offline）
@@ -30,6 +30,7 @@ usage() {
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
+  --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支），不跑任何真实测试
   --help         显示本帮助
 
 不带参数时跑全部；parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
@@ -120,21 +121,37 @@ test_go() {
   return $rc
 }
 
+# 把 `npm ci` 的失败输出分成两类。**单独成函数是为了能自证**：写在 if 里就只能靠
+# "真的去触发一次批量删除保护"来验证，而那正是我们不想做的事（它要删 7884 个文件）。
+# 输入：stdin 上的 npm 输出；输出：ENV_INTERCEPTED 或 REAL_FAILURE。
+classify_npm_ci_failure() {
+  if grep -q "SAFE_DELETE_BULK_CONFIRM_REQUIRED"; then
+    echo "ENV_INTERCEPTED"
+  else
+    echo "REAL_FAILURE"
+  fi
+}
+
 test_node() {
   echo "==> [node] web/console: npm ci + npm test"
   # 依赖已在位就不重装：`npm ci` 的第一步是删掉整个 node_modules（含 .bin 下的
   # 全部 shim），在带批量删除保护的环境里会被拦下，而拦截文案容易被误读成
-  # 「网络不可达」（见 HANDOFF §7.1）。这里把「环境拦截」与「sql 真失败」分开报。
-  if [[ -x web/console/node_modules/.bin/vitest ]]; then
+  # 「网络不可达」（见 HANDOFF §7.1）。这里把「环境拦截」与「真失败」分开报。
+  #
+  # CYTHSEC_FORCE_NPM_CI=1 强制走 npm ci 分支：`--self-test` 用它 + 一个 stub npm
+  # 把这条分支真正跑一遍（它此前从未被执行过 —— 本机 node_modules 一直在位）。
+  if [[ -x web/console/node_modules/.bin/vitest && "${CYTHSEC_FORCE_NPM_CI:-0}" != "1" ]]; then
     echo "  （node_modules 已就位，跳过 npm ci）"
   else
-    local out
+    local out kind
     if ! out="$(cd web/console && npm ci 2>&1)"; then
-      echo "${out}" >&2
-      if echo "${out}" | grep -q "SAFE_DELETE_BULK_CONFIRM_REQUIRED"; then
-        echo "✗ [node] npm ci 被环境批量删除保护拦截（环境限制，未执行；不是网络问题）" >&2
+      printf '%s\n' "${out}" >&2
+      kind="$(printf '%s\n' "${out}" | classify_npm_ci_failure)"
+      if [[ "${kind}" == "ENV_INTERCEPTED" ]]; then
+        echo "✗ [node] npm ci 被环境拦截（ENV_INTERCEPTED：批量删除保护，未执行；不是网络问题）" >&2
+        echo "     node_modules 已在位时本脚本会自动跳过 npm ci；也可单独跑 (cd web/console && npm test)" >&2
       else
-        echo "✗ [node] npm ci 失败" >&2
+        echo "✗ [node] npm ci 真失败（REAL_FAILURE：输出里没有 SAFE_DELETE_BULK_CONFIRM_REQUIRED）" >&2
       fi
       return 1
     fi
@@ -144,6 +161,99 @@ test_node() {
     return 1
   fi
   echo "✓ [node] 测试通过"
+}
+
+# 自证本脚本**自身的判定逻辑**（--self-test）。不跑任何真实测试：
+# 它回答的是"我们用来判定的那段逻辑真的会判吗" —— 尤其包括那条在本机
+# **从未被执行过**的 npm ci 环境拦截分支（node_modules 一直在位，所以永远走的是
+# "跳过 npm ci"）。一个从不执行的分支，等于一段没人看过的代码。
+self_test() {
+  echo "==> [self-test] test-all.sh 自身判定逻辑（npm ci 失败分类 + 拦截分支）"
+  local fails=0 got out rc
+  # 用全局名：trap 执行时 local 变量已出作用域，set -u 会把清理变成报错。
+  ST_TMP="$(mktemp -d)"
+  trap 'rm -rf "${ST_TMP}"' EXIT
+  mkdir -p "${ST_TMP}/bin"
+  # stub npm：STUB_NPM_CI_TEXT 非空 ⇒ npm ci 失败并原样打印该文本；空 ⇒ ci 成功。
+  cat > "${ST_TMP}/bin/npm" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  ci)
+    if [[ -n "${STUB_NPM_CI_TEXT:-}" ]]; then
+      printf '%s\n' "${STUB_NPM_CI_TEXT}" >&2
+      exit 1
+    fi
+    exit 0 ;;
+  test)
+    echo "stub npm test：通过"
+    exit 0 ;;
+esac
+exit 0
+STUB
+  chmod +x "${ST_TMP}/bin/npm"
+
+  # 1. 分类函数（单元级）：拦截标记 → ENV_INTERCEPTED，其余 → REAL_FAILURE
+  got="$(printf '%s\n' 'npm error code 1' 'SAFE_DELETE_BULK_CONFIRM_REQUIRED' | classify_npm_ci_failure)"
+  if [[ "${got}" == "ENV_INTERCEPTED" ]]; then
+    echo "  ✓ 分类：输出含拦截标记 → ENV_INTERCEPTED"
+  else
+    echo "  ✗ 分类：含拦截标记却得到 ${got}" >&2; fails=$((fails+1))
+  fi
+  got="$(printf '%s\n' 'npm error network timeout' | classify_npm_ci_failure)"
+  if [[ "${got}" == "REAL_FAILURE" ]]; then
+    echo "  ✓ 分类：普通失败 → REAL_FAILURE"
+  else
+    echo "  ✗ 分类：普通失败却得到 ${got}" >&2; fails=$((fails+1))
+  fi
+
+  # 2. 拦截分支端到端：必须非 0 退出，且报"环境拦截"而不是"网络"
+  rc=0
+  out="$(export PATH="${ST_TMP}/bin:${PATH}" CYTHSEC_FORCE_NPM_CI=1
+         export STUB_NPM_CI_TEXT='npm error SAFE_DELETE_BULK_CONFIRM_REQUIRED: bulk delete'
+         test_node 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q 'ENV_INTERCEPTED'; then
+    echo "  ✓ 拦截分支：非 0 退出且报「环境拦截（不是网络问题）」"
+  else
+    echo "  ✗ 拦截分支未被识别（退出 ${rc}）" >&2; printf '%s\n' "${out}" >&2; fails=$((fails+1))
+  fi
+
+  # 3. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
+  rc=0
+  out="$(export PATH="${ST_TMP}/bin:${PATH}" CYTHSEC_FORCE_NPM_CI=1
+         export STUB_NPM_CI_TEXT='npm error code EAI_AGAIN'
+         test_node 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q 'REAL_FAILURE'; then
+    echo "  ✓ 真失败分支：报「真失败」，没拿环境限制冒充"
+  else
+    echo "  ✗ 真失败分支分类错误（退出 ${rc}）" >&2; printf '%s\n' "${out}" >&2; fails=$((fails+1))
+  fi
+
+  # 4. 成功分支：强制走完 npm ci 后仍要继续跑到 npm test（否则"跳过 ci"会变成
+  #    "跳过整段前端测试"而门禁全绿）
+  rc=0
+  out="$(export PATH="${ST_TMP}/bin:${PATH}" CYTHSEC_FORCE_NPM_CI=1
+         test_node 2>&1)" || rc=$?
+  if [[ ${rc} -eq 0 ]] && printf '%s' "${out}" | grep -q '测试通过'; then
+    echo "  ✓ 成功分支：强制走 npm ci 后仍跑到 npm test 并通过"
+  else
+    echo "  ✗ 成功分支异常（退出 ${rc}）" >&2; printf '%s\n' "${out}" >&2; fails=$((fails+1))
+  fi
+
+  if [[ ${fails} -eq 0 ]]; then
+    echo "自证通过：4 个场景全部符合预期"
+    return 0
+  fi
+  echo "自证失败：${fails} 个场景不符预期" >&2
+  return 1
+}
+
+# 跑真实 node 测试之前先自证判定逻辑：判定逻辑坏了的话，后面的「✓ 测试通过」
+# 本身也不可信。只挂在 --node 上（被验的就是这一栈的失败分类）。
+test_selftest() {
+  if ! self_test; then
+    echo "✗ [self-test] test-all.sh 自身判定逻辑自证失败" >&2
+    return 1
+  fi
 }
 
 # 通道 ABI 跨语言 parity（CYS-PKT-024 第 3 层）。
@@ -274,6 +384,7 @@ test_live() {
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
 BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; ALL=1
+SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpp)  BUILD_CPP=1; ALL=0 ;;
@@ -287,11 +398,17 @@ while [[ $# -gt 0 ]]; do
     --e2e) BUILD_E2E=1; ALL=0 ;;
     --live) BUILD_LIVE=1; ALL=0 ;;
     --bench) BUILD_BENCH=1; ALL=0 ;;
+    --self-test) SELF_TEST=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+# 自证只验判定逻辑，不碰工具链、不生成向量、不跑任何真实测试。
+if [[ ${SELF_TEST} -eq 1 ]]; then
+  self_test
+  exit $?
+fi
 if [[ $ALL -eq 1 ]]; then
   BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_DPI=1
   BUILD_REASSEMBLY=1; BUILD_FLOWS=1; BUILD_E2E=1; BUILD_LIVE=1
@@ -318,6 +435,7 @@ failed=0
 [[ $BUILD_CPP -eq 1 ]]   && { test_cpp   || failed=$((failed+1)); }
 [[ $BUILD_RUST -eq 1 ]]  && { test_rust  || failed=$((failed+1)); }
 [[ $BUILD_GO -eq 1 ]]    && { test_go    || failed=$((failed+1)); }
+[[ $BUILD_NODE -eq 1 ]]  && { test_selftest || failed=$((failed+1)); }
 [[ $BUILD_NODE -eq 1 ]]  && { test_node  || failed=$((failed+1)); }
 [[ $BUILD_PARITY -eq 1 ]] && { test_parity || failed=$((failed+1)); }
 [[ $BUILD_DPI -eq 1 ]]    && { test_dpi    || failed=$((failed+1)); }

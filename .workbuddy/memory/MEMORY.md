@@ -41,4 +41,8 @@
 - `BACKLOG.md` §3.4 M4 控制平面状态**滞后于代码**（`policyd` / `dnsd` / `telemetryd` / `pkg`
   已存在且 19 个 Go 测试包全过，真实缺口在**落地侧**：nftables / 原子回滚 / PG / 版本化 /
   审计 / 联动）—— 详见 `HANDOFF.md` §1
-- `VERSION=9.9.9` 与 `Cargo.toml` / `package.json` 的 `0.1.0` 不一致，`check-version.sh` 当前会失败
+- ~~`VERSION=9.9.9` 与 `Cargo.toml` / `package.json` 的 `0.1.0` 不一致~~ **已修（2026-10-04）**：真源定为
+  `0.1.0`，四端（C++ `configure_file` / Rust `build.rs` / Go `-ldflags -X` / 前端 `vite define`）全部派生，
+  产物级实测通过（`scripts/release/check-version-bump.sh`）。**两个连带发现**：① 检查器此前没有任何门禁
+  调用（已挂 `lint-all.sh` 第 6 条 + `--self-test` 反向注入）；② 它所在目录被 `.gitignore` 的裸
+  `release/` 规则整个忽略、**从未入库**（已改 `/release/` 并把两份脚本入库）—— 详见 `HANDOFF.md` §5/§7
