@@ -42,7 +42,9 @@
   - `ssh cythsec-dev-ho` → Host-Only `172.16.135.128`（抖动更小，**大文件传输优先用它**）
   - 私钥 `~/.ssh/id_ed25519_cythsec_dev`（**只在本机**；别名写在 `~/.ssh/config`）
 - **规格与能力边界（决定在这台机上跑什么之前先看这条）**：**2 vCPU / 3 GB 内存 / 45 GB 磁盘 / 无 NUMA**。
-  已装：`rustup 1.97.1`（与本机同版本，含 rustfmt）+ `git` + `gcc`/`make` + `tshark 4.4.2` + `python3.12`。
+  已装（2026-10-05 补齐后）：`rustup 1.97.1`（与本机**逐位同版本**，含 rustfmt）+ `gcc`/`g++ 14.3.1` + `cmake 3.31.8`
+  + `git 2.52` + `tshark 4.4.2` + `golang` + `nodejs`/`npm` + `python3.12` —— 即**全套门禁依赖已齐**，
+  `bash scripts/test/test-all.sh`（默认全量）在该机 **EXIT=0 全过**。
   **适合**：跨架构（aarch64）+ 跨发行版的**语义/正确性**验证、真实网卡（AF_PACKET）抓包、
   与 macOS（16 KiB）不同的**页大小**路径、小规模基准。**不适合**：吞吐类结论 —— 2 核上 4/8 线程档
   必然超订；且 `cythsec-bench` 的**回归下限是按 M1 Pro 标定的机器相对阈值**（`--bench` 本就默认不在
