@@ -18,6 +18,7 @@ usage() { cat <<'EOF'
     - 属性字典生成物一致性（scripts/verify/check-attributes.sh）
     - 通道 ABI 双端契约一致性（scripts/verify/check-channel-abi.sh）
     - 版本单一真源一致性 + 检查器自证（scripts/release/check-version.sh [--self-test]）
+    - 有没有源码被 .gitignore 静默忽略（scripts/verify/check-ignored-sources.sh）
     - 前端类型检查（web/console：src/tests + 构建配置两份 tsconfig）
     - npm run lint（前端 eslint，web/console）
   任一检查未通过则整体非 0 退出。
@@ -136,6 +137,20 @@ if ! bash scripts/release/check-version.sh --self-test >/dev/null; then
   failed=$((failed+1))
 else
   echo "✓ [version] 检查器自证通过（注入不一致会被判红并指出位置）"
+fi
+
+# ---------- 仓库完整性 : 被 .gitignore 静默吃掉的源码 ----------
+# 不带前导斜杠的目录名（`build/`、`target/`、`release/`）会匹配**任意层级**的同名目录，
+# 于是同名的源码目录被整体忽略：文件在磁盘上、本地跑得通、`git status` 不提示，
+# 但全新克隆里没有它。本仓库真实踩过三次（`scripts/release/` 的版本自检脚本、
+# `scripts/build/build-all.sh`、`services/telemetryd/internal/target/` 这个被 import 的
+# Go 包）。这类问题读代码发现不了，只能在「版本控制的事实」上查 —— 所以它必须进门禁。
+echo "==> [repo] 有没有源码被 .gitignore 静默忽略"
+if ! bash scripts/verify/check-ignored-sources.sh >/dev/null; then
+  echo "✗ [repo] 有源码/脚本不在版本控制里（见上方命中规则）" >&2
+  failed=$((failed+1))
+else
+  echo "✓ [repo] 没有被 .gitignore 吃掉的源码/脚本"
 fi
 
 # ---------- 前端 : 类型检查 ----------

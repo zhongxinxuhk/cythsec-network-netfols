@@ -50,6 +50,7 @@
 | `check-dpi-vectors.sh` | **tshark 独立复核** DPI 向量（挂 `test-all.sh --dpi`） |
 | `check-reassembly-vectors.sh` | **tshark 独立复核** TCP 重组向量（挂 `--reassembly`） |
 | `check-flow-records.sh` | **tshark 独立复核** FlowRecord（会话/计数/状态/应用）+ 17 项反向故障注入（挂 `--flows`） |
+| `check-ignored-sources.sh` | 抓「被 `.gitignore` 静默吃掉、因而不在版本控制里」的源码/脚本（挂 `lint-all.sh`；本仓库靠它抓出了 `scripts/release/`、`scripts/build/`、`services/telemetryd/internal/target/` 三处） |
 | `check-flow-bench.sh` | 数据面基准（CYS-TRF-037）的**回归下限**门禁 + 3 项反向注入；需求目标只报告（挂 `--bench`，**默认不在 ALL 里**：阈值带机器属性） |
 | `e2e-control-plane.sh` | 四服务端到端验收：启动 routerd/policyd/dnsd/telemetryd → 探测端点 → 校验 metrics → jq 验证结构化日志 → 优雅关闭 |
 | `e2e-shared-ring.sh` | 跨语言共享环 e2e（CYS-TRF-034）：C++ ring-feed 写 mmap → Rust ring-consume 读并聚合 FlowKey |

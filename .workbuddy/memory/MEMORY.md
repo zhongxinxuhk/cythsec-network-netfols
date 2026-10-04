@@ -45,4 +45,8 @@
   `0.1.0`，四端（C++ `configure_file` / Rust `build.rs` / Go `-ldflags -X` / 前端 `vite define`）全部派生，
   产物级实测通过（`scripts/release/check-version-bump.sh`）。**两个连带发现**：① 检查器此前没有任何门禁
   调用（已挂 `lint-all.sh` 第 6 条 + `--self-test` 反向注入）；② 它所在目录被 `.gitignore` 的裸
-  `release/` 规则整个忽略、**从未入库**（已改 `/release/` 并把两份脚本入库）—— 详见 `HANDOFF.md` §5/§7
+  `release/` 规则整个忽略、**从未入库**（已改 `/release/` 并把两份脚本入库）—— 详见 `HANDOFF.md` §5/§7。
+  **同一条规则家族还吞掉两处**：`scripts/build/build-all.sh`（四端构建入口）与
+  `services/telemetryd/internal/target/`（telemetryd 直接 import 的 Go 包，缺了它克隆里编译不过）。
+  规则已全部锚定到根，并新增门禁 `scripts/verify/check-ignored-sources.sh`（lint `[repo]`）守这一类。
+  **教训：本地全绿 ≠ 克隆能构建** —— 这三处都只有真的 clone 一次才会暴露。
