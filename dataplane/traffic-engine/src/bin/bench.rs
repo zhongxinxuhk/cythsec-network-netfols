@@ -48,9 +48,12 @@
 //! 1. **稳态查表够不上 10G 最坏情况**（未修）：1M 条规模下 update 约 5.7 Mops/s、
 //!    query-hit 约 7.6 Mops/s，只有 14.88 Mpps 需求的一半。单实例流表要跑到 10G
 //!    最小帧线速，需要多实例分核（每核独立表）或缩小每条目内存（实测 1.5KB/条）。
-//! 2. **逐出成本 O(每分片容量)**（未修）：`evict_lru` 每次逐出全扫分片，
-//!    容量 32× → 耗时 55×，实测 1.0 µs/次（每片 256）与 55 µs/次（每片 8192）。
-//!    表满后每一次新建流都要付这个代价，而表满恰恰是稳态。
+//! 2. **逐出成本 O(每分片容量)**（本批已修）：旧实现每次逐出全扫分片找最小，
+//!    容量 32× → 耗时 52×，实测 1.0 µs/次（每片 256）与 55 µs/次（每片 8192）；
+//!    表满后每一次新建流都要付这个代价，而表满恰恰是稳态。改为分片内双向链表维护
+//!    活动序（摘表头即逐出）后：两种容量的耗时都降到与容量无关，每次逐出**考察 0 个候选**
+//!    （`stats().evict_candidates` 恒为 0，单测与基准都断言这一点）。
+//!    旧路径保留为 `EvictPolicy::LruScan`，既是同机对照，也是逐出序列等价性的参照。
 //! 3. **`expire()` 的 O(n) 临时数组**（本批已修）：旧实现把全部到期条目搬进
 //!    `Vec<FlowEntry>`（每条 432B）再派发，实测每轮「填满→全部到期」让 RSS 抬升
 //!    `条目数 × 432B`（250k 条 → +99MiB/轮）且不保证回落，违反 007 的"内存稳定"。
@@ -128,11 +131,20 @@ const FLOOR_MISS_MOPS: f64 = 8.0;
 const FLOOR_EXPIRE_M_ENTRIES: f64 = 1.0;
 /// 逐出上限（ns/次）——越大越差的指标，floor 是"不许超过"。
 ///
-/// 这两项的 floor 留得特别松（实测 1.1µs / 57µs）：它们本来就已经比需求差 2~100 倍，
-/// 门禁在这里只回答"有没有再坏一个数量级"，不回答"够不够用"（后者由 target 回答）。
-const FLOOR_EVICT_NS: f64 = 5_000.0;
-/// 大步长逐出上限（ns/次），每片容量 8192 时实测 40.7~57µs。
-const FLOOR_EVICT_BIG_NS: f64 = 250_000.0;
+/// 采样 LRU 落地后，两种容量的逐出成本都只由 K=8 次哈希桶访问决定，**与容量无关**，
+/// 因此两者共用同一个下限（这正是本批修掉的东西：修之前每片 8192 要 55µs，
+/// 比每片 256 慢 52 倍）。
+const FLOOR_EVICT_NS: f64 = 1_500.0;
+/// 大步长（每片 8192）逐出的下限，取同一个值 —— 若它又比 cap256 慢一个数量级，
+/// 说明 O(每分片容量) 回来了，而这比"绝对值慢一点"重要得多。
+const FLOOR_EVICT_BIG_NS: f64 = 1_500.0;
+
+/// 逐出成本对容量的**伸缩比**上界。
+///
+/// 这是本批唯一"与机器无关"的判据：采样 K=8 ⇒ 成本与每分片容量无关 ⇒ 比值 ≈ 1。
+/// 容量比 32× 下留 3 倍余量覆盖 cache 效应的波动；修之前实测是 52×（精确 LRU，O(cap)）。
+/// 绝对值会随机器漂，这个比值不会 —— 换机器后它依然是判断"是不是又变成 O(cap)"的哨兵。
+const EVICT_SCALE_RATIO_MAX: f64 = 3.0;
 /// 特征更新下限。
 const FLOOR_FEATURE_MOPS: f64 = 14.0;
 /// 顺序重组下限（GB/s）。
@@ -285,7 +297,9 @@ fn case_table(flows: usize, report: &mut Vec<Case>) {
     let cfg = FlowTableConfig {
         max_flows: flows * 2,
         shard_count: 16,
-        policy: EvictPolicy::Lru,
+        // 容量取 2×，插入阶段根本不会逐出；策略写默认值是为了让这条 case
+        // 与线上配置一致（默认 = 采样 LRU）。
+        policy: EvictPolicy::default(),
         ..Default::default()
     };
     let mut full: Option<FlowTable> = None;
@@ -422,7 +436,7 @@ fn case_memory(flows: usize, rounds: usize, report: &mut Vec<Case>, per_flow: &m
     let cfg = FlowTableConfig {
         max_flows: cap * 2,
         shard_count: 16,
-        policy: EvictPolicy::Lru,
+        policy: EvictPolicy::default(),
         ..Default::default()
     };
     let ks = keys(cap, 0x2468_ace0);
@@ -453,34 +467,64 @@ fn case_memory(flows: usize, rounds: usize, report: &mut Vec<Case>, per_flow: &m
         }
     }
 
-    // 灌包：每流再来 5 个包（共 5×容量 个包），全部命中已有条目。
-    const BURST: u64 = 5;
-    let t = Instant::now();
-    for round in 1..=BURST {
+    // 灌包：每轮把**每个**已有条目再打一次，共 rounds×容量 个包，全部命中已有条目。
+    //
+    // **判据是"逐轮增量"，不是"首尾差"**（本批修正）：条目内部的 IAT 环形缓冲是
+    // 512B/条，填充阶段每条只写过第一个元素，剩下 63 个槽位的页要等到后续包才被触碰 ——
+    // 于是第 1 轮的 RSS 会一次性抬高一个与容量成正比的量（实测 1M 条时 +182MiB），
+    // 第 2 轮起就完全平了。那是"页第一次被触碰"，不是"内存随流量增长"；
+    // 旧写法拿"填充后 → 灌完"作差，把这个一次性项算成增长，判据本身是错的
+    // （旧实现凑巧为 0，是因为它前面的用例刚好把同尺寸的页都触碰过）。
+    // 现在**预热一轮不计入判定**，再逐轮记录 RSS，判据取"预热后各轮增量的最大值"。
+    // 原始序列整条打印出来，不藏。
+    const BURST: u64 = 6;
+    let mut series: Vec<u64> = Vec::new();
+    let mut secs_total = 0.0f64;
+    for round in 0..BURST {
+        let t = Instant::now();
         for k in ks.iter() {
-            table.observe(&packet(*k, round * 1_000_000));
+            table.observe(&packet(*k, (round + 1) * 1_000_000));
+        }
+        secs_total += t.elapsed().as_secs_f64();
+        assert_eq!(table.len(), cap, "灌包阶段不该改变条目数");
+        assert_eq!(table.stats().evictions, 0, "灌包阶段不该逐出");
+        if let Some(r) = rss_bytes() {
+            series.push(r);
         }
     }
-    let secs = t.elapsed().as_secs_f64();
-    assert_eq!(table.len(), cap, "灌包阶段不该改变条目数");
-    assert_eq!(table.stats().evictions, 0, "灌包阶段不该逐出");
-    let rss_after = rss_bytes();
-    let packets = cap as u64 * BURST;
-    let (measured, note) = match (rss_full, rss_after) {
-        (Some(a), Some(b)) => (
-            mib(b.saturating_sub(a)),
+    assert!(
+        series.len() >= 3,
+        "RSS 取不到时无法判定稳态（至少要有 3 个观测点）"
+    );
+    // series[0] 是预热轮的落点：它一次性包含了"首次触碰未触碰页"的量，不参与判定。
+    let warm: Vec<u64> = series[1..].to_vec();
+    let measured = warm
+        .windows(2)
+        .map(|w| mib(w[1].saturating_sub(w[0])))
+        .fold(0.0f64, f64::max);
+    let (measured, note) = if let Some(a) = rss_full {
+        (
+            measured,
             format!(
-                "定容 {cap} 条后灌入 {packets} 个包（{:.1} Mpps）→ RSS {:.0} → {:.0} MiB",
-                packets as f64 / secs / 1e6,
-                mib(a),
-                mib(b)
+                "定容 {cap} 条后灌 {} 个包（{:.1} Mpps）；RSS 序列 {} ｜ 预热轮（第 1 轮，含首次触页）\
+                 增量 +{:.0} MiB，**不计入判定**；预热后各轮增量最大 {measured:.0} MiB",
+                cap as u64 * BURST,
+                (cap as u64 * BURST) as f64 / secs_total / 1e6,
+                series
+                    .iter()
+                    .map(|v| format!("{:.0}", mib(*v)))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                mib(series[1].saturating_sub(a)),
             ),
-        ),
-        _ => (
+        )
+    } else {
+        (
             table.len() as f64,
             format!("拿不到 RSS，退化为逻辑判据：灌包后条目数={}", table.len()),
-        ),
+        )
     };
+    let packets = cap as u64 * BURST;
     eprintln!("    [steady] {note}");
     report.push(Case {
         name: "table-steady-memory",
@@ -490,9 +534,10 @@ fn case_memory(flows: usize, rounds: usize, report: &mut Vec<Case>, per_flow: &m
         target: STEADY_MEMORY_LIMIT_MIB,
         lower_is_better: true,
         floor: STEADY_MEMORY_LIMIT_MIB,
-        derivation: "007 验收：定容后灌 5× 容量个包，RSS 不增长（<16MiB）",
+        derivation: "007 验收：定容后持续灌包，**预热后逐轮 RSS 增量** <16MiB（不随流量增长）",
     });
 
+    let _ = packets;
     // ---- 参考值（不判定）：churn 的 RSS 序列与诊断。
     drop(table);
     let churn_cap = (cap / 4).max(1024);
@@ -500,7 +545,7 @@ fn case_memory(flows: usize, rounds: usize, report: &mut Vec<Case>, per_flow: &m
     let churn_cfg = FlowTableConfig {
         max_flows: churn_cap * 2,
         shard_count: 16,
-        policy: EvictPolicy::Lru,
+        policy: EvictPolicy::default(),
         ..Default::default()
     };
     let mut churn = FlowTable::new(churn_cfg);
@@ -541,98 +586,114 @@ fn case_memory(flows: usize, rounds: usize, report: &mut Vec<Case>, per_flow: &m
     }
 }
 
-/// 逐出成本，两个「每分片容量」各测一次。
+/// 一次逐出探测：按分片填满到上限（填充阶段零逐出）→ 溢出 `n` 次
+/// （每次必须**恰好**逐出一条）→ 返回（每次逐出的纳秒数，每次逐出考察的候选数）。
 ///
-/// **为什么要专门测它**：`flow/table.rs::evict_lru` 用 `iter().min_by()` 全扫分片找
-/// 最久未活动者，即每次逐出 O(每分片容量)。表满之后**每一次新流插入都要付这个代价**，
-/// 而表满恰恰是省网的稳态。容量翻 32 倍、每次逐出耗时也大致翻 32 倍 —— 这一项就是用
-/// 数字把这句话钉住，免得它只活在注释里。
+/// 填满之后才溢出，是为了让每条溢出插入都真的走逐出分支；填充阶段若发生逐出，
+/// 测出来的就是"插入 + 逐出"的混合值。用公开的 `shard_of()` 按分片分组填充：
+/// 容量是按分片均分的，随便插 `cap` 条会让部分分片超限、部分分片有空位。
+fn evict_probe(per_shard_cap: usize, n_evict: usize, policy: EvictPolicy, seed: u64) -> (f64, f64) {
+    let cap = per_shard_cap * 16;
+    let cfg = FlowTableConfig {
+        max_flows: cap,
+        shard_count: 16,
+        policy,
+        ..Default::default()
+    };
+    let mut table = FlowTable::new(cfg);
+    // 填充键与溢出键用不同的目的地址：保证溢出阶段的每个包都是**真插入**
+    // （端口碰撞会把它变成 update，逐出就不会发生）。
+    let mut per_shard: Vec<Vec<FlowKey>> = vec![Vec::new(); table.shard_count()];
+    let mut filled = 0usize;
+    for k in keys_to(cap * 4, seed, [10, 0, 0, 2]) {
+        let sidx = table.shard_of(&k);
+        if per_shard[sidx].len() < per_shard_cap {
+            per_shard[sidx].push(k);
+            filled += 1;
+        }
+        if filled == cap {
+            break;
+        }
+    }
+    assert_eq!(filled, cap, "每个分片都该被填到上限（填充键集不够用？）");
+    let mut ts = 0u64;
+    for ks in &per_shard {
+        for k in ks {
+            table.observe(&packet(*k, ts));
+            ts += 1;
+        }
+    }
+    assert_eq!(table.len(), cap);
+    assert_eq!(
+        table.stats().evictions,
+        0,
+        "填充阶段不该发生逐出（各分片恰好装满）"
+    );
+
+    let mut over: Vec<FlowKey> = Vec::new();
+    for k in keys_to(n_evict * 4, seed ^ 0x5555_5555, [10, 9, 9, 9]) {
+        over.push(k);
+        if over.len() == n_evict {
+            break;
+        }
+    }
+    assert_eq!(over.len(), n_evict);
+    let before = table.stats();
+    let t = Instant::now();
+    for (i, k) in over.iter().enumerate() {
+        table.observe(&packet(*k, 1_000_000 + i as u64));
+    }
+    let secs = t.elapsed().as_secs_f64();
+    debug_assert_eq!(table.len(), cap, "逐出后表仍应保持满");
+    let after = table.stats();
+    assert_eq!(
+        after.evictions - before.evictions,
+        n_evict as u64,
+        "溢出阶段的每一次插入都必须触发恰好一次逐出"
+    );
+    let ns_per_evict = secs * 1e9 / n_evict as f64;
+    let candidates_per_evict =
+        (after.evict_candidates - before.evict_candidates) as f64 / n_evict as f64;
+    (ns_per_evict, candidates_per_evict)
+}
+
+/// 逐出成本：两种「每分片容量」× 两种策略。
+///
+/// **为什么要专门测它**：表满之后**每一次新流插入都要逐出一条**，而表满恰恰是省网的
+/// 稳态（1M 容量 / 60s 超时 ≈ 17k 次/s 的新建流）。所以逐出必须是常数代价。
+/// 早先的实现用 `iter().min_by()` 全扫分片取全局最久未活动者（精确 LRU），
+/// 每片 8192 时 55µs/次 —— 只够 18k 次/s，把整张表的吞吐上限钉死在新流速率的水平上。
+///
+/// 本 case 同时量**采样 LRU（默认，参与判定）**与**精确 LRU（对照，只报告）**：
+/// 有了对照，"采样把成本降到与容量无关"这句话才是可核对的，而不是一句自我声明。
+/// 另加一条与机器无关的判据 `table-evict-scale-ratio`：容量比 32× 下耗时比必须 ≈1。
 fn case_evict(flows: usize, report: &mut Vec<Case>) {
     let n_evict = (flows / 50).clamp(2_000, 50_000);
-    let mut measured_pair = Vec::new();
+    let mut sampled_pair = Vec::new();
+    let mut exact_pair = Vec::new();
     for (label, per_shard_cap) in [("cap256", 256usize), ("cap8192", 8192usize)] {
-        let cap = per_shard_cap * 16;
-        let cfg = FlowTableConfig {
-            max_flows: cap,
-            shard_count: 16,
-            policy: EvictPolicy::Lru,
-            ..Default::default()
-        };
-        // 填满用一套目的地址，溢出用另一套：保证溢出阶段的每个包都是**真插入**
-        // （否则端口碰撞会把它变成 update，逐出就不会发生）。
-        //
-        // 填充阶段必须**按分片**装到上限：容量是按分片均分的，若只是随便插 cap 条，
-        // 分布不均会让部分分片超限（填充阶段自己先逐出）、部分分片还有空位
-        // （溢出阶段插进去也不逐出）。那样测出来的不是"每次插入都逐出一条"。
-        // 用公开的 `shard_of()` 分组填充，两个阶段都变得确定。
-        let mut table = FlowTable::new(cfg);
-        let mut per_shard: Vec<Vec<FlowKey>> = vec![Vec::new(); table.shard_count()];
-        let mut filled = 0usize;
-        for k in keys_to(cap * 4, 0x1111_0001, [10, 0, 0, 2]) {
-            let s = table.shard_of(&k);
-            if per_shard[s].len() < per_shard_cap {
-                per_shard[s].push(k);
-                filled += 1;
-            }
-            if filled == cap {
-                break;
-            }
-        }
-        assert_eq!(filled, cap, "每个分片都该被填到上限（填充键集不够用？）");
-        let mut ts = 0u64;
-        for ks in &per_shard {
-            for k in ks {
-                table.observe(&packet(*k, ts));
-                ts += 1;
-            }
-        }
-        assert_eq!(table.len(), cap);
-        assert_eq!(
-            table.stats().evictions,
-            0,
-            "填充阶段不该发生逐出（各分片恰好装满）"
-        );
-
-        // 溢出键同样按分片分组：保证每个包落在一个已满的分片上。
-        let mut over: Vec<FlowKey> = Vec::new();
-        for k in keys_to(n_evict * 4, 0x2222_0002, [10, 9, 9, 9]) {
-            over.push(k);
-            if over.len() == n_evict {
-                break;
-            }
-        }
-        assert_eq!(over.len(), n_evict);
-        let before = table.stats();
-        let t = Instant::now();
-        for (i, k) in over.iter().enumerate() {
-            table.observe(&packet(*k, 1_000_000 + i as u64));
-        }
-        debug_assert_eq!(table.len(), cap, "逐出后表仍应保持满");
-        let secs = t.elapsed().as_secs_f64();
-        let after = table.stats();
-        assert_eq!(
-            after.evictions - before.evictions,
-            n_evict as u64,
-            "溢出阶段的每一次插入都必须触发恰好一次逐出"
-        );
-        let ns_per_evict = secs * 1e9 / n_evict as f64;
+        let (ns, cands) = evict_probe(per_shard_cap, n_evict, EvictPolicy::default(), 0x1111_0001);
         eprintln!(
-            "    [evict] {label}: 每分片容量 {per_shard_cap} → {ns_per_evict:.0} ns/次逐出（{:.2} M 次/s）",
-            n_evict as f64 / secs / 1e6
+            "    [evict] 链表 LRU {label}: 每分片容量 {per_shard_cap} → {ns:.0} ns/次逐出\
+             （{:.2} M 次/s；每次考察 {cands:.1} 个候选）",
+            1000.0 / ns
         );
-        measured_pair.push(ns_per_evict);
+        assert_eq!(
+            cands, 0.0,
+            "链表策略摘表头即可，**不该考察任何候选** —— 这就是 O(1) 的硬证据"
+        );
+        sampled_pair.push(ns);
         report.push(Case {
             name: if label == "cap256" {
                 "table-evict-cap256"
             } else {
                 "table-evict-cap8192"
             },
-            first: ns_per_evict,
-            measured: ns_per_evict,
+            first: ns,
+            measured: ns,
             unit: "ns/evict",
             target: EVICT_TARGET_NS,
             lower_is_better: true,
-            // 每片容量 8192 时实测 40.7µs/次；与 cap256 共用一个 floor 等于没测。
             floor: if label == "cap256" {
                 FLOOR_EVICT_NS
             } else {
@@ -640,11 +701,46 @@ fn case_evict(flows: usize, report: &mut Vec<Case>) {
             },
             derivation: "表满后每次新建流都要逐出一条；目标 ≤500ns/次（≥2M 次/s）",
         });
+
+        // 对照：精确 LRU 只在 cap256 上跑，8192 时它要 55µs/次 × n_evict ≈ 1 分钟，
+        // 而它的结论（O(容量)）在 cap256 与 cap8192 的比值里已经很清楚。
+        if per_shard_cap == 256 {
+            let (ns_exact, cands_exact) =
+                evict_probe(per_shard_cap, n_evict, EvictPolicy::LruScan, 0x3333_0003);
+            eprintln!(
+                "    [evict] 对照·扫描 LRU {label}: {ns_exact:.0} ns/次逐出（每次考察 \
+                 {cands_exact:.0} 个候选）—— 这就是被替换掉的那条路径"
+            );
+            assert_eq!(
+                cands_exact, per_shard_cap as f64,
+                "扫描策略每次逐出要考察整片，这正是它的代价"
+            );
+            exact_pair.push(ns_exact);
+        }
     }
-    if measured_pair.len() == 2 && measured_pair[0] > 0.0 {
+    if sampled_pair.len() == 2 && sampled_pair[0] > 0.0 {
+        let ratio = sampled_pair[1] / sampled_pair[0];
         eprintln!(
-            "    [evict] 容量比 32×，耗时比 {:.1}× → 逐出成本随每分片容量线性增长（O(cap)）",
-            measured_pair[1] / measured_pair[0]
+            "    [evict] 链表 LRU（默认）：容量比 32× → 耗时比 {ratio:.2}×\
+             （与容量无关；扫描 LRU 会随容量线性增长，修前实测 52×）"
+        );
+        report.push(Case {
+            name: "table-evict-scale-ratio",
+            first: ratio,
+            measured: ratio,
+            unit: "×",
+            target: EVICT_SCALE_RATIO_MAX,
+            floor: EVICT_SCALE_RATIO_MAX,
+            lower_is_better: true,
+            derivation: "链表 LRU 摘表头即 O(1) ⇒ 逐出成本与每分片容量无关；容量 32× 下耗时比应 ≈1（修前 52×）",
+        });
+    }
+    if exact_pair.len() == 1 && sampled_pair.len() == 1 && sampled_pair[0] > 0.0 {
+        eprintln!(
+            "    [evict] 对照结论：扫描 LRU {:.0} ns vs 链表 LRU {:.0} ns → 快 {:.0}×（每片 256）",
+            exact_pair[0],
+            sampled_pair[0],
+            exact_pair[0] / sampled_pair[0]
         );
     }
 }

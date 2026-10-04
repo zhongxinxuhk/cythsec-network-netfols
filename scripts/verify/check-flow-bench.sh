@@ -33,9 +33,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
-# 手写的用例数清单：基准增删用例时**这里必须同步改** —— 否则"12 项全过"会因为
+# 手写的用例数清单：基准增删用例时**这里必须同步改** —— 否则"N 项全过"会因为
 # 少跑了几项而依然是绿的（这正是最典型的假绿）。
-EXPECTED_CASES=12
+EXPECTED_CASES=13
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<'EOF'
@@ -50,7 +50,7 @@ if [[ "${1:-}" == "--help" ]]; then
   --no-self-test     跳过反向故障注入（仅用于人工排查）
 
 跑 cargo build --release --bin cythsec-bench，然后：
-  1) 正常跑一次：要求退出码 0，且 12 项回归下限全部通过；
+  1) 正常跑一次：要求退出码 0，且 13 项回归下限全部通过；
   2) 用 --target-factor 1000 跑一次：要求退出码非 0 且打印"退步"（证明判定没恒真）；
   3) 用 --report-only --target-factor 1000 跑一次：要求退出码 0（证明报告模式不判定）。
 

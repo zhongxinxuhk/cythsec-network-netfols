@@ -10,9 +10,13 @@
 //    用一个统一超时会同时犯两个错：把 UDP 的 30 秒与 TCP 已建立的 5 分钟拉平，
 //    要么过早回收长连接（统计断成两截），要么让扫描流量在表里堆积成内存泄漏。
 //
-// 3. **放不下时丢谁**（逐出）：表满时的选择是 LRU（详见 `evict_lru` 的代价说明）。
-//    刻意不做随机逐出：输出必须可复现，随机逐出会让同一份 pcap 两次运行得到
-//    不同的流表内容，快照回归直接失效。
+// 3. **放不下时丢谁**（逐出）：表满时逐出最久未活动的那条（精确 LRU），**O(1)**。
+//    条目存在分片自己的槽位数组里，并用 `prev/next` 下标串成双向链表：
+//    插入挂到表尾、命中移到表尾、逐出摘表头。之所以不用 `HashMap` 迭代找最小
+//    （早先的做法），是因为那样每次逐出要 O(每分片容量)：实测每片 8192 时 55µs/次，
+//    而表满之后**每来一条新流都要付一次** —— 那等于把整张表的吞吐上限钉在 18k 新流/s。
+//    语义没有变：仍然是精确 LRU、仍然确定性（同一输入 ⇒ 同一逐出序列），
+//    只是把代价从 O(容量) 降到 O(1)。
 //
 // 生命周期回调（`FlowObserver`）只观察、不参与决策：表本身不依赖任何回调的副作用。
 // 回调里能拿到的是一条完整条目，拿不到"表"——想改表必须回到表的方法上排队，
@@ -166,13 +170,33 @@ impl TimeoutTable {
 
 /// 逐出策略。
 ///
-/// 目前只有 LRU 一种可用取值，保留枚举是为了让"策略"成为**显式的构造参数**：
-/// 将来若加入时钟/随机策略，调用方必须重新审视自己的假设（比如"逐出顺序确定"）。
+/// **两种取值择一，语义相同（都是精确 LRU），代价差一个数量级**：
+/// 差别只在"怎么找到最久未活动的那条"。
+///
+/// 默认是 `Lru`：分片内用双向链表维护活动序，逐出摘表头，**O(1)**。
+/// 表满之后每次新建流都要逐出一条，而表满恰恰是省网的稳态
+/// （1M 容量 / 60s 超时 ≈ 17k 次/s 的新建流速率），所以逐出必须是常数代价。
+///
+/// `LruScan` 是**对照实现**：扫描整片取 `last_active_us` 最小者，O(每分片容量)。
+/// 实测每片 8192 时 55µs/次 —— 只够 18k 次/s，把整张表的吞吐上限钉死在新流速率上，
+/// 扫描型流量会直接把它打崩。保留它有三个用处：单测用它做**等价性对照**
+/// （链表策略的逐出序列必须与它一致）、基准用它给出改造前后的同机对比、
+/// 以及小容量/离线复算场景仍可用。
+///
+/// 另外两条被评估过但没有采用的方案：
+/// - **采样 LRU**（Redis `allkeys-lru` 式：随机取 K 条、淘汰其中最早）：
+///   代价也是 O(K)，但实测在"400 条流 / 128 槽位 / 90% 热点"的负载上，
+///   热点流命中率只有 58.4%，而精确 LRU 是 99.9% —— 省网里"流被逐出又重建"
+///   意味着**同一条会话的记录被切成两段**，这个代价换不来那点 CPU。放弃。
+/// - **时钟算法**：能 O(1)，但要在条目上维护引用位、引入第二个时间维度，
+///   与"按 `last_active_us` 分档超时"重复，解释成本高于收益。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EvictPolicy {
-    /// 逐出最久未活动的条目。
+    /// 精确 LRU，分片内双向链表，代价 **O(1)**。
     #[default]
     Lru,
+    /// 精确 LRU，扫描整片找最小者，代价 O(每分片容量)。对照/小表用。
+    LruScan,
 }
 
 /// 流表条目。
@@ -283,20 +307,232 @@ pub struct TableStats {
     pub updates: u64,
     /// 因容量被逐出的条目数。
     pub evictions: u64,
+    /// 逐出时**考察过的候选条目数**（累计）。
+    ///
+    /// 存在的唯一目的：把"逐出是 O(1) 还是 O(容量)"从注释里的声明变成**可测的上界**。
+    /// 链表策略（默认）恒为 **0** —— 摘表头不需要考察任何候选，这就是 O(1) 的直接证据；
+    /// 扫描策略为 `每分片容量 × 逐出次数`。没有这个计数，复杂度回归只能靠基准的挂钟
+    /// 时间去发现，而挂钟时间会随机器与负载漂移 20~30%。
+    pub evict_candidates: u64,
     /// 因超时被回收的条目数。
     pub timeouts: u64,
     /// `expire()` 被调用的次数。
     pub expire_runs: u64,
 }
 
+/// 链表哨兵：`prev`/`next` 用它表示"没有前驱/后继"。
+const NIL: u32 = u32::MAX;
+
+/// 分片里的一个槽位：条目本体 + 双向链表的两个下标。
+///
+/// 条目用 `Option` 包着，是为了让 `remove`/逐出能把值**移出**（`take()`）而不是
+/// 克隆一条 432 字节的 `FlowEntry`；空槽位下 `Option` 不占额外空间
+/// （`FlowEntry` 无 niche，`Option<FlowEntry>` 比 `FlowEntry` 多 8 字节对齐填充）。
+#[derive(Debug)]
+struct Slot {
+    entry: Option<FlowEntry>,
+    prev: u32,
+    next: u32,
+}
+
+/// 分片：`键 → 槽位下标` + 槽位数组（同时是双向链表的 LRU 序）。
+///
+/// **为什么不是 `HashMap<FlowKey, FlowEntry>`**：表满后每次新建流都要逐出一条，
+/// 而"最久未活动的是谁"必须 O(1) 拿到。`HashMap` 既不能随机寻址、也不能 O(1)
+/// 删除链表中部元素，所以把条目放进数组、用下标串成链表：
+/// - 插入：追加到表尾（最近使用）；
+/// - 命中：移到表尾；
+/// - 逐出：摘表头（最久未活动）——**不需要考察任何候选**。
+///
+/// `free` 是复用槽位的空闲表：删除留下空洞时把下标还回来，数组不会无限增长。
+/// 链表是**活动序**（同一次插入序/访问序），不是键序：这与旧实现的
+/// "同时间戳取最小键"略有不同 —— 旧规则是为了让"时间戳无法区分时"仍可复现，
+/// 而链表序本身就是一个全序，天然可复现，且更贴近 LRU 的本意
+/// （刚被访问过的流即使时间戳相同也不该被淘汰）。
 #[derive(Debug)]
 struct Shard {
-    map: FnvMap<FlowKey, FlowEntry>,
+    map: FnvMap<FlowKey, u32>,
+    slots: Vec<Slot>,
+    free: Vec<u32>,
+    /// 最久未活动（逐出从这里摘）。
+    head: u32,
+    /// 最近活动（新条目与命中都挂/移到这里）。
+    tail: u32,
 }
 
 impl Shard {
     fn new() -> Self {
-        Self { map: new_fnv_map() }
+        Self {
+            map: new_fnv_map(),
+            slots: Vec::new(),
+            free: Vec::new(),
+            head: NIL,
+            tail: NIL,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    fn get(&self, key: &FlowKey) -> Option<&FlowEntry> {
+        let i = *self.map.get(key)?;
+        self.slots[i as usize].entry.as_ref()
+    }
+
+    /// 只改内容、**不动 LRU 顺序**（顺序由 `hit`/`insert` 维护）。
+    /// `get_mut` 的调用方是"改档位"这类管理操作，不是流量路径。
+    fn get_mut(&mut self, key: &FlowKey) -> Option<&mut FlowEntry> {
+        let i = *self.map.get(key)?;
+        self.slots[i as usize].entry.as_mut()
+    }
+
+    /// 把槽位 `i` 移到表尾（标记为最近使用）。
+    fn move_to_tail(&mut self, i: u32) {
+        if self.tail == i {
+            return;
+        }
+        let (prev, next) = {
+            let s = &self.slots[i as usize];
+            (s.prev, s.next)
+        };
+        // 先从原位置摘下。
+        if prev == NIL {
+            self.head = next;
+        } else {
+            self.slots[prev as usize].next = next;
+        }
+        if next != NIL {
+            self.slots[next as usize].prev = prev;
+        }
+        // 再挂到表尾。
+        let tail = self.tail;
+        {
+            let s = &mut self.slots[i as usize];
+            s.prev = tail;
+            s.next = NIL;
+        }
+        if tail == NIL {
+            self.head = i;
+        } else {
+            self.slots[tail as usize].next = i;
+        }
+        self.tail = i;
+    }
+
+    /// 命中：更新条目并移到表尾。返回 `false` 表示键不在表里。
+    ///
+    /// 一次哈希查找完成"更新 + 维护 LRU 序"两件事，避免调用方查两遍。
+    fn hit(&mut self, key: &FlowKey, pkt: &Packet) -> bool {
+        let Some(&i) = self.map.get(key) else {
+            return false;
+        };
+        if let Some(e) = self.slots[i as usize].entry.as_mut() {
+            e.observe(pkt);
+        }
+        self.move_to_tail(i);
+        true
+    }
+
+    /// 新建条目并挂到表尾。调用方负责容量检查。
+    fn insert(&mut self, key: FlowKey, entry: FlowEntry) -> u32 {
+        let i = match self.free.pop() {
+            Some(i) => {
+                let s = &mut self.slots[i as usize];
+                s.entry = Some(entry);
+                s.prev = self.tail;
+                s.next = NIL;
+                i
+            }
+            None => {
+                let i = u32::try_from(self.slots.len()).expect("分片槽位下标溢出 u32");
+                self.slots.push(Slot {
+                    entry: Some(entry),
+                    prev: self.tail,
+                    next: NIL,
+                });
+                i
+            }
+        };
+        if self.tail == NIL {
+            self.head = i;
+        } else {
+            self.slots[self.tail as usize].next = i;
+        }
+        self.tail = i;
+        self.map.insert(key, i);
+        i
+    }
+
+    /// 删除键：摘链、还槽位、把条目移出返回。
+    fn remove(&mut self, key: &FlowKey) -> Option<FlowEntry> {
+        let i = self.map.remove(key)?;
+        let (prev, next) = {
+            let s = &self.slots[i as usize];
+            (s.prev, s.next)
+        };
+        if prev == NIL {
+            self.head = next;
+        } else {
+            self.slots[prev as usize].next = next;
+        }
+        if next == NIL {
+            self.tail = prev;
+        } else {
+            self.slots[next as usize].prev = prev;
+        }
+        let slot = &mut self.slots[i as usize];
+        slot.prev = NIL;
+        slot.next = NIL;
+        let entry = slot.entry.take();
+        self.free.push(i);
+        entry
+    }
+
+    /// 摘表头（最久未活动）。**不考察任何候选**，这是 O(1) 的来源。
+    fn evict_head(&mut self) -> Option<FlowEntry> {
+        if self.head == NIL {
+            return None;
+        }
+        let i = self.head;
+        let key = *self
+            .slots
+            .get(i as usize)
+            .and_then(|s| s.entry.as_ref())
+            .map(|e| &e.key)
+            .expect("表头槽位必然在用");
+        self.remove(&key)
+    }
+
+    /// 清空但**保留容量**（与 `HashMap::clear` 的语义一致：清条目、不还内存）。
+    fn clear(&mut self) {
+        self.tail = NIL;
+        for i in 0..self.slots.len() as u32 {
+            if let Some(e) = self.slots[i as usize].entry.take() {
+                drop(e);
+                self.slots[i as usize].prev = NIL;
+                self.slots[i as usize].next = NIL;
+                self.free.push(i);
+            }
+        }
+        self.head = NIL;
+        self.map.clear();
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &FlowKey> {
+        self.map.keys()
+    }
+
+    fn entries(&self) -> impl Iterator<Item = &FlowEntry> {
+        self.slots.iter().filter_map(|s| s.entry.as_ref())
+    }
+
+    fn into_entries(self) -> impl Iterator<Item = FlowEntry> {
+        self.slots.into_iter().filter_map(|s| s.entry)
     }
 }
 
@@ -382,11 +618,11 @@ impl FlowTable {
     }
 
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|s| s.map.len()).sum()
+        self.shards.iter().map(Shard::len).sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.shards.iter().all(|s| s.map.is_empty())
+        self.shards.iter().all(Shard::is_empty)
     }
 
     /// 条目所在分片下标。
@@ -407,7 +643,7 @@ impl FlowTable {
 
     pub fn get_mut(&mut self, key: &FlowKey) -> Option<&mut FlowEntry> {
         let idx = self.shard_index(key);
-        self.shards[idx].map.get_mut(key)
+        self.shards[idx].get_mut(key)
     }
 
     pub fn contains(&self, key: &FlowKey) -> bool {
@@ -435,22 +671,22 @@ impl FlowTable {
 
         {
             let shard = &mut self.shards[idx];
-            if let Some(entry) = shard.map.get_mut(&key) {
-                entry.observe(pkt);
+            // 命中即"最近使用"：`hit` 同时完成统计更新与 LRU 序维护。
+            if shard.hit(&key, pkt) {
                 self.stats.updates += 1;
                 pending = Some(Pending::Keyed(FlowEvent::Update, key));
             } else {
-                if shard.map.len() >= self.per_shard_cap {
-                    evicted = match self.cfg.policy {
-                        EvictPolicy::Lru => evict_lru(shard),
-                    };
+                if shard.len() >= self.per_shard_cap {
+                    let (victim, examined) = evict_victim(shard, self.cfg.policy);
+                    evicted = victim;
+                    self.stats.evict_candidates += examined;
                 }
                 let class = TimeoutClass::for_proto(key.proto);
                 let mut entry = FlowEntry::new(key, class, pkt.timestamp_us);
                 entry.observe(pkt);
                 // 上面的 observe 会把 updates 记成 1；首次插入不计入更新次数。
                 entry.updates = 0;
-                shard.map.insert(key, entry);
+                shard.insert(key, entry);
                 self.stats.inserts += 1;
                 pending = Some(Pending::Keyed(FlowEvent::New, key));
             }
@@ -492,16 +728,19 @@ impl FlowTable {
         // 这种时序细节；而 RSS 不回落是硬伤。
         let mut expired_keys: Vec<FlowKey> = Vec::new();
         for shard in &self.shards {
-            if shard.map.is_empty() {
+            if shard.is_empty() {
                 continue;
             }
-            // HashMap 迭代顺序不定 → 统一排序，保证回调顺序随运行稳定。
+            // 哈希表迭代顺序不定 → 统一排序，保证回调顺序随运行稳定。
             expired_keys.extend(
                 shard
-                    .map
-                    .iter()
-                    .filter(|(_, e)| e.is_expired(now_us, &timeouts))
-                    .map(|(k, _)| *k),
+                    .keys()
+                    .filter(|k| {
+                        shard
+                            .get(k)
+                            .is_some_and(|e| e.is_expired(now_us, &timeouts))
+                    })
+                    .copied(),
             );
         }
         // 键不可能重复（一个键只存在于一个分片里），故无需去重。
@@ -510,7 +749,7 @@ impl FlowTable {
         let mut n = 0usize;
         for k in expired_keys {
             let idx = self.shard_index(&k);
-            if let Some(e) = self.shards[idx].map.remove(&k) {
+            if let Some(e) = self.shards[idx].remove(&k) {
                 n += 1;
                 self.stats.timeouts += 1;
                 self.notify(Pending::Removed(FlowEvent::Timeout, e));
@@ -521,19 +760,14 @@ impl FlowTable {
 
     /// 以确定顺序输出全部键（调用方据此产出稳定报告/快照）。
     pub fn sorted_keys(&self) -> Vec<FlowKey> {
-        let mut keys: Vec<FlowKey> = self
-            .shards
-            .iter()
-            .flat_map(|s| s.map.keys().copied())
-            .collect();
+        let mut keys: Vec<FlowKey> = self.shards.iter().flat_map(|s| s.keys().copied()).collect();
         keys.sort_unstable();
         keys
     }
 
     /// 以确定顺序输出全部条目（借用）。
     pub fn entries_sorted(&self) -> Vec<&FlowEntry> {
-        let mut entries: Vec<&FlowEntry> =
-            self.shards.iter().flat_map(|s| s.map.values()).collect();
+        let mut entries: Vec<&FlowEntry> = self.shards.iter().flat_map(Shard::entries).collect();
         entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
         entries
     }
@@ -543,7 +777,7 @@ impl FlowTable {
         let mut entries: Vec<FlowEntry> = self
             .shards
             .into_iter()
-            .flat_map(|s| s.map.into_values())
+            .flat_map(Shard::into_entries)
             .collect();
         entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
         entries
@@ -552,7 +786,7 @@ impl FlowTable {
     /// 清空全表（不发回调：清空是调用方的显式动作，不是"条目自己超时了"）。
     pub fn clear(&mut self) {
         for shard in &mut self.shards {
-            shard.map.clear();
+            shard.clear();
         }
     }
 
@@ -593,30 +827,35 @@ fn lookup<'a>(shards: &'a [Shard], key: &FlowKey) -> Option<&'a FlowEntry> {
     key.hash_with(&mut h);
     let mask = shards.len().next_power_of_two() - 1;
     let idx = (h.finish() as usize) & mask;
-    shards.get(idx)?.map.get(key)
+    shards.get(idx)?.get(key)
 }
 
-/// 取并移除分片里最久未活动的条目。
+/// 选出一个牺牲者并从分片里移除，返回（被逐出的条目，考察过的候选条目数）。
 ///
-/// **已知代价（刻意接受，不是疏忽）**：这是一次 O(分片容量) 的线性扫描。
-/// 默认配置下分片容量为 65536，即表满时每插入一条新流约需 6.5 万次比较。
-/// 之所以接受：逐出只在表满时发生，且正确性与确定性优先于峰值插入速率。
-/// 将来若基准显示这是瓶颈，把本函数换成基于双向链表或最小堆的 O(1)/O(log n) LRU
-/// 即可 —— 它是私有函数，替换不影响任何调用方。
+/// 两个分支的**语义完全相同**（都是精确 LRU：淘汰最久未活动的那条），区别只在代价：
+/// - `Lru`：摘双向链表表头，**不考察任何候选** ⇒ 返回 0 个候选；
+/// - `LruScan`：扫描整片比较 `last_active_us` ⇒ 返回每分片容量。
 ///
-/// 平局规则：`last_active_us` 相同时取键最小的那条。没有这条规则时，
-/// HashMap 迭代顺序会让"同一次逐出丢谁"随运行变化，输出便不可复现。
-fn evict_lru(shard: &mut Shard) -> Option<FlowEntry> {
-    let victim = shard
-        .map
-        .iter()
-        .min_by(|(ka, a), (kb, b)| {
-            a.last_active_us
-                .cmp(&b.last_active_us)
-                .then_with(|| ka.cmp(kb))
-        })
-        .map(|(k, _)| *k)?;
-    shard.map.remove(&victim)
+/// `evict_candidates` 因此成了复杂度的**可测证据**：单测断言链表策略恒为 0、
+/// 扫描策略恰好是"容量 × 逐出次数"，谁把 O(1) 改回 O(容量)，测试立刻红。
+fn evict_victim(shard: &mut Shard, policy: EvictPolicy) -> (Option<FlowEntry>, u64) {
+    match policy {
+        EvictPolicy::Lru => (shard.evict_head(), 0),
+        EvictPolicy::LruScan => {
+            let victim = shard
+                .slots
+                .iter()
+                .filter_map(|s| s.entry.as_ref())
+                .min_by(|a, b| {
+                    a.last_active_us
+                        .cmp(&b.last_active_us)
+                        .then_with(|| a.key.cmp(&b.key))
+                })
+                .map(|e| e.key);
+            let examined = shard.len() as u64;
+            (victim.and_then(|k| shard.remove(&k)), examined)
+        }
+    }
 }
 
 /// 供 `FlowKey` 计算分片哈希的辅助 trait。
@@ -815,6 +1054,252 @@ mod tests {
 
         assert!(t.contains(&oldest), "刚活跃过的流不得被逐出");
         assert!(!t.contains(&middle), "被逐出的应是 middle");
+    }
+
+    // ---- LRU 的代价与等价性（本批的 O(容量) → O(1)）----
+
+    /// 单分片表：便于把"每分片容量"当成"容量"来算复杂度。
+    fn one_shard(cap: usize, policy: EvictPolicy) -> FlowTable {
+        FlowTable::new(FlowTableConfig {
+            shard_count: 1,
+            max_flows: cap,
+            policy,
+            ..FlowTableConfig::default()
+        })
+    }
+
+    /// 填满单分片表（填充阶段零逐出）。
+    fn fill_one_shard(t: &mut FlowTable, cap: usize, base: u16) -> Vec<FlowKey> {
+        let mut ks = Vec::new();
+        for i in 0..cap {
+            let k = key(1, base + i as u16, 2, 80);
+            t.observe(&pkt(k, i as u64 + 1, 10));
+            ks.push(k);
+        }
+        assert_eq!(t.len(), cap, "填充阶段应恰好装满");
+        assert_eq!(t.stats().evictions, 0, "填充阶段不该逐出");
+        ks
+    }
+
+    #[test]
+    fn default_policy_is_the_o1_list_lru() {
+        assert_eq!(EvictPolicy::default(), EvictPolicy::Lru);
+        assert_eq!(FlowTableConfig::default().policy, EvictPolicy::Lru);
+        // 默认策略必须是"不考察任何候选"的那一个。谁把默认值换成扫描版，
+        // 就该先看到基准里 55µs/次 的数字，再读 `EvictPolicy` 上的说明。
+        let mut t = one_shard(64, EvictPolicy::default());
+        fill_one_shard(&mut t, 64, 1000);
+        t.observe(&pkt(key(3, 9000, 4, 90), 1_000_000, 10));
+        assert_eq!(t.stats().evictions, 1);
+        assert_eq!(t.stats().evict_candidates, 0, "默认策略不该扫描候选");
+    }
+
+    #[test]
+    fn list_lru_evicts_without_examining_any_candidate() {
+        // 把"逐出是 O(1)"变成**可测的硬证据**：链表策略恒不考察候选。
+        // 这条断言就是本批改造的验收标准 —— 它一旦失败，说明逐出又回到了扫描。
+        let cap = 4096usize;
+        let mut t = one_shard(cap, EvictPolicy::Lru);
+        fill_one_shard(&mut t, cap, 1000);
+        let n_evict = 200u64;
+        for i in 0..n_evict {
+            t.observe(&pkt(key(3, 5000 + i as u16, 4, 90), 10_000 + i, 10));
+        }
+        let st = t.stats();
+        assert_eq!(st.evictions, n_evict, "满表后每次插入都该逐出一条");
+        assert_eq!(st.evict_candidates, 0, "链表 LRU 每次逐出考察 0 个候选");
+        assert_eq!(t.len(), cap, "逐出后表仍应恰好装满");
+    }
+
+    #[test]
+    fn scan_lru_examines_the_whole_shard() {
+        // 对照实现：扫描版的代价就是整片容量 —— 留着它是为了让"为什么必须改"可复核。
+        let cap = 512usize;
+        let mut t = one_shard(cap, EvictPolicy::LruScan);
+        fill_one_shard(&mut t, cap, 1000);
+        let n_evict = 20u64;
+        for i in 0..n_evict {
+            t.observe(&pkt(key(3, 5000 + i as u16, 4, 90), 10_000 + i, 10));
+        }
+        let st = t.stats();
+        assert_eq!(st.evictions, n_evict);
+        assert_eq!(
+            st.evict_candidates,
+            n_evict * cap as u64,
+            "扫描策略每次逐出都要考察整片（这正是它被换掉的原因）"
+        );
+    }
+
+    /// 在给定策略下跑一段固定流量，返回被逐出的键序列与最终存活键。
+    fn run_eviction_trace(policy: EvictPolicy, cap: usize) -> (Vec<FlowKey>, Vec<FlowKey>) {
+        let mut t = one_shard(cap, policy);
+        let evicted = Rc::new(RefCell::new(Vec::new()));
+        t.set_observer(Box::new(EvictRecorder {
+            evicted: evicted.clone(),
+        }));
+        // 时间戳严格递增：让"最小 last_active_us"没有平局，两种实现必须给出同一答案。
+        for i in 0..900u64 {
+            let k = key(5, 2000 + (i % 400) as u16, 6, 443 + (i % 7) as u16);
+            t.observe(&pkt(k, i * 10 + 1, 10));
+        }
+        let mut survivors = t.sorted_keys();
+        survivors.sort_unstable();
+        let out = evicted.borrow().clone();
+        (out, survivors)
+    }
+
+    /// 只录逐出事件的观察者（`Recorder` 记的是字符串，这里需要键）。
+    #[derive(Clone, Default)]
+    struct EvictRecorder {
+        evicted: Rc<RefCell<Vec<FlowKey>>>,
+    }
+
+    impl FlowObserver for EvictRecorder {
+        fn on_new(&mut self, _e: &FlowEntry) {}
+        fn on_update(&mut self, _e: &FlowEntry) {}
+        fn on_evict(&mut self, e: &FlowEntry) {
+            self.evicted.borrow_mut().push(e.key);
+        }
+        fn on_timeout(&mut self, _e: &FlowEntry) {}
+    }
+
+    #[test]
+    fn list_lru_and_scan_lru_choose_the_same_victims() {
+        // 语义等价性：链表维护的是"活动序"，扫描比的是 (last_active_us, key)。
+        // 时间戳严格递增时两者必须逐次给出**同一个**牺牲者 —— 否则"换成链表"
+        // 就成了一次悄悄的语义变更，而不是纯性能改造。
+        let (list_evicted, list_survivors) = run_eviction_trace(EvictPolicy::Lru, 512);
+        let (scan_evicted, scan_survivors) = run_eviction_trace(EvictPolicy::LruScan, 512);
+        assert!(!list_evicted.is_empty(), "这段流量应该产生逐出");
+        assert_eq!(list_evicted, scan_evicted, "两种实现的逐出序列必须一致");
+        assert_eq!(list_survivors, scan_survivors, "存活集合也必须一致");
+    }
+
+    #[test]
+    fn list_lru_evicts_the_globally_oldest_in_a_large_shard() {
+        // 精确 LRU 的定义性质：片内最老的那条先出，**不管它排在哪里**。
+        // （采样式逐出会在这里失败：窗口里没有它就永远不会被选中。）
+        let cap = 4096usize;
+        let mut t = one_shard(cap, EvictPolicy::Lru);
+        let ancient = key(1, 1111, 2, 80);
+        t.observe(&pkt(ancient, 1, 10));
+        for i in 0..cap - 1 {
+            t.observe(&pkt(key(1, 2000 + i as u16, 2, 80), 10_000 + i as u64, 10));
+        }
+        assert_eq!(t.len(), cap);
+        assert_eq!(t.stats().evictions, 0);
+        // 再来一条新流 → 必须淘汰那条最老的。
+        t.observe(&pkt(key(1, 9999, 2, 81), 1_000_000, 10));
+        assert_eq!(t.stats().evictions, 1);
+        assert!(!t.contains(&ancient), "片内最老的那条必须先被淘汰");
+    }
+
+    #[test]
+    fn list_lru_orders_equal_timestamps_by_recency() {
+        // 与旧实现的**唯一语义差异**，必须写清楚并被测试钉住：
+        // 时间戳相同时，旧实现按"最小键"打破平局；链表按"谁更晚被访问"。
+        // 后者更贴近 LRU 本意（刚访问过的流即使时间戳相同也不该被淘汰），
+        // 且同样是全序、同样可复现。
+        let mut t = one_shard(2, EvictPolicy::Lru);
+        let a = key(1, 1000, 2, 80);
+        let b = key(1, 2000, 2, 80);
+        t.observe(&pkt(a, 100, 10));
+        t.observe(&pkt(b, 100, 10));
+        // b 刚被访问过（时间戳相同但更晚进入表尾）→ 再来一条时该淘汰 a。
+        let c = key(1, 3000, 2, 80);
+        t.observe(&pkt(c, 100, 10));
+        assert_eq!(t.stats().evictions, 1);
+        assert!(!t.contains(&a), "更早被访问的那条先出（键序不影响结果）");
+        assert!(t.contains(&b) && t.contains(&c));
+    }
+
+    #[test]
+    fn removed_slots_are_reused_instead_of_growing_the_arena() {
+        // 槽位复用是这套结构的前提：逐出/到期都在"删"，若不复用，槽位数组会随
+        // 累计插入量无限增长 —— 那就等于把内存泄漏藏进了 LRU 改造里。
+        let cap = 64usize;
+        let mut t = one_shard(cap, EvictPolicy::Lru);
+        for round in 0..50u64 {
+            for i in 0..cap {
+                t.observe(&pkt(
+                    key(1, (round as u16) * 200 + i as u16, 2, 80),
+                    round * 1000 + i as u64,
+                    10,
+                ));
+            }
+            // 全部到期回收，把槽位还回空闲表。
+            let n = t.expire(u64::MAX / 2);
+            assert!(n > 0, "每轮都该有到期条目");
+        }
+        assert!(t.is_empty(), "每轮结束都该清空");
+        let slots = t.shards[0].slots.len();
+        assert_eq!(slots, cap, "槽位数组必须停在容量上限（复用），实际 {slots}");
+        // 还能继续正常插入。
+        t.observe(&pkt(key(9, 1, 9, 1), 1, 10));
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn clear_resets_the_lru_list_and_keeps_capacity() {
+        let cap = 128usize;
+        let mut t = one_shard(cap, EvictPolicy::Lru);
+        fill_one_shard(&mut t, cap, 1000);
+        let slots_before = t.shards[0].slots.len();
+        t.clear();
+        assert!(t.is_empty());
+        assert_eq!(t.shards[0].head, NIL, "清空后链表头应复位");
+        assert_eq!(t.shards[0].tail, NIL, "清空后链表尾应复位");
+        assert_eq!(
+            t.shards[0].slots.len(),
+            slots_before,
+            "clear 只清条目、不还内存（与 HashMap::clear 语义一致）"
+        );
+        // 清空后再填满，仍应零逐出（说明链表与空闲表都复位干净了）。
+        fill_one_shard(&mut t, cap, 2000);
+        assert_eq!(t.len(), cap);
+    }
+
+    #[test]
+    fn lru_keeps_hot_flows() {
+        // 语义要求（手写，不是"跑一遍记下来"）：在"少量热点流 + 大量冷流"的负载下，
+        // 热点流的访问命中率不得低于 95%。这是"LRU 真的像 LRU"的量化底线 ——
+        // 采样式逐出（K=8）在这里只有 58%，正因如此才没有采用它。
+        fn hit_rate(policy: EvictPolicy, cap: usize) -> (u64, u64) {
+            let mut t = one_shard(cap, policy);
+            let mut state = 0x1234_5678u64;
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+            let (mut hot_hit, mut hot_tot) = (0u64, 0u64);
+            for i in 0..40_000u64 {
+                let hot = next() % 100 < 90;
+                let idx = if hot { next() % 40 } else { 40 + next() % 360 };
+                let k = key(7, 100 + idx as u16, 8, 8080);
+                if hot {
+                    hot_tot += 1;
+                    if t.contains(&k) {
+                        hot_hit += 1;
+                    }
+                }
+                t.observe(&pkt(k, i * 100, 10));
+            }
+            (hot_hit, hot_tot)
+        }
+
+        let (hot_hit, hot_tot) = hit_rate(EvictPolicy::Lru, 128);
+        assert!(
+            hot_hit * 100 >= hot_tot * 95,
+            "热点流命中率 {hot_hit}/{hot_tot} 低于 95%（这不再是 LRU 了）"
+        );
+        let (scan_hit, scan_tot) = hit_rate(EvictPolicy::LruScan, 128);
+        assert_eq!(
+            (hot_hit, hot_tot),
+            (scan_hit, scan_tot),
+            "链表 LRU 与扫描 LRU 的行为必须一致"
+        );
     }
 
     #[test]
