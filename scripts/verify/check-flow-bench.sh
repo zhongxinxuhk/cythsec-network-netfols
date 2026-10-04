@@ -7,7 +7,9 @@
 #
 # 为什么需要反向故障注入：
 #   基准的判定逻辑自己也可能写错（最坏是恒返回"正常"）。因此默认执行自检：
-#   把阈值放大 1000 倍跑一次，**要求基准报出"退步"并以非零码退出**。
+#   把阈值放大 1000 倍跑一次，**要求基准报出"退步"并以非零码退出**；
+#   再把"每核一张独立表"换成"共享一张表 + 互斥锁"跑一次，**要求扩展性判据判出退步**
+#   （后者针对的是"扩展性判据"本身 —— 一个只会说"扩展性良好"的判据等于没有判据）。
 #   没有这一步，"绿色的通过"和"绿色的没跑"完全一样。
 #
 # 为什么要区分两套阈值（详见 bin/bench.rs 头部）：
@@ -35,7 +37,9 @@ cd "${ROOT}"
 
 # 手写的用例数清单：基准增删用例时**这里必须同步改** —— 否则"N 项全过"会因为
 # 少跑了几项而依然是绿的（这正是最典型的假绿）。
-EXPECTED_CASES=13
+# 13 = 流表 6 + 逐出 2 + 特征 1 + 重组 2 + 会话 1 + 内存 1；
+# 19 = 上面 13 项 + 多实例分核实验 6 项（4 个线程档位 + 相对纯计算对照的扩展效率 + 核数预算）。
+EXPECTED_CASES=19
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<'EOF'
@@ -50,9 +54,11 @@ if [[ "${1:-}" == "--help" ]]; then
   --no-self-test     跳过反向故障注入（仅用于人工排查）
 
 跑 cargo build --release --bin cythsec-bench，然后：
-  1) 正常跑一次：要求退出码 0，且 13 项回归下限全部通过；
+  1) 正常跑一次：要求退出码 0，且 19 项回归下限全部通过；
   2) 用 --target-factor 1000 跑一次：要求退出码非 0 且打印"退步"（证明判定没恒真）；
-  3) 用 --report-only --target-factor 1000 跑一次：要求退出码 0（证明报告模式不判定）。
+  3) 用 --report-only --target-factor 1000 跑一次：要求退出码 0（证明报告模式不判定）；
+  4) 用 --inject-serialized-scaling 跑一次：把"每核一张独立表"换成"共享一张表 +
+     互斥锁"，要求扩展性判据判出退步并退出非零（证明扩展性判据不是恒真）。
 
 退出码：0 通过 / 1 退步或注入未被检出 / 2 参数或构建错误 / 3 缺 cargo
 EOF
@@ -191,9 +197,35 @@ if [[ ${SELF_TEST} -eq 1 ]]; then
   fi
   echo "✓ [flow-bench] 参数校验生效"
   INJECTED=$((INJECTED + 1))
+
+  echo "==> [flow-bench] 反向注入：把多实例实验换成「共享一张表 + 互斥锁」的串行形态"
+  set +e
+  "${BIN}" --flows "${FLOWS}" --rounds 1 --inject-serialized-scaling \
+    >"${TMPDIR_RUN}/inject_serial.out" 2>"${TMPDIR_RUN}/inject_serial.err"
+  SRC=$?
+  set -e
+  if [[ "${SRC}" == "0" ]]; then
+    echo "✗ [flow-bench] 串行注入未被检出：共享一张表 + 互斥锁竟然仍报通过 —— 扩展性判据是摆设" >&2
+    exit 1
+  fi
+  # 必须是因为**扩展性**判出来的，而不是别的原因失败：要求出现 REGRESSION，
+  # 且点名多实例用例里的至少一项（档位或比值）。
+  if ! grep -q 'REGRESSION' "${TMPDIR_RUN}/inject_serial.err"; then
+    echo "✗ [flow-bench] 串行注入虽退出非零，但没打印 REGRESSION 行（可能是别的原因失败）" >&2
+    sed 's/^/    /' "${TMPDIR_RUN}/inject_serial.err" >&2
+    exit 1
+  fi
+  if ! grep -qE 'REGRESSION.*(table-steady-(2|4|8)t|table-scaling-vs-ceiling)' "${TMPDIR_RUN}/inject_serial.err"; then
+    echo "✗ [flow-bench] 串行注入被检出，但退步的不是多实例用例（判据可能匹配到了别的项）" >&2
+    grep 'REGRESSION' "${TMPDIR_RUN}/inject_serial.err" | sed 's/^/    /' >&2
+    exit 1
+  fi
+  S_INJ=$(grep -cE 'REGRESSION.*(table-steady-(2|4|8)t|table-scaling-vs-ceiling)' "${TMPDIR_RUN}/inject_serial.err" || true)
+  echo "✓ [flow-bench] 串行注入已检出：多实例用例中 ${S_INJ} 项被判退步，退出码 ${SRC}"
+  INJECTED=$((INJECTED + 1))
 else
   echo "⚠ [flow-bench] 跳过反向故障注入（--no-self-test）—— 不得用于正式验收" >&2
 fi
 
-echo "✓ [flow-bench] 通过：${CASES} 项用例 · 回归下限通过 · 注入 ${INJECTED}/3 检出"
+echo "✓ [flow-bench] 通过：${CASES} 项用例 · 回归下限通过 · 注入 ${INJECTED}/4 检出"
 echo "    需求目标达成情况见上方「需求目标：达成 X/${CASES}」——未达成项是要排期的差距，不是本门禁的失败"

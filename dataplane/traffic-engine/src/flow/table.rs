@@ -563,7 +563,14 @@ pub struct FlowTable {
     shards: Vec<Shard>,
     /// 每分片容量（`max_flows / shard_count` 向上取整）。
     per_shard_cap: usize,
-    observer: Option<Box<dyn FlowObserver>>,
+    /// 生命周期回调。
+    ///
+    /// 刻意有 `+ Send`（而**不是** `+ Sync`）：多实例分核部署（每核一张独立表，
+    /// 见 `bin/bench.rs` 的 `case_multi_instance`）要求表能被**按值搬进** worker 线程，
+    /// 这只需要 `Send`；表本身不需要被多线程共享引用（共享一张表 + 加锁正是要避免的
+    /// 形态），所以不要求 `Sync`。这条约束是"多实例分核"路线能否成立的前提，
+    /// 由 `table_is_send_so_it_can_move_to_a_worker_thread` 在编译期守住。
+    observer: Option<Box<dyn FlowObserver + Send>>,
     stats: TableStats,
 }
 
@@ -605,7 +612,7 @@ impl FlowTable {
         self.per_shard_cap
     }
 
-    pub fn set_observer(&mut self, observer: Box<dyn FlowObserver>) {
+    pub fn set_observer(&mut self, observer: Box<dyn FlowObserver + Send>) {
         self.observer = Some(observer);
     }
 
@@ -900,8 +907,9 @@ impl FlowKeyHashExt for FlowKey {
 mod tests {
     use super::*;
     use crate::flow::IPPROTO_TCP;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    // 观察者必须 Send（见 FlowTable::observer 的说明），因此测试里的"记录型观察者"
+    // 用 Arc<Mutex<..>> 而不是 Rc<RefCell<..>>：后者不是 Send，装不进表里。
+    use std::sync::{Arc, Mutex};
 
     fn key(a: u8, sport: u16, b: u8, dport: u16) -> FlowKey {
         FlowKey::new_ipv4([10, 0, 0, a], sport, [10, 0, 0, b], dport, IPPROTO_TCP)
@@ -923,10 +931,10 @@ mod tests {
         })
     }
 
-    /// 记录事件的观察者（用 Rc<RefCell<..>> 以便断言后仍能读取）。
+    /// 记录事件的观察者（用 Arc<Mutex<..>> 以便断言后仍能读取）。
     #[derive(Clone, Default)]
     struct Recorder {
-        events: Rc<RefCell<Vec<String>>>,
+        events: Arc<Mutex<Vec<String>>>,
     }
 
     impl Recorder {
@@ -934,10 +942,10 @@ mod tests {
             Self::default()
         }
         fn push(&self, s: String) {
-            self.events.borrow_mut().push(s);
+            self.events.lock().expect("测试锁不该中毒").push(s);
         }
         fn take(&self) -> Vec<String> {
-            self.events.borrow().clone()
+            self.events.lock().expect("测试锁不该中毒").clone()
         }
     }
 
@@ -1133,7 +1141,7 @@ mod tests {
     /// 在给定策略下跑一段固定流量，返回被逐出的键序列与最终存活键。
     fn run_eviction_trace(policy: EvictPolicy, cap: usize) -> (Vec<FlowKey>, Vec<FlowKey>) {
         let mut t = one_shard(cap, policy);
-        let evicted = Rc::new(RefCell::new(Vec::new()));
+        let evicted = Arc::new(Mutex::new(Vec::new()));
         t.set_observer(Box::new(EvictRecorder {
             evicted: evicted.clone(),
         }));
@@ -1144,21 +1152,21 @@ mod tests {
         }
         let mut survivors = t.sorted_keys();
         survivors.sort_unstable();
-        let out = evicted.borrow().clone();
+        let out = evicted.lock().expect("测试锁不该中毒").clone();
         (out, survivors)
     }
 
     /// 只录逐出事件的观察者（`Recorder` 记的是字符串，这里需要键）。
     #[derive(Clone, Default)]
     struct EvictRecorder {
-        evicted: Rc<RefCell<Vec<FlowKey>>>,
+        evicted: Arc<Mutex<Vec<FlowKey>>>,
     }
 
     impl FlowObserver for EvictRecorder {
         fn on_new(&mut self, _e: &FlowEntry) {}
         fn on_update(&mut self, _e: &FlowEntry) {}
         fn on_evict(&mut self, e: &FlowEntry) {
-            self.evicted.borrow_mut().push(e.key);
+            self.evicted.lock().expect("测试锁不该中毒").push(e.key);
         }
         fn on_timeout(&mut self, _e: &FlowEntry) {}
     }
@@ -1477,20 +1485,27 @@ mod tests {
 
     #[test]
     fn observer_sees_the_updated_counters() {
-        struct Counting(Rc<RefCell<Vec<u64>>>);
+        struct Counting(Arc<Mutex<Vec<u64>>>);
         impl FlowObserver for Counting {
             fn on_update(&mut self, e: &FlowEntry) {
-                self.0.borrow_mut().push(e.flow.packet_count);
+                self.0
+                    .lock()
+                    .expect("测试锁不该中毒")
+                    .push(e.flow.packet_count);
             }
         }
         let mut t = small_table(8);
-        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
         t.set_observer(Box::new(Counting(seen.clone())));
         let k = key(1, 1000, 2, 80);
         for i in 1..=3u64 {
             t.observe(&pkt(k, i, 1));
         }
-        assert_eq!(&*seen.borrow(), &[2, 3], "回调必须看到已更新的计数");
+        assert_eq!(
+            &*seen.lock().expect("测试锁不该中毒"),
+            &[2, 3],
+            "回调必须看到已更新的计数"
+        );
     }
 
     #[test]
@@ -1501,6 +1516,21 @@ mod tests {
         // 默认 TCP transient 档 30 秒；空闲 60 秒后应被回收。
         assert_eq!(t.expire(60_000_000), 1);
         assert!(t.is_empty(), "无观察者时功能不受影响");
+    }
+
+    /// 多实例分核部署（每核一张独立表、把表按值搬进 worker 线程）的**前提**。
+    ///
+    /// 这个断言是编译期的：若有人把观察者改回 `!Send` 的形态（例如退回
+    /// `Box<dyn FlowObserver>` + `Rc` 实现的观察者），bench 的
+    /// `case_multi_instance` 会连带编译不过 —— 这正是我们想让它发生的地方，
+    /// 而不是等到部署时才发现"这条路走不通"。
+    ///
+    /// 刻意**不**断言 `Sync`：表不需要被多线程共享引用，"共享一张表 + 加锁"
+    /// 恰好是这条路线要避免的形态。
+    #[test]
+    fn table_is_send_so_it_can_move_to_a_worker_thread() {
+        fn assert_send<T: Send>() {}
+        assert_send::<FlowTable>();
     }
 
     #[test]
