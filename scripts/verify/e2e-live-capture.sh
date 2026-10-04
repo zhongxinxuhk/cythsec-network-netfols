@@ -343,6 +343,39 @@ else
   total=$((total + 1)); failed=$((failed + 1))
 fi
 
+# ---------- D 前置：裁判口径自证 ----------
+# nonip_count 的口径曾经错过一次（用 eth.type，802.3/LLC 帧没有 EtherType → 空行被
+# awk 的 NF 过滤整行丢掉 → 裁判少数若干帧，把一致报成不一致）。那种错法**只在网内有
+# STP 之类 LLC 帧的环境里才显形** —— 靠真实抓包去等它出现，等于靠运气。
+# 所以每次跑都用一个合成的两帧 pcap 自证：1 帧 LLC/STP + 1 帧 IPv4，裁判必须只数出 1。
+# 这一条如果换成 eth.type 口径立刻会红（0 != 1），故它同时是反向注入的接收方。
+if command -v python3 >/dev/null 2>&1 && command -v tshark >/dev/null 2>&1; then
+  judge_dir="$(mktemp -d)"
+  python3 - "${judge_dir}/mix.pcap" <<'PY'
+import struct, sys
+# 经典 pcap：1 帧 802.3/LLC/STP（长度字段，无 EtherType）+ 1 帧 Ethernet/IPv4。
+llc = bytes.fromhex("0180c2000000") + bytes.fromhex("001122334455") + struct.pack(">H", 0x0026) \
+    + b"\x42\x42\x03" + b"\x00" * 35
+ip = bytes.fromhex("001122334455") + bytes.fromhex("66778899aabb") + b"\x08\x00" \
+    + bytes.fromhex("4500001c0001000040110000c0a80101c0a80102") + b"\x00" * 8
+out = struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1)
+for f in (llc, ip):
+    out += struct.pack("<IIII", 0, 0, len(f), len(f)) + f
+open(sys.argv[1], "wb").write(out)
+PY
+  judge_n="$(nonip_count "${judge_dir}/mix.pcap" 2 || true)"
+  rm -rf "${judge_dir}"
+  total=$((total + 1))
+  if [[ "${judge_n}" == "1" ]]; then
+    echo "  ✓ D 裁判口径自证：合成样本（1 帧 LLC/STP + 1 帧 IPv4）判非 IP 帧数 = 1"
+  else
+    echo "  ✗ D 裁判口径自证失败：合成样本应判 1 帧非 IP，实际 ${judge_n:-<空>}（用 eth.type 会得到 0）" >&2
+    failed=$((failed + 1))
+  fi
+else
+  echo "  ⚠ 缺 python3 或 tshark：裁判口径自证未核验（不计为通过）"
+fi
+
 # ---------- D. 真实抓包 → 共享环 → Rust Flow（两段式） ----------
 echo "==> [live] D. 真实报文 → 共享环 → Rust 解流"
 if [[ "${RUST_READY}" == "1" && -s "${PCAP}" ]]; then
