@@ -204,6 +204,7 @@ pub const ATTR_DNS_QCLASS: &str = "ATTR_DNS_QCLASS";
 pub const ATTR_DNS_RCODE: &str = "ATTR_DNS_RCODE";
 pub const ATTR_DNS_ANSWER_IP: &str = "ATTR_DNS_ANSWER_IP";
 pub const ATTR_DNS_PTR_DEPTH: &str = "ATTR_DNS_PTR_DEPTH";
+pub const ATTR_DNS_EDNS0_UDP_SIZE: &str = "ATTR_DNS_EDNS0_UDP_SIZE";
 pub const ATTR_TLS_VERSION: &str = "ATTR_TLS_VERSION";
 pub const ATTR_TLS_SNI: &str = "ATTR_TLS_SNI";
 pub const ATTR_TLS_JA3: &str = "ATTR_TLS_JA3";
@@ -690,6 +691,15 @@ pub static ATTRIBUTES: &[AttrDef] = &[
         desc: "查询中压缩指针跳数（解析能力边界观测点）",
     },
     AttrDef {
+        id: ATTR_DNS_EDNS0_UDP_SIZE,
+        ty: AttrType::U16,
+        scope: Scope::L5Plus,
+        stage: Stage::L7,
+        cost: 2,
+        source: "traffic-engine",
+        desc: "DNS EDNS0 请求方声明的 UDP 载荷上限（OPT 记录的 CLASS 字段，放大攻击面观测点）",
+    },
+    AttrDef {
         id: ATTR_TLS_VERSION,
         ty: AttrType::Enum,
         scope: Scope::L5Plus,
@@ -1152,4 +1162,4 @@ pub fn count() -> usize {
 }
 
 /// 真源版本号，供运行期上报与诊断。
-pub const REGISTRY_VERSION: u32 = 1;
+pub const REGISTRY_VERSION: u32 = 2;

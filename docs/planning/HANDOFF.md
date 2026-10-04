@@ -22,7 +22,7 @@
 
 | 能力 | 状态 | 落地位置 |
 | --- | --- | --- |
-| 深度包检测（TLS/JA3、DNS、HTTP） | ◐ 已落地，三方互证通过 | `dataplane/traffic-engine/src/dpi/` |
+| 深度包检测（TLS/JA3、DNS、HTTP） | ◐ 已落地（`CYS-TRF-020`/`023`→☑）：32 条向量 + tshark **92 项**三方互证；HTTP 响应侧与 DNS RCODE/EDNS0/应答地址已补齐 | `dataplane/traffic-engine/src/dpi/` |
 | TCP 乱序重组 + TCP 选项解析 | ◐ 已落地，三方互证通过 | `dataplane/traffic-engine/src/reassembly/` |
 | 流表 / 超时 / 逐出 / 回调 + TCP 状态机 + 会话管理 | ☑ 已落地（CYS-TRF-006→◐ / 007→◐ / 008/009/010/011/012→☑） | `dataplane/traffic-engine/src/{flow,session,tcp}/` |
 | 特征提取 + FlowRecord + 离线 pcap CLI | ☑ 已落地（CYS-TRF-004/005/014/027/033/035） | `src/{feature,record,pipeline,bin/analyze}.rs` |
@@ -44,13 +44,13 @@
 | 门禁 | 结果 | 跑法 |
 | --- | --- | --- |
 | CTest | 6/6 通过 | `--cpp` |
-| Rust 单测 | 320 项通过（301 lib + 8 基准 bin + 6 bin + 5 集成） | `--rust` |
+| Rust 单测 | 331 项通过（312 lib + 8 基准 bin + 6 bin + 5 集成） | `--rust` |
 | Go | 通过 | `--go` |
 | 前端 vitest | 25 项通过（4 文件） | `cd web/console && npm test` ⚠ 见下 |
 | 通道 ABI parity | 89 行一致 | `--parity`（须同时选 `--cpp --rust`） |
-| DPI 的 tshark 核验 | 22 项一致（跳过 10 项已知例外） | `--dpi` |
+| DPI 的 tshark 核验 + 向量字节保真 | **92 项一致**（跳过 14 项，全部有理由；另比对 32 个入库向量与生成物逐字节一致） | `--dpi` |
 | 重组的 tshark 核验 | 16 项一致（跳过 2 项已知例外） | `--reassembly` |
-| 流记录的 tshark 核验 + 反向故障注入 | **725 项一致**（跳过 7 项，全部有理由；17 项注入全部被检出） | `--flows` |
+| 流记录的 tshark 核验 + 反向故障注入 | **927 项一致**（跳过 8 项，全部有理由；17 项注入全部被检出） | `--flows` |
 | 跨语言 e2e | 4 阶段 / 19 项断言通过 | `--e2e`（须同时选 `--cpp --rust`） |
 | 数据面基准回归门禁 + 反向故障注入 | 12 项回归下限全过；注入 3/3 检出；需求目标 4/12 | `--bench`（**默认不跑**，见 §4） |
 | lint（格式 + 生成物一致性 + 版本真源 + 仓库完整性） | 9 项全过 | `scripts/lint/lint-all.sh` |
@@ -61,7 +61,7 @@
 > 前端代码本身是绿的：`cd web/console && npm test` → 25 项通过。
 > 详见 §7.1。**除这一项外，其余各栈单独跑均全绿**（含不带参数跑时的其余部分）。
 
-待办表状态（`count-backlog.sh`）：350 任务 / 9 里程碑 —— 未开始 297 · 进行中 14 · 已完成 39（M3 12/39）。
+待办表状态（`count-backlog.sh`）：350 任务 / 9 里程碑 —— 未开始 297 · 进行中 12 · 已完成 41（M3 14/39）。
 
 ---
 
@@ -171,7 +171,7 @@
    （宁可留空，也不要先填一个假分数进存储）。
 
 **新增的第三方门禁（`--flows`）**：`scripts/verify/check-flow-records.sh` 用 tshark
-独立解析样本，逐流核对 **725 项**（会话集合 / 包数字节数 / 双向计数 / 方向切换 /
+独立解析样本，逐流核对 **927 项**（会话集合 / 包数字节数 / 双向计数 / 方向切换 /
 首末时间戳 / TCP 末态 / 发起方 / 中途接入 / 应用识别 / 解码失败计数 / 统计自证）。
 两个关键设计：
 
@@ -320,9 +320,9 @@ bash scripts/lint/lint-all.sh            # 八项：格式 / 生成物一致性 
 | `--go` | Go 控制面测试 | 通过 |
 | `--node` | 前端 vitest（`npm ci` + `npm test`） | 测试 25 项通过，但 `npm ci` 被环境拦 → 见 §7.1 |
 | `--parity` | 通道 ABI 跨语言取值一致性（逐行 diff） | 89 行一致（需配 `--cpp --rust`） |
-| `--dpi` | **tshark 独立复核** DPI 向量 | 22 项一致（跳过 10 项已知例外） |
+| `--dpi` | **tshark 独立复核** DPI 向量 + 入库字节保真 | **92 项一致**（跳过 14 项，全部有理由） |
 | `--reassembly` | **tshark 独立复核** 重组向量 | 16 项一致（跳过 2 项已知例外） |
-| `--flows` | **tshark 独立复核 FlowRecord**（会话/计数/状态/应用）+ 反向故障注入 | 725 项一致，跳过 7 项；17 项注入全部被检出 |
+| `--flows` | **tshark 独立复核 FlowRecord**（会话/计数/状态/应用）+ 反向故障注入 | 927 项一致，跳过 8 项；17 项注入全部被检出 |
 | `--e2e` | C++ 进程写 → 共享环 → Rust 进程读并解 Flow | 4 阶段 / 19 项通过（需配 `--cpp --rust`） |
 | `--bench` | 数据面吞吐/内存的**回归下限** + 判定自身的反向注入 | 12 项回归下限全过、注入 3/3 检出（需求目标 4/12，只报告） |
 
@@ -554,6 +554,29 @@ tshark 是唯一能发现「一致地错」的手段。
    才暴露的（`check-version.sh` 报 `scripts/build/build-all.sh` 不存在、Go 编译报缺包）。
    本地全绿 ≠ 克隆能构建；发布/交接前请真的 clone 一次再跑。
 
+8. **`core.autocrlf=input` 会把入库的二进制向量改掉行尾**（与第 7 条同属「磁盘上有 ≠ 版本控制里是那份」，
+   但更难发现，因为这次文件**在**版本控制里，只是内容被悄悄改了）。
+   本机 `core.autocrlf=input`（全局也是），`git add` 会把 HTTP 向量载荷里的 `\r\n`
+   归一成 `\n` —— 而 `http.rs` 正是用 `\r\n\r\n` 判头部结束。实测表现：
+   `git add datasets/dpi/payloads/http-response-200.bin` 打印
+   `CRLF will be replaced by LF`，索引 blob 的 CRLF 计数变成 **0**，磁盘上仍是 **5**。
+   修复：`.gitattributes` 声明 `datasets/**/*.bin -text`（向量载荷是不透明字节）+
+   `git add --renormalize datasets/dpi/payloads/`。
+
+   **两个反直觉点，别绕过去**：
+   - **`git diff` 看不见这种损坏**。它比对的是"过了 clean 过滤之后"的内容，而行尾归一
+     恰恰发生在过滤这一步，于是"索引 LF / 磁盘 CRLF"在它眼里毫无差别（实测 `git diff --quiet`
+     报干净）。必须逐文件比对**未经过滤**的字节：`git ls-files -s` 的 blob 哈希 vs
+     `git hash-object --no-filters`。
+   - **`.gitattributes` 会被缓存在索引里**。把文件删掉后 `git check-attr` 仍报 `text: unset`，
+     于是"去掉属性验证会不会复发"这种实验会得出**假的结论**（我第一轮就被它骗过一次）。
+     要让改动生效需重写索引（如 `git rm --cached .gitattributes` 后再看 `check-attr`）。
+
+   守门：`scripts/verify/check-dpi-vectors.sh` 的正常执行会先跑一遍**自证**
+   （在临时仓库里真的制造一次行尾归一 → 断言能判红；加 `-text` → 断言判绿），
+   再逐文件比对 32 个入库向量与生成物字节；`--self-test` 可单独跑。
+   挂在 `test-all.sh --dpi`（默认全量门禁含该项）上。
+
 ---
 
 ## 8. 下一棒建议顺序（含理由，可据实际情况调整）
@@ -631,7 +654,7 @@ git status --short                        # 期望为空
 
 # 2. 关键门禁全绿（会自动生成测试向量）
 bash scripts/test/test-all.sh --rust --dpi --reassembly --flows
-#    期望：Rust 320 项通过 + 三道 tshark 核验（22 / 16 / 725 项）通过
+#    期望：Rust 331 项通过 + 三道 tshark 核验（92 / 16 / 927 项）通过
 #          + --flows 的反向故障注入全部被检出 + 测试汇总全部通过
 
 # 2b. 数据面基准（显式开关，默认不在 ALL 里；约 15 秒）
@@ -653,19 +676,29 @@ bash scripts/test/test-all.sh --node
 
 # 6. 待办表状态
 bash docs/planning/scripts/count-backlog.sh | tail -20
-#    期望：未开始 297 · 进行中 14 · 已完成 39
+#    期望：未开始 297 · 进行中 12 · 已完成 41
 python3 docs/planning/scripts/check-deps.py
-#    期望：无环、无悬空、无自依赖；5 处状态不一致全部是**已记录**项：
+#    期望：无环、无悬空、无自依赖；7 处状态不一致全部是**已记录**项：
 #      - CYS-PKT-006 / CYS-PKT-024：既有项（前置的接口部分已交付，属语义重叠）
 #      - CYS-TRF-008 / 010 / 014：前置 CYS-TRF-006/007 为 ◐ —— 依赖的是分片流表与超时的
 #        **功能**（已可用）；`CYS-TRF-037` 已落地并给出数字，只是 006/007 仍有未达成项
 #        （每包路径吞吐、小时级长稳），故仍标 ◐ 而不是批量打勾
+#      - CYS-TRF-020 / 023（本批转 ☑）：前置 `CYS-TRF-019` 仍 ◐，因为 019 的另一条验收
+#        标准是「样本集准确率 ≥95%」而仓库尚无大样本集 —— 那是**前置自己的**独立未达成项，
+#        与这两项的解析功能无关（它们的字段与四态裁决已逐条三方互证），故不把它拖成 ◐；
+#        这也是本仓库既有做法（008/010/014 同理）。若将来 019 落地大样本集，这三条一起清零
 
 # 7. 反查「文件真的在仓库里」（本批的教训：磁盘上有 ≠ 版本控制里有）
 bash scripts/verify/check-ignored-sources.sh        # 期望：没有源码被 .gitignore 吃掉
 git ls-files scripts/release/ scripts/build/ services/telemetryd/internal/target/ \
             # 期望：四个脚本 + 四份 Go 文件都在（它们曾被 ignore 规则吞掉过）
 bash scripts/release/check-version.sh --self-test   # 期望：自证通过（4 场景）
+
+# 8. 反查「入库的字节就是测试读的字节」（同族教训：入库这份 ≠ 磁盘那份）
+bash scripts/verify/check-dpi-vectors.sh --self-test
+#    期望：字节保真比对自证通过（临时仓库内注入行尾归一→判红；加 -text→判绿）
+#    正常跑 --dpi 时会先自证再逐文件比对 32 个入库向量与生成物；
+#    若报「入库字节与生成物不一致」，见 §7 第 8 条（core.autocrlf=input 吃掉了 CRLF）
 ```
 
 **若看到 `✗ [node] npm ci 被环境拦截（ENV_INTERCEPTED…）`**：那是 §7.1 的批量删除

@@ -50,3 +50,11 @@
   `services/telemetryd/internal/target/`（telemetryd 直接 import 的 Go 包，缺了它克隆里编译不过）。
   规则已全部锚定到根，并新增门禁 `scripts/verify/check-ignored-sources.sh`（lint `[repo]`）守这一类。
   **教训：本地全绿 ≠ 克隆能构建** —— 这三处都只有真的 clone 一次才会暴露。
+- **`core.autocrlf=input` 会改掉入库二进制向量的行尾（已修，2026-10-04）**：`git add` 把
+  HTTP 向量载荷里的 `\r\n` 归一成 `\n`（`http.rs` 用 `\r\n\r\n` 判头部结束），实测索引 blob
+  的 CRLF 计数 0 / 磁盘 5 —— 文件**在**版本控制里，但入库那份 ≠ 测试读的那份。修法：新增
+  `.gitattributes` 声明 `datasets/**/*.bin -text` + `git add --renormalize`。**两个反直觉点**：
+  ① `git diff` 看不见这种损坏（它比「过了 clean 过滤之后」的内容，而归一恰恰发生在过滤这一步），
+  必须比 `git ls-files -s` 的 blob 哈希与 `git hash-object --no-filters`；② `.gitattributes` 会
+  **缓存在索引里**（删掉文件后 `git check-attr` 仍报 `text: unset`，实验会得出假结论，须先重写索引）。
+  守门：`scripts/verify/check-dpi-vectors.sh`（自证 + 逐文件比对 32 个向量，挂 `--dpi`）。

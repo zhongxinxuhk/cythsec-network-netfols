@@ -11,9 +11,10 @@
 
 ---
 
-## registry/attributes.json — 属性字典真源（18303B）
+## registry/attributes.json — 属性字典真源（18548B）
 
-- version=1，**98 条属性**，每条含 `id / type / scope / stage / cost / source / desc`
+- version=2，**99 条属性**，每条含 `id / type / scope / stage / cost / source / desc`
+  - v1→v2 新增 `ATTR_DNS_EDNS0_UDP_SIZE`（u16 / l5plus / l7）：DNS 请求方声明的 UDP 载荷上限（OPT 记录的 CLASS 字段），放大攻击面的观测点
 - 14 种类型：string / bytes / ip / ip_prefix / port / u8-u64 / i64 / bool / enum / string_set / time_ms
 - 8 个 scope：l2 / l3 / l4 / l5plus / tunnel / identity / flow / derived
 - 5 个 stage、3 级 cost

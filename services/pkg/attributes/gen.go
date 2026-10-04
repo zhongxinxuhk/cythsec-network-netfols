@@ -182,6 +182,7 @@ const (
 	DNSRCode            = "ATTR_DNS_RCODE"
 	DNSAnswerIP         = "ATTR_DNS_ANSWER_IP"
 	DNSPTRDepth         = "ATTR_DNS_PTR_DEPTH"
+	DNSEdns0UDPSize     = "ATTR_DNS_EDNS0_UDP_SIZE"
 	TLSVersion          = "ATTR_TLS_VERSION"
 	TLSSNI              = "ATTR_TLS_SNI"
 	TLSJA3              = "ATTR_TLS_JA3"
@@ -284,6 +285,7 @@ var defs = []Def{
 	{ID: DNSRCode, Type: ValueTypeU8, Scope: ScopeL5Plus, Stage: StageL7, Cost: 2, Source: "traffic-engine", Desc: "DNS 响应码"},
 	{ID: DNSAnswerIP, Type: ValueTypeStringSet, Scope: ScopeL5Plus, Stage: StageL7, Cost: 2, Source: "traffic-engine", Desc: "DNS 应答中的 IP 集合"},
 	{ID: DNSPTRDepth, Type: ValueTypeU8, Scope: ScopeL5Plus, Stage: StageL7, Cost: 2, Source: "traffic-engine", Desc: "查询中压缩指针跳数（解析能力边界观测点）"},
+	{ID: DNSEdns0UDPSize, Type: ValueTypeU16, Scope: ScopeL5Plus, Stage: StageL7, Cost: 2, Source: "traffic-engine", Desc: "DNS EDNS0 请求方声明的 UDP 载荷上限（OPT 记录的 CLASS 字段，放大攻击面观测点）"},
 	{ID: TLSVersion, Type: ValueTypeEnum, Scope: ScopeL5Plus, Stage: StageL7, Cost: 2, Source: "traffic-engine", Desc: "TLS 记录层/握手版本"},
 	{ID: TLSSNI, Type: ValueTypeString, Scope: ScopeL5Plus, Stage: StageL7, Cost: 2, Source: "traffic-engine", Desc: "TLS SNI"},
 	{ID: TLSJA3, Type: ValueTypeString, Scope: ScopeL5Plus, Stage: StageL7, Cost: 2, Source: "traffic-engine", Desc: "JA3 指纹哈希"},
@@ -384,4 +386,4 @@ func IDs() []string {
 func Count() int { return len(defs) }
 
 // RegistryVersion 是真源版本号，供运行期上报与控制台提示。
-const RegistryVersion = 1
+const RegistryVersion = 2

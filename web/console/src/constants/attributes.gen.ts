@@ -143,6 +143,7 @@ export const ATTR = {
   DNS_RCODE: "ATTR_DNS_RCODE",
   DNS_ANSWER_IP: "ATTR_DNS_ANSWER_IP",
   DNS_PTR_DEPTH: "ATTR_DNS_PTR_DEPTH",
+  DNS_EDNS0_UDP_SIZE: "ATTR_DNS_EDNS0_UDP_SIZE",
   TLS_VERSION: "ATTR_TLS_VERSION",
   TLS_SNI: "ATTR_TLS_SNI",
   TLS_JA3: "ATTR_TLS_JA3",
@@ -258,6 +259,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   { id: ATTR.DNS_RCODE, type: ATTR_VALUE_TYPE.U8, scope: ATTR_SCOPE.L5Plus, stage: ATTR_STAGE.L7, cost: 2, source: "traffic-engine", desc: "DNS 响应码" },
   { id: ATTR.DNS_ANSWER_IP, type: ATTR_VALUE_TYPE.StringSet, scope: ATTR_SCOPE.L5Plus, stage: ATTR_STAGE.L7, cost: 2, source: "traffic-engine", desc: "DNS 应答中的 IP 集合" },
   { id: ATTR.DNS_PTR_DEPTH, type: ATTR_VALUE_TYPE.U8, scope: ATTR_SCOPE.L5Plus, stage: ATTR_STAGE.L7, cost: 2, source: "traffic-engine", desc: "查询中压缩指针跳数（解析能力边界观测点）" },
+  { id: ATTR.DNS_EDNS0_UDP_SIZE, type: ATTR_VALUE_TYPE.U16, scope: ATTR_SCOPE.L5Plus, stage: ATTR_STAGE.L7, cost: 2, source: "traffic-engine", desc: "DNS EDNS0 请求方声明的 UDP 载荷上限（OPT 记录的 CLASS 字段，放大攻击面观测点）" },
   { id: ATTR.TLS_VERSION, type: ATTR_VALUE_TYPE.Enum, scope: ATTR_SCOPE.L5Plus, stage: ATTR_STAGE.L7, cost: 2, source: "traffic-engine", desc: "TLS 记录层/握手版本" },
   { id: ATTR.TLS_SNI, type: ATTR_VALUE_TYPE.String, scope: ATTR_SCOPE.L5Plus, stage: ATTR_STAGE.L7, cost: 2, source: "traffic-engine", desc: "TLS SNI" },
   { id: ATTR.TLS_JA3, type: ATTR_VALUE_TYPE.String, scope: ATTR_SCOPE.L5Plus, stage: ATTR_STAGE.L7, cost: 2, source: "traffic-engine", desc: "JA3 指纹哈希" },
@@ -323,4 +325,4 @@ export function attributeCount(): number {
 }
 
 /** 真源版本号，供控制台提示与诊断。 */
-export const REGISTRY_VERSION = 1;
+export const REGISTRY_VERSION = 2;

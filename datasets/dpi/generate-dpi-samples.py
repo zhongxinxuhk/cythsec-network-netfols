@@ -347,6 +347,51 @@ def dns_response(qname: str, txid: int = 0x5678, answer_name: bytes = None) -> b
     return hdr + q + struct.pack("!HH", 1, 1) + ans
 
 
+def dns_opt(udp_size: int = 1232, do: bool = False, version: int = 0,
+            ext_rcode: int = 0) -> bytes:
+    """EDNS0 的 OPT 伪记录（RFC 6891）。
+
+    CLASS 字段被复用为"请求方能收的最大 UDP 载荷字节数"，TTL 字段被拆成
+    扩展 RCODE / 版本 / 标志位（最高位即 DO）。这三个复用是本协议最容易被
+    实现写错的地方：字段名看着像 CLASS/TTL，语义却完全不是。
+    """
+    ttl = ((ext_rcode & 0xFF) << 24) | ((version & 0xFF) << 16) | (0x8000 if do else 0)
+    return b"\x00" + struct.pack("!HHIH", 41, udp_size, ttl, 0)
+
+
+def dns_query_edns0(qname: str, qtype: int = 1, txid: int = 0x2345,
+                    udp_size: int = 1232, do: bool = False) -> bytes:
+    """带 EDNS0 的查询：头部 ARCOUNT=1，QUESTION 之后跟一条 OPT。"""
+    q = dns_encode_name(qname) + struct.pack("!HH", qtype, 1)
+    flags = 0x0100  # RD
+    hdr = struct.pack("!HHHHHH", txid, flags, 1, 0, 0, 1)
+    return hdr + q + dns_opt(udp_size=udp_size, do=do)
+
+
+def dns_response_records(qname: str, txid: int = 0x6789, rcode: int = 0,
+                         answers=(), truncate_after: int = None) -> bytes:
+    """构造响应，ANSWER 段按 (rtype, rdata) 列表逐条写入，NAME 用压缩指针。
+
+    `truncate_after` 用于制造"应答段被截断"的报文（首包常态）：
+    截到该字节数为止，头部计数却仍宣称有那么多条。
+    """
+    q = dns_encode_name(qname)
+    flags = 0x8180 | (rcode & 0xF)
+    hdr = struct.pack("!HHHHHH", txid, flags, 1, len(answers), 0, 0)
+    out = hdr + q + struct.pack("!HH", 1, 1)
+    for rtype, rdata in answers:
+        out += b"\xC0\x0C" + struct.pack("!HHIH", rtype, 1, 300, len(rdata)) + rdata
+    if truncate_after is not None:
+        out = out[:truncate_after]
+    return out
+
+
+A_93_184_216_34 = bytes([93, 184, 216, 34])
+A_93_184_216_35 = bytes([93, 184, 216, 35])
+# 2606:2800:0220:0001:0248:1893:25c8:1946 —— 八组都非零，Rust 打印时不会被压缩成 ::
+AAAA_EXAMPLE = bytes.fromhex("26062800022000010248189325c81946")
+
+
 def build_dns_cases():
     cases = []
 
@@ -369,10 +414,55 @@ def build_dns_cases():
     cases.append({"name": "dns-query-mx", "expect": "identified", "qname": "mail.example.net",
                   "qtype": 15, "payload": payload})
 
-    # 响应（ANSWER 用压缩指针）：解析 QNAME 不受影响，指针不得越界
+    # 响应（ANSWER 用压缩指针）：解析 QNAME 不受影响，指针不得越界，
+    # 同时应答里的 A 记录要能被读成地址。
     payload = dns_response("compressed.example.com")
     cases.append({"name": "dns-response-compressed", "expect": "identified",
-                  "qname": "compressed.example.com", "qtype": 1, "payload": payload})
+                  "qname": "compressed.example.com", "qtype": 1, "payload": payload,
+                  "rcode": 0, "answer_ips": ["93.184.216.34"]})
+
+    # RXDOMAIN（RCODE=3）：响应码必须被读出来，且不能因为"没有应答记录"就判畸形
+    payload = dns_response_records("nxdomain.example", rcode=3, answers=())
+    cases.append({"name": "dns-response-nxdomain", "expect": "identified",
+                  "qname": "nxdomain.example", "qtype": 1, "payload": payload,
+                  "rcode": 3, "answer_ips": []})
+
+    # 多应答：两条 A + 一条 AAAA。地址集合是 string_set，顺序按报文顺序。
+    payload = dns_response_records("multi.example", answers=[
+        (1, A_93_184_216_34), (1, A_93_184_216_35), (28, AAAA_EXAMPLE)])
+    cases.append({"name": "dns-response-multi-answer", "expect": "identified",
+                  "qname": "multi.example", "qtype": 1, "payload": payload,
+                  "rcode": 0,
+                  "answer_ips": ["93.184.216.34", "93.184.216.35",
+                                 "2606:2800:220:1:248:1893:25c8:1946"]})
+
+    # 应答段被截断（首包常态）：QUESTION 段的证据与应答段无关，
+    # 因此仍须判 identified，只是地址集合里什么都没有。
+    # 实测 tshark 4.6.7 仍能报出 QNAME 与 RCODE，故照样参与三方互证。
+    payload = dns_response_records("cut.example", answers=[(1, A_93_184_216_34)],
+                                   truncate_after=31)
+    cases.append({"name": "dns-response-answer-cut", "expect": "identified",
+                  "qname": "cut.example", "qtype": 1, "payload": payload,
+                  "rcode": 0, "answer_ips": []})
+
+    # EDNS0 查询：OPT 的 CLASS 字段是"请求方能收多少字节 UDP"，DO 位在 TTL 最高位
+    payload = dns_query_edns0("edns0.example", udp_size=1232, do=True)
+    cases.append({"name": "dns-query-edns0", "expect": "identified",
+                  "qname": "edns0.example", "qtype": 1, "payload": payload,
+                  "edns0_udp_size": 1232})
+
+    # 无 EDNS0 的普通查询：不得凭空产出 EDNS0 属性（"没有"与"没测"要分清）
+    payload = dns_message("no-edns0.example")
+    cases.append({"name": "dns-query-no-edns0", "expect": "identified",
+                  "qname": "no-edns0.example", "qtype": 1, "payload": payload,
+                  "edns0_udp_size": None})
+
+    # 两条 OPT：RFC 6891 §6.1.1 规定至多一条，收到多条应回 FORMERR —— 判畸形
+    q = dns_encode_name("double-opt.example") + struct.pack("!HH", 1, 1)
+    hdr = struct.pack("!HHHHHH", 0x3456, 0x0100, 1, 0, 0, 2)
+    payload = hdr + q + dns_opt(udp_size=512) + dns_opt(udp_size=4096)
+    cases.append({"name": "dns-edns0-double-opt", "expect": "malformed", "qname": None,
+                  "qtype": 1, "payload": payload})
 
     # QUESTION 段出现压缩指针：真实实现不会这样发，属畸形 —— 必须拒绝，
     # 因为跟随指针会引入「指针成环 → 无限循环」的攻击面。
@@ -392,10 +482,16 @@ def build_dns_cases():
     cases.append({"name": "dns-truncated", "expect": "need_more", "qname": None,
                   "qtype": 1, "payload": payload})
 
-    # 负例：非 DNS 载荷
+    # 负例：非 DNS 载荷。**已知分歧**：这段字节的 third/fourth 字节恰好让 tshark
+    # 把它解析成 DNS（rcode=15），而我们把 rcode>11 判为"不是 DNS"——这是刻意的保守
+    # 判据（省网入口宁可少识别，也不要把随机字节算成 DNS 统计）。分歧必须显式记下来，
+    # 而不是让它悄悄消失在"非 identified 就跳过"里。
     payload = b"\xff\xff\xff\xff not a dns message at all"
     cases.append({"name": "dns-negative-garbage", "expect": "not_dns", "qname": None,
-                  "qtype": 0, "payload": payload})
+                  "qtype": 0, "payload": payload,
+                  "tshark": {"verified": False,
+                             "note": "tshark 把该载荷解析成 DNS（rcode=15），我们按 rcode>11 "
+                                     "判「不是 DNS」：刻意保守，不参与三方互证"}})
 
     return cases
 
@@ -407,17 +503,57 @@ def build_http_cases():
     req = (b"GET /path?q=1 HTTP/1.1\r\nHost: api.example.com:8443\r\n"
            b"User-Agent: curl/8.0\r\nAccept: */*\r\n\r\n")
     cases.append({"name": "http-get-host", "expect": "identified", "method": "GET",
-                  "host": "api.example.com", "payload": req})
+                  "host": "api.example.com", "uri": "/path?q=1",
+                  "user_agent": "curl/8.0", "status_code": None, "content_type": None,
+                  "payload": req})
 
     req = (b"POST /submit HTTP/1.1\r\nHost: form.example.net\r\n"
            b"Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
     cases.append({"name": "http-post-host", "expect": "identified", "method": "POST",
-                  "host": "form.example.net", "payload": req})
+                  "host": "form.example.net", "uri": "/submit",
+                  "user_agent": None, "status_code": None,
+                  "content_type": "application/json", "payload": req})
 
     # 只有请求行、Host 尚未到达（分片）：应报 need_more 而非「无 Host」
     req = b"GET /early HTTP/1.1\r\nUser-Agent: curl/8.0\r\n"
     cases.append({"name": "http-no-host-yet", "expect": "need_more", "method": "GET",
-                  "host": None, "payload": req})
+                  "host": None, "uri": None, "user_agent": None, "status_code": None,
+                  "content_type": None, "payload": req})
+
+    # 响应侧：状态码 + Content-Type。Content-Type 刻意写成大小写混杂，
+    # 期望值是小写归一后的结果（同一类型不能因写法不同裂成两个统计桶）。
+    resp = (b"HTTP/1.1 200 OK\r\nServer: nginx\r\n"
+            b"Content-Type: Text/HTML; charset=UTF-8\r\nContent-Length: 13\r\n\r\n"
+            b"Hello, world!")
+    cases.append({"name": "http-response-200", "expect": "identified", "method": None,
+                  "host": None, "uri": None, "user_agent": None, "status_code": 200,
+                  "content_type": "text/html; charset=utf-8", "payload": resp,
+                  "response": True})
+
+    resp = (b"HTTP/1.1 404 Not Found\r\nServer: nginx\r\n"
+            b"Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+    cases.append({"name": "http-response-404", "expect": "identified", "method": None,
+                  "host": None, "uri": None, "user_agent": None, "status_code": 404,
+                  "content_type": "application/json", "payload": resp,
+                  "response": True})
+
+    # 状态行到了、头部空行还没到：Content-Type 是"还没到"，不是"没有"
+    resp = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+    cases.append({"name": "http-response-truncated", "expect": "need_more", "method": None,
+                  "host": None, "uri": None, "user_agent": None, "status_code": None,
+                  "content_type": None, "payload": resp, "response": True})
+
+    # 状态码 999：三位数字但不在 1xx~5xx 内 —— 不是合法状态行，判畸形
+    resp = b"HTTP/1.1 999 Nope\r\n\r\n"
+    cases.append({"name": "http-response-bad-status", "expect": "malformed", "method": None,
+                  "host": None, "uri": None, "user_agent": None, "status_code": None,
+                  "content_type": None, "payload": resp, "response": True})
+
+    # 半截 HTTP/ 前缀：必须报 need_more。交给请求解析器会因"方法后没有空格"判
+    # rejected，于是分片被记成"不是 HTTP"。
+    cases.append({"name": "http-partial-version", "expect": "need_more", "method": None,
+                  "host": None, "uri": None, "user_agent": None, "status_code": None,
+                  "content_type": None, "payload": b"HTT"})
 
     return cases
 
@@ -458,12 +594,24 @@ def main():
         rel = f"payloads/{c['name']}.bin"
         with open(os.path.join(outdir, rel), "wb") as fh:
             fh.write(c["payload"])
-        frame = eth(udp4(c["payload"], 50000 + i, 53))
+        # 响应方向的向量把源端口设成 53（真实流量里响应来自服务器），
+        # 否则 tshark 会把"服务器发往 53 端口的响应"当成畸形请求方向处理。
+        is_resp = c["expect"] == "identified" and c.get("rcode") is not None
+        sport, dport = (53, 50000 + i) if is_resp else (50000 + i, 53)
+        frame = eth(udp4(c["payload"], sport, dport))
         frames.append((1700000200 + i, i * 1000, frame, len(frame)))
-        manifest["dns"].append({
+        entry = {
             "name": c["name"], "payload_file": rel, "payload_len": len(c["payload"]),
             "expect": c["expect"], "qname": c["qname"], "qtype": c["qtype"],
-        })
+            "qclass": 1 if c.get("qname") is not None else 0,
+            "rcode": c.get("rcode", None),
+            "answer_ips": c.get("answer_ips", []),
+            "ptr_depth": 0,
+            "edns0_udp_size": c.get("edns0_udp_size", None),
+        }
+        if "tshark" in c:
+            entry["tshark"] = c["tshark"]
+        manifest["dns"].append(entry)
     with open(os.path.join(outdir, "dns-vectors.pcap"), "wb") as fh:
         fh.write(pcap(frames))
 
@@ -474,11 +622,17 @@ def main():
         rel = f"payloads/{c['name']}.bin"
         with open(os.path.join(outdir, rel), "wb") as fh:
             fh.write(c["payload"])
-        frame = eth(tcp4(c["payload"], 41000 + i, 80))
+        # 响应方向：源端口设成 80、目的端口是客户端口。方向不是装饰 ——
+        # tshark 按"目的端口 80"判请求方向，把响应发到 80 端口的报文它干脆不解析，
+        # 于是第三方互证会**静默地少比好几个字段**（假绿的一种）。
+        sport, dport = (80, 41000 + i) if c.get("response") else (41000 + i, 80)
+        frame = eth(tcp4(c["payload"], sport, dport))
         frames.append((1700000300 + i, i * 1000, frame, len(frame)))
         manifest["http"].append({
             "name": c["name"], "payload_file": rel, "payload_len": len(c["payload"]),
             "expect": c["expect"], "method": c["method"], "host": c["host"],
+            "uri": c.get("uri"), "user_agent": c.get("user_agent"),
+            "status_code": c.get("status_code"), "content_type": c.get("content_type"),
         })
     with open(os.path.join(outdir, "http-vectors.pcap"), "wb") as fh:
         fh.write(pcap(frames))

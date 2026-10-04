@@ -134,11 +134,40 @@ pub fn emit(d: &Detection) -> Vec<Attr> {
             m,
         ));
     }
+    if let Some(u) = &d.uri {
+        out.push(Attr::new(
+            attributes_gen::ATTR_HTTP_URI,
+            AttrType::String,
+            u,
+        ));
+    }
     if let Some(h) = &d.host {
         out.push(Attr::new(
             attributes_gen::ATTR_HTTP_HOST,
             AttrType::String,
             h,
+        ));
+    }
+    if let Some(ua) = &d.user_agent {
+        out.push(Attr::new(
+            attributes_gen::ATTR_HTTP_USER_AGENT,
+            AttrType::String,
+            ua,
+        ));
+    }
+    // 状态码只在响应上有值；请求侧留 None 而不是 0 —— `200` 与"这不是响应"必须能区分
+    if let Some(code) = d.status_code {
+        out.push(Attr::new(
+            attributes_gen::ATTR_HTTP_STATUS_CODE,
+            AttrType::U16,
+            code.to_string(),
+        ));
+    }
+    if let Some(ct) = &d.content_type {
+        out.push(Attr::new(
+            attributes_gen::ATTR_HTTP_CONTENT_TYPE,
+            AttrType::String,
+            ct,
         ));
     }
     if let Some(q) = &d.qname {
@@ -153,6 +182,45 @@ pub fn emit(d: &Detection) -> Vec<Attr> {
             attributes_gen::ATTR_DNS_QTYPE,
             AttrType::U16,
             qt.to_string(),
+        ));
+    }
+    if let Some(qc) = d.qclass {
+        out.push(Attr::new(
+            attributes_gen::ATTR_DNS_QCLASS,
+            AttrType::U16,
+            qc.to_string(),
+        ));
+    }
+    if let Some(rc) = d.rcode {
+        out.push(Attr::new(
+            attributes_gen::ATTR_DNS_RCODE,
+            AttrType::U8,
+            rc.to_string(),
+        ));
+    }
+    // 应答地址是 string_set：集合型属性每个成员产出**一条** Attr。
+    // 拼成一条逗号分隔的字符串会让规则引擎只能做全串相等，集合语义就丢了。
+    for ip in &d.answer_ips {
+        out.push(Attr::new(
+            attributes_gen::ATTR_DNS_ANSWER_IP,
+            AttrType::StringSet,
+            ip,
+        ));
+    }
+    // 指针跳数恒有值（0 = 没用压缩指针）：0 是"确实没跳"这个测量结果，
+    // 与"我们没测"不同，因此这里不做 `if > 0` 的过滤。
+    if let Some(depth) = d.ptr_depth {
+        out.push(Attr::new(
+            attributes_gen::ATTR_DNS_PTR_DEPTH,
+            AttrType::U8,
+            depth.to_string(),
+        ));
+    }
+    if let Some(size) = d.edns0_udp_size {
+        out.push(Attr::new(
+            attributes_gen::ATTR_DNS_EDNS0_UDP_SIZE,
+            AttrType::U16,
+            size.to_string(),
         ));
     }
 
@@ -263,5 +331,77 @@ mod tests {
         assert_eq!(tls_version_name(0x0304), "tls1.3");
         assert_eq!(tls_version_name(0x0303), "tls1.2");
         assert_eq!(tls_version_name(0x9999), "unknown");
+    }
+
+    #[test]
+    fn http_response_emits_status_and_content_type_only() {
+        let mut d = Detection::new(AppId::Http, Confidence::High, "test");
+        d.status_code = Some(404);
+        d.content_type = Some("application/json".to_string());
+        let attrs = emit(&d);
+        let ids: Vec<&str> = attrs.iter().map(|a| a.id).collect();
+        assert!(ids.contains(&attributes_gen::ATTR_HTTP_STATUS_CODE));
+        assert!(ids.contains(&attributes_gen::ATTR_HTTP_CONTENT_TYPE));
+        // 响应没有方法/URI/UA：这三个属性不得被产出（否则规则会匹配到不存在的字段）
+        assert!(!ids.contains(&attributes_gen::ATTR_HTTP_METHOD));
+        assert!(!ids.contains(&attributes_gen::ATTR_HTTP_URI));
+        assert!(!ids.contains(&attributes_gen::ATTR_HTTP_USER_AGENT));
+        for a in &attrs {
+            a.validate().expect("产出属性必须通过真源校验");
+        }
+        // 状态码按真源登记为 u16，标量必须是十进制而不是 `404 Not Found`
+        let code = attrs
+            .iter()
+            .find(|a| a.id == attributes_gen::ATTR_HTTP_STATUS_CODE)
+            .unwrap();
+        assert_eq!(code.scalar, "404");
+    }
+
+    #[test]
+    fn dns_query_has_no_rcode_but_has_qclass_and_ptr_depth() {
+        let mut d = Detection::new(AppId::Dns, Confidence::High, "test");
+        d.qname = Some("example.com".to_string());
+        d.qtype = Some(1);
+        d.qclass = Some(1);
+        d.ptr_depth = Some(0); // 0 是"确实没跳"，要产出；"没测"才不产出
+        let attrs = emit(&d);
+        let ids: Vec<&str> = attrs.iter().map(|a| a.id).collect();
+        assert!(!ids.contains(&attributes_gen::ATTR_DNS_RCODE));
+        assert!(ids.contains(&attributes_gen::ATTR_DNS_QCLASS));
+        assert!(ids.contains(&attributes_gen::ATTR_DNS_PTR_DEPTH));
+        assert_eq!(
+            attrs
+                .iter()
+                .find(|a| a.id == attributes_gen::ATTR_DNS_PTR_DEPTH)
+                .unwrap()
+                .scalar,
+            "0"
+        );
+    }
+
+    #[test]
+    fn dns_answer_ips_are_one_attr_per_member() {
+        // 应答地址集合（string_set）：每个成员一条 Attr。拼成一条逗号分隔的字符串
+        // 会让规则只能做全串相等，集合语义就丢了。
+        let mut d = Detection::new(AppId::Dns, Confidence::High, "test");
+        d.rcode = Some(3);
+        d.answer_ips = vec!["93.184.216.34".to_string(), "93.184.216.35".to_string()];
+        d.edns0_udp_size = Some(1232);
+        let attrs = emit(&d);
+        let ips: Vec<&str> = attrs
+            .iter()
+            .filter(|a| a.id == attributes_gen::ATTR_DNS_ANSWER_IP)
+            .map(|a| a.scalar.as_str())
+            .collect();
+        assert_eq!(ips, vec!["93.184.216.34", "93.184.216.35"]);
+        assert!(attrs
+            .iter()
+            .any(|a| a.id == attributes_gen::ATTR_DNS_RCODE && a.scalar == "3"));
+        assert!(attrs
+            .iter()
+            .any(|a| a.id == attributes_gen::ATTR_DNS_EDNS0_UDP_SIZE && a.scalar == "1232"));
+        for a in &attrs {
+            a.validate().expect("产出属性必须通过真源校验");
+        }
     }
 }

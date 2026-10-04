@@ -47,7 +47,7 @@
 | `check-channel-abi.sh` | 通道 ABI 生成物一致性 + 诊断码可达性 |
 | `check-channel-parity.sh` | C++ `cythsec-dump-abi` 与 Rust `dump-abi` 输出逐行 diff（产物留 `build/parity/`） |
 | `check-prometheus-format.py` | Python 独立重实现的 Prometheus 文本格式（0.0.4）严格校验器 |
-| `check-dpi-vectors.sh` | **tshark 独立复核** DPI 向量（挂 `test-all.sh --dpi`） |
+| `check-dpi-vectors.sh` | **tshark 独立复核** DPI 向量（92 项：TLS/DNS/HTTP 字段）+ 32 个入库向量的**字节保真**比对与自证（挂 `test-all.sh --dpi`，默认全量门禁含该项；`--self-test` 可单独跑） |
 | `check-reassembly-vectors.sh` | **tshark 独立复核** TCP 重组向量（挂 `--reassembly`） |
 | `check-flow-records.sh` | **tshark 独立复核** FlowRecord（会话/计数/状态/应用）+ 17 项反向故障注入（挂 `--flows`） |
 | `check-ignored-sources.sh` | 抓「被 `.gitignore` 静默吃掉、因而不在版本控制里」的源码/脚本（挂 `lint-all.sh`；本仓库靠它抓出了 `scripts/release/`、`scripts/build/`、`services/telemetryd/internal/target/` 三处） |

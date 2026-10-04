@@ -1,7 +1,7 @@
 {
   "$comment": "cythsec 属性字典（单一真源）。移植自 TSG/Maat 的「扫描属性集合」设计：规则引擎的表达上限由属性集合决定，因此属性必须被显式枚举、版本化、可生成多语言绑定。本文件由人工维护，禁止直接编辑生成物（见 tools/codegen/gen-attributes.py 的 --check）。",
-  "version": 1,
-  "updated": "2026-09-14",
+  "version": 2,
+  "updated": "2026-10-04",
   "types": {
     "string": "UTF-8 文本，可按 format 做归一化后匹配",
     "bytes": "原始字节串，表达式为十六进制字面量",
@@ -89,6 +89,7 @@
     { "id": "ATTR_DNS_RCODE", "type": "u8", "scope": "l5plus", "stage": "l7", "cost": 2, "source": "traffic-engine", "desc": "DNS 响应码" },
     { "id": "ATTR_DNS_ANSWER_IP", "type": "string_set", "scope": "l5plus", "stage": "l7", "cost": 2, "source": "traffic-engine", "desc": "DNS 应答中的 IP 集合" },
     { "id": "ATTR_DNS_PTR_DEPTH", "type": "u8", "scope": "l5plus", "stage": "l7", "cost": 2, "source": "traffic-engine", "desc": "查询中压缩指针跳数（解析能力边界观测点）" },
+    { "id": "ATTR_DNS_EDNS0_UDP_SIZE", "type": "u16", "scope": "l5plus", "stage": "l7", "cost": 2, "source": "traffic-engine", "desc": "DNS EDNS0 请求方声明的 UDP 载荷上限（OPT 记录的 CLASS 字段，放大攻击面观测点）" },
     { "id": "ATTR_TLS_VERSION", "type": "enum", "scope": "l5plus", "stage": "l7", "cost": 2, "source": "traffic-engine", "desc": "TLS 记录层/握手版本" },
     { "id": "ATTR_TLS_SNI", "type": "string", "scope": "l5plus", "stage": "l7", "cost": 2, "source": "traffic-engine", "desc": "TLS SNI" },
     { "id": "ATTR_TLS_JA3", "type": "string", "scope": "l5plus", "stage": "l7", "cost": 2, "source": "traffic-engine", "desc": "JA3 指纹哈希" },

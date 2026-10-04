@@ -6,7 +6,7 @@
 # 规范标识统一为 ATTR_* 字符串。训练侧使用属性标识时，必须从本模块导入常量，
 # 不得写字面量 —— 否则真源改名后训练与推理两侧会静默错位。
 
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 
 # 属性值类型说明。
 VALUE_TYPES = {
@@ -96,6 +96,7 @@ ATTR_DNS_QCLASS = "ATTR_DNS_QCLASS"
 ATTR_DNS_RCODE = "ATTR_DNS_RCODE"
 ATTR_DNS_ANSWER_IP = "ATTR_DNS_ANSWER_IP"
 ATTR_DNS_PTR_DEPTH = "ATTR_DNS_PTR_DEPTH"
+ATTR_DNS_EDNS0_UDP_SIZE = "ATTR_DNS_EDNS0_UDP_SIZE"
 ATTR_TLS_VERSION = "ATTR_TLS_VERSION"
 ATTR_TLS_SNI = "ATTR_TLS_SNI"
 ATTR_TLS_JA3 = "ATTR_TLS_JA3"
@@ -580,6 +581,15 @@ ATTRIBUTES = [
         "cost": 2,
         "source": "traffic-engine",
         "desc": "查询中压缩指针跳数（解析能力边界观测点）",
+    },
+    {
+        "id": "ATTR_DNS_EDNS0_UDP_SIZE",
+        "type": "u16",
+        "scope": "l5plus",
+        "stage": "l7",
+        "cost": 2,
+        "source": "traffic-engine",
+        "desc": "DNS EDNS0 请求方声明的 UDP 载荷上限（OPT 记录的 CLASS 字段，放大攻击面观测点）",
     },
     {
         "id": "ATTR_TLS_VERSION",

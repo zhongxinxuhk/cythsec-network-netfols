@@ -77,6 +77,30 @@ const VECTORS: &[(&str, &[u8])] = &[
         include_bytes!("../../../../datasets/dpi/payloads/dns-response-compressed.bin"),
     ),
     (
+        "dns-response-nxdomain",
+        include_bytes!("../../../../datasets/dpi/payloads/dns-response-nxdomain.bin"),
+    ),
+    (
+        "dns-response-multi-answer",
+        include_bytes!("../../../../datasets/dpi/payloads/dns-response-multi-answer.bin"),
+    ),
+    (
+        "dns-response-answer-cut",
+        include_bytes!("../../../../datasets/dpi/payloads/dns-response-answer-cut.bin"),
+    ),
+    (
+        "dns-query-edns0",
+        include_bytes!("../../../../datasets/dpi/payloads/dns-query-edns0.bin"),
+    ),
+    (
+        "dns-query-no-edns0",
+        include_bytes!("../../../../datasets/dpi/payloads/dns-query-no-edns0.bin"),
+    ),
+    (
+        "dns-edns0-double-opt",
+        include_bytes!("../../../../datasets/dpi/payloads/dns-edns0-double-opt.bin"),
+    ),
+    (
         "dns-question-pointer",
         include_bytes!("../../../../datasets/dpi/payloads/dns-question-pointer.bin"),
     ),
@@ -103,6 +127,26 @@ const VECTORS: &[(&str, &[u8])] = &[
     (
         "http-no-host-yet",
         include_bytes!("../../../../datasets/dpi/payloads/http-no-host-yet.bin"),
+    ),
+    (
+        "http-response-200",
+        include_bytes!("../../../../datasets/dpi/payloads/http-response-200.bin"),
+    ),
+    (
+        "http-response-404",
+        include_bytes!("../../../../datasets/dpi/payloads/http-response-404.bin"),
+    ),
+    (
+        "http-response-truncated",
+        include_bytes!("../../../../datasets/dpi/payloads/http-response-truncated.bin"),
+    ),
+    (
+        "http-response-bad-status",
+        include_bytes!("../../../../datasets/dpi/payloads/http-response-bad-status.bin"),
+    ),
+    (
+        "http-partial-version",
+        include_bytes!("../../../../datasets/dpi/payloads/http-partial-version.bin"),
     ),
 ];
 
@@ -218,6 +262,39 @@ fn dns_vectors_match_expected() {
                     e.get("qtype").and_then(Json::as_i64).map(|v| v as u16),
                     "[{name}] QTYPE 不一致"
                 );
+                assert_eq!(
+                    d.qclass,
+                    e.get("qclass").and_then(Json::as_i64).map(|v| v as u16),
+                    "[{name}] QCLASS 不一致"
+                );
+
+                // RCODE 只在响应上产出：查询向量的期望是 null，实现里也必须是 None。
+                // 若实现把查询的保留位读成 0 并产出，"响应码分布"会凭空多出一大批 0。
+                let want_rcode = e.get("rcode").and_then(Json::as_i64).map(|v| v as u8);
+                assert_eq!(d.rcode, want_rcode, "[{name}] RCODE 不一致");
+
+                // 应答地址集合：逐条按顺序比对（顺序来自报文顺序，不是排序结果）
+                let want_ips: Vec<&str> = e
+                    .get("answer_ips")
+                    .and_then(Json::as_arr)
+                    .expect("缺 answer_ips")
+                    .iter()
+                    .map(|v| v.as_str().expect("answer_ips 元素应为字符串"))
+                    .collect();
+                assert_eq!(d.answer_ips, want_ips, "[{name}] ANSWER 地址集合不一致");
+
+                assert_eq!(
+                    d.ptr_depth,
+                    e.get("ptr_depth").and_then(Json::as_i64).map(|v| v as u8),
+                    "[{name}] 指针跳数不一致"
+                );
+                assert_eq!(
+                    d.edns0_udp_size,
+                    e.get("edns0_udp_size")
+                        .and_then(Json::as_i64)
+                        .map(|v| v as u16),
+                    "[{name}] EDNS0 UDP 载荷上限不一致"
+                );
             }
             "need_more" => assert_eq!(got, Detect::NeedMore, "[{name}] 期望 need_more"),
             "malformed" => assert_eq!(got, Detect::Malformed, "[{name}] 期望 malformed"),
@@ -243,18 +320,53 @@ fn http_vectors_match_expected() {
                 let d = got
                     .detection()
                     .unwrap_or_else(|| panic!("[{name}] 期望 identified，实际 {}", got.word()));
-                let want_host = e.get("host").and_then(Json::as_str).expect("缺 host");
-                assert_eq!(d.host.as_deref(), Some(want_host), "[{name}] Host 不一致");
+                // 逐个字段比对"有值 / 恰好为 null"两种情形：
+                // 响应向量的 host/uri/UA 期望就是 null，用 `expect("缺 host")` 会把
+                // "这个向量本就没有这个头"误判成"期望值写漏了"。
+                assert_eq!(
+                    d.host.as_deref(),
+                    e.get("host").and_then(Json::as_str),
+                    "[{name}] Host 不一致"
+                );
                 assert_eq!(
                     d.method.as_deref(),
                     e.get("method").and_then(Json::as_str),
                     "[{name}] 方法不一致"
+                );
+                assert_eq!(
+                    d.uri.as_deref(),
+                    e.get("uri").and_then(Json::as_str),
+                    "[{name}] URI 不一致"
+                );
+                assert_eq!(
+                    d.user_agent.as_deref(),
+                    e.get("user_agent").and_then(Json::as_str),
+                    "[{name}] User-Agent 不一致"
+                );
+                // 状态码只在响应侧有值：请求向量的期望是 null，实现里也必须是 None
+                assert_eq!(
+                    d.status_code,
+                    e.get("status_code")
+                        .and_then(Json::as_i64)
+                        .map(|v| v as u16),
+                    "[{name}] 状态码不一致"
+                );
+                assert_eq!(
+                    d.content_type.as_deref(),
+                    e.get("content_type").and_then(Json::as_str),
+                    "[{name}] Content-Type 不一致"
                 );
             }
             "need_more" => assert_eq!(
                 got,
                 Detect::NeedMore,
                 "[{name}] 期望 need_more，实际 {}",
+                got.word()
+            ),
+            "malformed" => assert_eq!(
+                got,
+                Detect::Malformed,
+                "[{name}] 期望 malformed，实际 {}",
                 got.word()
             ),
             other => panic!("[{name}] 未知的 expect 取值 `{other}`"),

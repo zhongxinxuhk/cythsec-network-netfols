@@ -117,10 +117,32 @@ pub struct Detection {
     // ---- HTTP ----
     pub method: Option<String>,
     pub host: Option<String>,
+    /// 请求 URI（含路径与查询）。仅请求侧有值。
+    pub uri: Option<String>,
+    /// 请求 User-Agent。仅请求侧有值：响应里没有这个头（`Server` 是另一个字段）。
+    pub user_agent: Option<String>,
+    /// 响应状态码。仅**响应**侧有值 —— 请求侧留 `None`，
+    /// 而不是填 0："这个报文不是响应"与"响应的状态码是 0"在下游是两件事。
+    pub status_code: Option<u16>,
+    /// Content-Type（请求/响应都产出；类型名已归一小写，`; charset=…` 参数保留，
+    /// 见 `http::normalize_content_type` 里对「为什么保留参数」的说明）。
+    pub content_type: Option<String>,
 
     // ---- DNS ----
     pub qname: Option<String>,
     pub qtype: Option<u16>,
+    /// 查询类别（IN/CH/HS…）。查询与响应的 QUESTION 段都有。
+    pub qclass: Option<u16>,
+    /// 响应码 RCODE。**只在响应上产出**：查询报文的 RCODE 段是保留位且恒为 0，
+    /// 把它当成"这次查询没出错"写进指标，等于凭空造出一批正常样本。
+    pub rcode: Option<u8>,
+    /// 应答里的地址集合（A/AAAA）。响应侧才有，按报文顺序。
+    pub answer_ips: Vec<String>,
+    /// QUESTION 名字解析时的压缩指针跳数（0 = 没用压缩指针）。
+    /// 它是"解析成本"的可观测面：非 0 说明这条报文的名字是跳着读出来的。
+    pub ptr_depth: Option<u8>,
+    /// EDNS0 请求方声明的 UDP 载荷上限（OPT 记录的 CLASS 字段）。
+    pub edns0_udp_size: Option<u16>,
 }
 
 impl Detection {
@@ -138,8 +160,17 @@ impl Detection {
             ech: false,
             method: None,
             host: None,
+            uri: None,
+            user_agent: None,
+            status_code: None,
+            content_type: None,
             qname: None,
             qtype: None,
+            qclass: None,
+            rcode: None,
+            answer_ips: Vec::new(),
+            ptr_depth: None,
+            edns0_udp_size: None,
         }
     }
 
