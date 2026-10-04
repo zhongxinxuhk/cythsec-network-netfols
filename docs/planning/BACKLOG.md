@@ -169,7 +169,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | ☑ | CYS-DBT-001 | 修复 Go 格式差异 | `gofmt -w services/`；涉及 `internal/netinfo/interfaces.go`（`PointToPoint` 字段对齐）、`internal/netinfo/routes.go` | `gofmt -l services/` 输出为空 | — | P0/S |
 | ☑ | CYS-DBT-002 | 修复 Rust 格式差异 | `cargo fmt`；涉及 `src/flow/mod.rs`（`new_ipv4` 签名折行）、`src/session/mod.rs`（行尾注释对齐） | `cargo fmt --check` 零差异 | CYS-INF-013 | P0/S |
-| ⬜ | CYS-DBT-003 | 消除 `Proto` 死代码 | `traffic-engine/src/flow/mod.rs` 定义了 `Proto` 枚举但 `FlowKey.proto` 为裸 `u8`，枚举从未被使用 | `Proto` 被真正使用，或删除；`cargo clippy -- -D warnings` 通过 | — | P1/S |
+| ◐ | CYS-DBT-003 | 消除 `Proto` 死代码 | `traffic-engine/src/flow/mod.rs` 定义了 `Proto` 枚举但 `FlowKey.proto` 为裸 `u8`，枚举从未被使用 **已落地**：`Proto` 已被 `FlowKey`、解析入口与流表键真正使用（枚举不再是死代码），由 CYS-TRF-004 修复并回写。 | `Proto` 被真正使用，或删除；`cargo clippy -- -D warnings` 通过 **未达成**：`cargo clippy -- -D warnings` 全仓通过（仓库仍有既有 warning，且 clippy 尚未入门禁）。 | CYS-TRF-004 | P1/S |
 | ⬜ | CYS-DBT-004 | 消除时间戳哨兵歧义 | `session/mod.rs` 用 `started_at_us == 0` 判定「未开始」，与合法时间戳 0 冲突；改用 `Option<u64>` 或显式 `Clock` | 新增测试覆盖 `timestamp_us = 0` 的包 | — | P1/S |
 | ☑ | CYS-DBT-005 | 修复前端 `npm run lint` | `package.json` 声明 `lint: eslint .` 但 `eslint` 不在 `devDependencies`，命令必然失败 | `npm run lint` 可执行 | — | P0/S |
 | ☑ | CYS-DBT-006 | 处理悬空 `components.json` | `web/console/components.json` 引用不存在的 `tailwind.config.js`，且 `tailwindcss` 未安装；二选一：真正接入 shadcn/ui + Tailwind，或删除该文件 | 无悬空配置引用 | — | P0/S |
@@ -261,22 +261,22 @@
 | ⬜ | CYS-TRF-001 | 重构为 cargo workspace | `dataplane/traffic-engine/crates/{common,flow,session,reassembly,protocol,dpi,feature,behavior,risk}`；根 `Cargo.toml` 的 `members` 同步更新。**【顺序决策】为何先落 DPI、暂不拆 workspace**：拆分本身不产生任何新的识别能力，只是挪目录；而 DPI 是「省网级流量分析」需求的关键路径。当前在单包内以 `src/dpi/`（与 `flow`/`session`/`channel` 同级）把算法与测试向量做实，待本任务执行时是**纯目录搬移**（模块边界已按 crate 语义划分好）。反向顺序（先拆九个空 crate 再填实现）会让跨 crate 的裁决语义长期无法统一 | 结构与 README 描述一致；`cargo build` 通过 | — | P1/L |
 | ⬜ | CYS-TRF-002 | 错误类型体系 | `crates/common`：`thiserror` 定义 `TrafError`，统一 `Result`；禁止 `unwrap()` 出现在非测试路径 | `cargo clippy -D clippy::unwrap_used` 通过 | CYS-TRF-001 | P1/M |
 | ⬜ | CYS-TRF-003 | 时间与时钟抽象 | `crates/common::clock`：`Clock` trait + `MonotonicClock`/`TestClock`，替换 `timestamp_us: u64` 哨兵 | 时间相关测试可确定性注入 | CYS-DBT-004 | P1/M |
-| ⬜ | CYS-TRF-004 | 协议number 类型化 | 用 `Proto` 枚举（或 `num_enum`）替换裸 `u8`，与 IANA 号对齐 | 无死代码；`Proto::from(6) == Proto::Tcp` | CYS-DBT-003 | P1/S |
-| ⬜ | CYS-TRF-005 | 规范化五元组 | `canonical()` 方法：无论方向，产出稳定排序的会话键 | 双向包映射到同一 canonical key（属性测试） | CYS-TRF-004 | P0/S |
+| ☑ | CYS-TRF-004 | 协议number 类型化 | 用 `Proto` 枚举（或 `num_enum`）替换裸 `u8`，与 IANA 号对齐 **已落地**：`flow::Proto` 类型化枚举（`from_u8` / `number` 双向映射），解析入口、`FlowKey`、流表键全部走 `Proto` 而非裸 `u8`；`Display` 刻意打印 IANA 号（`scripts/verify/e2e-shared-ring.sh` 按该格式解析）。 | 无死代码；`Proto::from(6) == Proto::Tcp` 已达成：`Proto::from_u8(6) == Proto::Tcp` 由单测锁定（往返映射 + 未知号走 `Other`）。 | — | P1/S |
+| ☑ | CYS-TRF-005 | 规范化五元组 | `canonical()` 方法：无论方向，产出稳定排序的会话键 **已落地**：`FlowKey::canonical()` 产出方向无关的会话键（先比 IP 字节序、再比端口）。 | 双向包映射到同一 canonical key（属性测试） 已达成：双向包映射到同一 canonical key（单测 + `tests/pipeline_sample.rs::canonical_keys_are_direction_independent`）；`--flows` 门禁里 tshark 侧按同一排序规则独立聚合，逐流比对（见 CYS-TRF-035）。 | CYS-TRF-004 | P0/S |
 
 #### 3.3.2 流表与会话（`TRF`）
 
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ⬜ | CYS-TRF-006 | 分片 FlowTable | `crates/flow`：按哈希分片的 `HashMap<FlowKey, FlowEntry>`，分片数与 worker 数对齐，减少锁竞争 | 1M 并发流插入基准达标 | CYS-TRF-005 | P0/L |
-| ⬜ | CYS-TRF-007 | 流超时老化 | TCP established / TCP transient / UDP / ICMP / default 五档超时表（可配置） | 超时流被正确回收；无内存增长 | CYS-TRF-006 | P0/M |
-| ⬜ | CYS-TRF-008 | 逐出策略 | 流表容量上限 + LRU/随机逐出，逐出时触发 `on_evict` 回调 | 达到上限时内存稳定 | CYS-TRF-007 | P0/M |
-| ⬜ | CYS-TRF-009 | 流生命周期回调 | `on_new` / `on_update` / `on_evict` / `on_timeout`，供特征与存储消费 | 回调时序测试通过 | CYS-TRF-008 | P1/M |
-| ⬜ | CYS-TRF-010 | 会话 id 分配器 | 单调递增 + 复用池；替换 `Session::new(id, ...)` 的手工传参 | 高并发下无重复 id | CYS-TRF-006 | P1/S |
-| ⬜ | CYS-TRF-011 | 会话管理器 | 双向流聚合、反向 key 自动规范化、会话超时与销毁 | 乱序到包（先见响应）也能正确归属 | CYS-TRF-010 | P0/M |
-| ⬜ | CYS-TRF-012 | TCP 状态机完整版 | SYN、SYN-ACK、ACK、FIN/FIN-ACK、RST、超时、`TIME_WAIT` 简化；替换现有「双向有包即 Established」启发式 | 状态迁移测试覆盖全部合法路径 + 非法路径拒绝 | CYS-TRF-011 | P0/L |
-| ⬜ | CYS-TRF-013 | TCP 状态机可配置 | 超时参数、是否严格模式（容忍丢包环境） | 配置化后行为可测 | CYS-TRF-012 | P2/S |
-| ⬜ | CYS-TRF-014 | 流统计扩展 | 现有 `packet_count`/`total_bytes` 之外：`min/max/mean` 包长、包长直方图、IAT 序列（环形缓冲） | 统计可导出为 FlowRecord | CYS-TRF-006 | P1/M |
+| ◐ | CYS-TRF-006 | 分片 FlowTable | `crates/flow`：按哈希分片的 `HashMap<FlowKey, FlowEntry>`，分片数与 worker 数对齐，减少锁竞争 **已落地**：`flow::table::FlowTable` 按 FNV-1a 哈希分片（分片数向上取 2 的幂且不超过 `max_flows`），每片独立 `BTreeMap` 使遍历顺序确定 —— 可复现是门禁前提。**未达成**：1M 并发流插入基准（需 CYS-TRF-037）。 | 1M 并发流插入基准达标 已达成：分片/插入/查询/遍历顺序单测。**未达成**：基准指标。 | CYS-TRF-005 | P0/L |
+| ◐ | CYS-TRF-007 | 流超时老化 | TCP established / TCP transient / UDP / ICMP / default 五档超时表（可配置） **已落地**：五档超时表（TCP established / TCP transient / UDP / ICMP / default）可配置，`expire(now)` 按档回收并触发 `on_timeout`；`TimeWait` 刻意复用 transient 档（理由在源码：TIME_WAIT 期间几乎不再有包）。**未达成**：长稳内存曲线（需 CYS-TRF-037 才能给数）。 | 超时流被正确回收；无内存增长 已达成：各档超时回收、不误杀活动流的单测。**未达成**：无内存增长的量化证据。 | CYS-TRF-006 | P0/M |
+| ☑ | CYS-TRF-008 | 逐出策略 | 流表容量上限 + LRU/随机逐出，逐出时触发 `on_evict` 回调 **已落地**：容量上限 + `EvictPolicy::Lru`（逐出取最小键打破平局 → 结果可复现），逐出触发 `on_evict`。 | 达到上限时内存稳定 已达成：容量触发 / 逐出选择 / 回调时序单测；`--max-sessions` 生效由 `tests/pipeline_sample.rs::limit_and_session_capacity_are_honoured` 锁定（上限 2 → 逐出 3、留 2 条记录）。 | CYS-TRF-007 | P0/M |
+| ☑ | CYS-TRF-009 | 流生命周期回调 | `on_new` / `on_update` / `on_evict` / `on_timeout`，供特征与存储消费 **已落地**：`FlowObserver` 四个钩子（`on_new` / `on_update` / `on_evict` / `on_timeout`）。回调只拿 `&FlowEntry`（**不可改流表**）—— 回调里改状态会让门禁结果取决于回调实现，可复现性优先；`NoopObserver` 用来区分「没人订阅」与「显式置空」。 | 回调时序测试通过 已达成：回调时序（新建 → 更新 → 逐出/超时）单测。 | CYS-TRF-008 | P1/M |
+| ☑ | CYS-TRF-010 | 会话 id 分配器 | 单调递增 + 复用池；替换 `Session::new(id, ...)` 的手工传参 **已落地**：`session::SessionIdAllocator`（单调递增 + 复用池，`release` 后最小 id 优先复用）；`Session::new` 不再手工传 id。 | 高并发下无重复 id 已达成：分配 / 释放 / 复用不重复 id 的单测。**未达成**：多线程并发分配（分配器由 `SessionManager` 单线程持有，跨线程语义尚未定义）。 | CYS-TRF-006 | P1/S |
+| ☑ | CYS-TRF-011 | 会话管理器 | 双向流聚合、反向 key 自动规范化、会话超时与销毁 **已落地**：`session::SessionManager` 双向流聚合成会话、反向键规范化、按 `SessionConfig` 超时销毁；**先见响应、后见 SYN** 也能正确归属（`initiator` 由 SYN 方向决定，而非由首包决定）。 | 乱序到包（先见响应）也能正确归属 已达成：乱序到包归属 / 双向合并 / 超时销毁 / id 复用单测；`--flows` 门禁用 tshark 的会话集合反向核对（多一条、少一条都红）。 | CYS-TRF-010 | P0/M |
+| ☑ | CYS-TRF-012 | TCP 状态机完整版 | SYN、SYN-ACK、ACK、FIN/FIN-ACK、RST、超时、`TIME_WAIT` 简化；替换现有「双向有包即 Established」启发式 **已落地**：`tcp::TcpState` 状态机（SYN / SYN-ACK / ACK / FIN / FIN-ACK / RST / TIME_WAIT 简化），非法迁移计数而不 panic，严格与容忍两模式。**本轮修掉一个真实缺陷**：分流事件原先用 IP 载荷长度（含 20 字节 TCP 头），于是每个纯 ACK 都被判成 `Data`；容忍模式下碰巧仍能走到 `Established`/`TimeWait`（这正是旧测试全绿的原因），严格模式下则停在 `syn_received` 且 `FinWait2`/`CloseWait`/`LastAck` 不可达。已引入 `TcpObservation{flags, l4_payload_len}` 把「段载荷长度（不含头）」与「记账用的 IP 载荷长度」显式分开，并补两个回归测试（纯 ACK 的 20 字节 IP 载荷必须判 `Established`；完整关闭序列必须经 `FinWait2` 到 `TimeWait`）。**未达成**：超时驱动的状态迁移（当前只有流级超时回收）。 | 状态迁移测试覆盖全部合法路径 + 非法路径拒绝 已达成：全部合法路径 + 非法路径拒绝单测（290 个 lib 测试）；`--flows` 门禁用 tshark 的标志位序列**独立重写第二实现**核对末态 / 发起方 / 中途接入，且容忍与严格两模式各核一遍。**未达成**：超时状态迁移。 | CYS-TRF-011 | P0/L |
+| ◐ | CYS-TRF-013 | TCP 状态机可配置 | 超时参数、是否严格模式（容忍丢包环境） **已落地**：`tcp::TcpConfig{strict, ...}` 与 `SessionConfig{table, tcp, max_sessions, id_start}` 全部可配置，`AnalyzeOptions::strict()` 供 CLI 切换。**未达成**：真实丢包环境下的参数标定（没有真实样本，就不给默认值之外的结论）。 | 配置化后行为可测 已达成：严格 / 容忍两模式行为可测（同一份样本，两种期望值都由 tshark 事实推出）。**未达成**：参数标定。 | CYS-TRF-012 | P2/S |
+| ☑ | CYS-TRF-014 | 流统计扩展 | 现有 `packet_count`/`total_bytes` 之外：`min/max/mean` 包长、包长直方图、IAT 序列（环形缓冲） **已落地**：`flow::stats::FlowStats` 在包数 / 字节数之外增加 min / max / mean / stddev 包长、256 桶包长直方图、IAT 环形缓冲（在线 Welford 累加、饱和算术，合并支持分片与双向聚合）。 | 统计可导出为 FlowRecord 已达成：统计单测（含合并与溢出）；`--flows` 门禁按 tshark 逐帧事实核对双向包数、双向字节数、方向切换次数、首末时间戳。 | CYS-TRF-006 | P1/M |
 | ⬜ | CYS-TRF-015 | 会话级统计聚合 | 上下行比、重传计数、乱序计数、RTT 粗估 | 单元测试断言数值 | CYS-TRF-014 | P1/M |
 
 #### 3.3.3 重组与协议（`TRF`）
@@ -299,15 +299,15 @@
 
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ⬜ | CYS-TRF-027 | 特征提取 | `crates/feature`：包长序列统计、IAT 统计、字节速率、上下行比、方向切换次数、载荷熵 | 特征向量维度固定并版本化 | CYS-TRF-014 | P0/L |
+| ☑ | CYS-TRF-027 | 特征提取 | `crates/feature`：包长序列统计、IAT 统计、字节速率、上下行比、方向切换次数、载荷熵 **已落地**：`feature::FeatureExtractor` 21 维特征（包长序列统计、IAT 统计、字节速率、上下行比、方向切换、载荷熵）+ `FEATURE_SCHEMA_VERSION`；熵在聚合后的 256 桶直方图上算（`0` 表示「无字节」或「全部相同」，由 `bytes` 列区分）。 | 特征向量维度固定并版本化 已达成：维度固定并版本化（`idx` 常量 + 版本号）；`--flows` 门禁核对特征列与记录计数器自洽。**未达成**：与训练侧对齐（CYS-TRF-028）。 | CYS-TRF-014 | P0/L |
 | ⬜ | CYS-TRF-028 | 特征与训练侧对齐 | 特征定义单一来源（YAML/JSON schema），Rust 与 Python 各自生成绑定 | 两侧对同一样本产出相同向量 | CYS-TRF-027 | P0/M |
 | ⬜ | CYS-TRF-029 | 行为基线 | `crates/behavior`：滑动窗口统计、EWMA、周期基线、突增检测 | 基线在稳定流量下不误报 | CYS-TRF-027 | P1/L |
 | ⬜ | CYS-TRF-030 | 异常检测接口 | 定义 `AnomalyDetector` trait，规则实现 + 预留 ML 实现（调用 `ml/inference`） | trait 可被 ML 实现替换 | CYS-TRF-029 | P1/M |
 | ⬜ | CYS-TRF-031 | 风险评分引擎 | `crates/risk`：加权评分、规则命中累加、阈值分级（低/中/高/危急） | 评分可解释（含命中明细） | CYS-TRF-030 | P1/L |
 | ⬜ | CYS-TRF-032 | 规则 DSL | 简洁规则语法（条件 + 动作），支持热加载 | 规则文件改动后无需重启生效 | CYS-TRF-031 | P2/L |
-| ⬜ | CYS-TRF-033 | 输出 FlowRecord schema | 与 `storage/clickhouse` 对齐的列式 schema，含所有特征与评分 | schema 冻结并版本化 | CYS-TRF-027 | P0/M |
+| ☑ | CYS-TRF-033 | 输出 FlowRecord schema | 与 `storage/clickhouse` 对齐的列式 schema，含所有特征与评分 **已落地**：`record::FlowRecord`（顶层列 + 特征列 + `schema_version = 1`，`to_json_line` / `write_jsonl`）；任何列 / Schema 变更都必须抬版本号。 | schema 冻结并版本化 已达成：schema 版本化，列名与顺序由 `include_str!` 快照锁定。**未达成**：与 `storage/clickhouse` 建表 DDL 对齐（storage 侧尚未落地）。 | CYS-TRF-027 | P0/M |
 | ◐ | CYS-TRF-034 | 共享内存接入 | 从 `packet-engine` 的共享环消费真实报文（CYS-PKT-024 的消费端）。**已落地**：Rust `src/bin/ring_consume.rs`（attach 既有环 / `--from-head` 跳过积压 / `--expect-*` 断言开关）、`scripts/verify/e2e-shared-ring.sh`（C++ 进程写 → 环 → Rust 进程读并解 Flow，4 阶段 19 项断言，含两端记账与区域计数的交叉核对），已挂入 `test-all.sh --e2e`。**未达成**：真实网卡接入 —— 当前只跑通 `datasets/pcap/` 的真实报文；网卡侧依赖 CYS-PKT-007（pcap live）/ CYS-PKT-008（AF_PACKET），两者本轮已推进到 ◐（Linux AF_PACKET 三发行版编译通过、macOS 原生 BPF 落地），但均**未完成各自的验收标准**，`xdp/`、`af_xdp/`、`dpdk/` 三个目录仍为空占位 | 已达成：真实 pcap → 共享环 → Flow 端到端（19 项断言）。待达成：真实网卡 → Flow（受 CYS-PKT-007/008 阻塞） | CYS-PKT-024 | P0/L |
-| ⬜ | CYS-TRF-035 | 离线 pcap 处理 CLI | `cythsec-analyze -r x.pcap -o flows.jsonl`，输出 FlowRecord 流 | 对 `datasets/pcap/` 全样本可批量处理 | CYS-TRF-033 | P0/M |
+| ☑ | CYS-TRF-035 | 离线 pcap 处理 CLI | `cythsec-analyze -r x.pcap -o flows.jsonl`，输出 FlowRecord 流 **已落地**：`src/bin/analyze.rs` → `cythsec-analyze -r x.pcap -o flows.jsonl`（`--strict` / `--limit` / `--inspect-bytes` / `--max-sessions` / `-o -`；统计走 stderr，`-o -` 时 stdout 保持纯净 JSONL）；分析逻辑抽到 `src/pipeline.rs`，CLI 与测试共用同一条路径（否则两边会各错一半）。 | 对 `datasets/pcap/` 全样本可批量处理 已达成：`datasets/pcap/` + `datasets/dpi/` 全部样本可批量处理；`tests/pipeline_sample.rs` 手写期望（18 帧 / 17 解出 / 5 会话）；**新增第三方门禁** `scripts/verify/check-flow-records.sh` —— tshark 独立解析后逐流核对 **725 项**（会话集合 / 包数字节数 / 方向切换 / 首末时间戳 / TCP 末态 / 发起方 / 应用识别 / 解码失败计数 / 统计自证），并默认跑**反向故障注入**（17 项篡改必须全部被检出，「一项都没比对」直接判红），已挂入 `test-all.sh --flows`。 | CYS-TRF-033 | P0/M |
 | ⬜ | CYS-TRF-036 | 可观测性 | `tracing` + `metrics`：处理速率、丢包、内存占用、各阶段延迟 | 指标可被 telemetryd 抓取 | CYS-TRF-034 | P1/M |
 | ⬜ | CYS-TRF-037 | Criterion 基准 | 流表插入/查询、重组吞吐、特征提取吞吐 | 基准可跨 commit 对比 | CYS-TRF-027 | P2/M |
 | ⬜ | CYS-TRF-038 | 集成测试 | `crates/*/tests/`：用固定 pcap 样本断言 Flow/Session/特征输出 | 断言快照可更新且受审 | CYS-TRF-035 | P1/M |
@@ -772,9 +772,9 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 318 |
-| 进行中 | 10 |
-| 已完成 | 21 |
+| 未开始 | 303 |
+| 进行中 | 14 |
+| 已完成 | 32 |
 
 ### 6.6 里程碑完成度
 
@@ -782,7 +782,7 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 | --- | --- | --- | --- |
 | M1 | 13 | 54 | 24% |
 | M2 | 3 | 38 | 8% |
-| M3 | 0 | 39 | 0% |
+| M3 | 11 | 39 | 28% |
 | M4 | 0 | 45 | 0% |
 | M5 | 4 | 24 | 17% |
 | M6 | 1 | 38 | 3% |
@@ -823,3 +823,6 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 | 2026-10-02 | **TCP 乱序重组落地（`CYS-TRF-016`→◐ / `CYS-TRF-017`→◐）** | 承接上一批：DPI 只做首包判定，被 TCP 分段切开的首包只能判 `NeedMore`，补字节的人就是重组层。新增 `src/reassembly/`：`seq.rs`（32 位序号回绕算术 —— 10G 链路跑满约 3.4 秒就绕一圈，回绕**不是边界情况而是必现**；并把"恰好相距半个序号空间时双向都成立"这一循环空间固有退化点写成测试固化）、`intervals.rs`（有序区间集，三条不变式：按 start 严格递增 / 互不相交 / 互不相邻；重叠仲裁 `KeepOld`（Linux 语义，先到者胜 —— 旁路要复现的是**接收端真实收到的字节流**，而不是攻击者最后重发的版本）与 `KeepNew`（BSD）双策略）、`stream.rs`（单向流：SYN 锚 ISN+1、中途接入时标 `anchored_by_syn=false` 让"开头完整性未知"可被下游看见、内存上限按**保连续弃乱序**降级）、`tcp.rs`（头与选项解析，顺带完成 CYS-TRF-017）。**向量体系**：`datasets/reassembly/` 10 条向量（顺序/逆序/交错/重叠一致/重叠冲突/重复重传/跨零回绕/被切开的首包/内存上限/FIN 同段），期望值**手写**而非"跑一遍实现记下来"—— 后者等于让被测实现给自己的答案打分。`scripts/verify/check-reassembly-vectors.sh` 用 tshark 独立复核 **16 项**（重组字节流的长度+sha256；切开 ClientHello 重组后的 JA3/SNI 与 `datasets/dpi/expected.json` 跨集一致），挂入 `test-all.sh --reassembly`。**注入验证三处**：① 改坏 `expected.json` → tshark 门禁与 Rust 测试双双报错（`exit=1`），恢复后字节级 `cmp` 一致；② 把 FIN 序号写成 `seq`（漏算载荷长度）→ 2 项测试如期失败；③ **把 `feed` 里"先数据后 FIN"对调 → 76 项测试全绿**，据此证实该顺序对最终状态实际无影响（`on_fin` 只记序号，与插入互不干扰），已把源码里那句"顺序必须如此"的夸大注释改成真实约束（真正敏感的是 FIN 的**序号**），避免留下一条"看起来很重要其实无所谓"的规则。**已知例外 2 条**（`overlap-conflict` 因 tshark 重叠仲裁策略不同且不可配置、`memory-cap` 因 tshark 无内存上限）显式标 `verified=false` + 原因并由测试守门，不冒充已核验。另把 dpi 测试里的 JSON 解析器抽成共享的 `src/testjson.rs`（两份解析器行为差异会变成"字段被读成 null 而测试仍报绿"的假绿灯） |
 | 2026-10-02 | 修复 C++ lint 门禁复发的成片不合规 | 上一批新增的 C++ 文件（`iface_list` / `af_packet` / `bpf_capture` / `backend` / `capture_main` / `pcap_writer` 等）未执行 `clang-format`，`lint-all.sh` 的 C++ 段持续报红（历史同类事故：29/30 文件不合规却被静默跳过）。已对全仓 50 个 C/C++ 文件执行 `clang-format -i` 并复检 0 违规，**行为中性已验证**：cmake 重建 0 错、CTest **6/6 通过**（`packet_engine_unit` / `parser` / `pcap` / `channel_abi` / `channel_producer` / `live_capture`） |
 | 2026-10-02 | **核查发现：§3.4 M4 控制平面小节状态已滞后于代码** | 接力文档编写期间逐项复跑门禁时发现：`services/policyd`（4362 行源码 + 2896 行测试，含完整 `ruleir` 引擎）、`services/dnsd`（621+860）、`services/telemetryd`（687+984）、`services/pkg`（2689+1735）**均已存在，19 个 Go 测试包全部通过**（`services/*/` 下 `go test ./...`），而本表 `CYS-POL-001` / `CYS-DNS-001` / `CYS-TEL-001` 及 M4 里程碑仍标 ⬜。成因：实现由并行协作者在 `9748175` / `8e0fb03`（2026-09-14）落库，该批提交未回写本表。**处置**：① 本表 §3.4 顶部加显眼提示，说明真实缺口在「落地侧」（nftables 下发 / 原子回滚 / PG 持久化 / 版本化 / 命中统计 / 审计日志 / 服务间联动），避免后人照表做重复劳动；② **不逐项批量改状态** —— 刷新需对每项验收标准逐条核实（例如 `CYS-POL-005` 要求「重启后策略完整恢复」，而现存储为纯内存，实际**未达成**），已列为 `HANDOFF.md` §8 并行线 C2，属独立工作。教训：**并行开发的仓库里，实现跑在待办表前面是常态；状态标记的更新必须与实现同批提交** |
+| 2026-10-03 | **数据面主干落地（流表/超时/逐出/回调 + TCP 状态机 + 会话管理器，`CYS-TRF-006`→◐ / `007`→◐ / `008`→☑ / `009`→☑ / `010`→☑ / `011`→☑ / `012`→☑ / `013`→◐）** | 承 `64f4079`：`flow/table.rs` 按 FNV-1a 分片（分片数向上取 2 的幂、每片 `BTreeMap` 保证遍历顺序确定 —— **顺序不确定就谈不上可复现的门禁**）、五档超时表（`TimeWait` 刻意复用 transient 档）、容量 + LRU 逐出（最小键打破平局）、`FlowObserver{on_new,on_update,on_evict,on_timeout}`（回调只拿 `&FlowEntry`，**不可改流表**）；`session/` 会话 id 复用池、双向聚合与反向键规范化、「先见响应后见 SYN」也能正确归属；`tcp/` 完整状态机 + 非法迁移计数（不 panic）+ 严格/容忍双模式。**定调**：`fwd`/`rev` 是**规范端点序**而不是「发起方/响应方」—— 发起方单列 `initiator` 字段，两者混用会让下游把方向当角色用。验证：`cargo test -p traffic-engine` 全绿；`--e2e`/`--parity` 无回归。 |
+| 2026-10-04 | **从「能识别」到「能产出记录」（`CYS-TRF-004/005/014/027/033/035`→☑，新增 `--flows` 第三方门禁）** | 补齐 `Packet → FlowTable → Session → FlowRecord` 的后半段：`flow::Proto` 类型化、`FlowKey::canonical()` 方向无关会话键、`FlowStats` 扩展（min/max/mean/stddev 包长 + 256 桶直方图 + IAT 环形缓冲，在线 Welford、饱和算术）、`feature::FeatureExtractor` 21 维特征（含载荷熵，熵在聚合直方图上算，`0` 用 `bytes` 列消歧）、`record::FlowRecord`（`schema_version=1`，列名与顺序由快照锁定）、CLI `cythsec-analyze -r x.pcap -o flows.jsonl`（`--strict/--limit/--inspect-bytes/--max-sessions/-o -`，统计走 stderr 以保证 `-o -` 的 stdout 是纯净 JSONL）。**本轮修掉一个真实缺陷**：会话层用 IP 载荷长度（含 20 字节 TCP 头）判定 TCP 事件，于是每个纯 ACK 都被当成 `Data`；容忍模式下碰巧仍能走到 `Established`/`TimeWait`（**旧测试全绿的原因**），严格模式下则卡在 `syn_received`、`FinWait2`/`CloseWait`/`LastAck` 永不可达。修法是把「段载荷长度」与「记账用 IP 载荷长度」显式分成两个量（`TcpObservation`）而不是在调用处随手换算，并补 2 个回归测试。**新增第三方门禁** `scripts/verify/check-flow-records.sh`（挂 `test-all.sh --flows`）：tshark 独立解析样本后逐流核对 **725 项**（会话集合 / 包数字节数 / 双向计数 / 方向切换 / 首末时间戳 / TCP 末态 / 发起方 / 中途接入 / 应用识别 / 解码失败计数 / 统计自证），TCP 末态的判定规则是**照着 tshark 的标志位序列重写的第二实现**（不是抄 Rust 迁移表），覆盖不到的组合打印 `SKIP` 且不计入通过（共 7 项跳过，全部有理由）；并默认执行**反向故障注入**：17 项篡改（含改 tshark 事实、改自家 stderr 摘要、空输入）必须全部被检出，否则判红 —— 否则「核验器恒返回成功」也会一路绿灯，而绿色的「通过」与绿色的「没跑」长得一模一样。**顺带修正一处过期期望**：`--e2e` 硬编码「5 个报文」，新增 `sample-session-tcp.pcap` 后该断言如期报红（5→23），已把期望值改成可逐项复核的分解式（4+1+18 帧 / 4+1+9 流 / 1 个非首片分片），并把「这组数字是活的」写进注释。验证：`--cpp --rust --dpi --reassembly --flows --parity --e2e` 全绿 + `lint-all.sh` 7 项全绿。 |
+| 2026-10-04 | 修正一处**方向反了**的依赖边（`CYS-TRF-004` ↔ `CYS-DBT-003`） | `CYS-TRF-004`（修复任务：协议号类型化）原本声明前置为 `CYS-DBT-003`（审计发现项），而 §2026-09-14 那条已确立的原则是「**执行修复的域任务无前置依赖，发现项依赖该修复任务以确认关闭**」。本轮把 `CYS-TRF-004` 的状态改成 ☑ 后，`check-deps.py` 才把它暴露出来（已完成任务的未完成前置从 5 处变 6 处）。已改正方向：`CYS-TRF-004` 依赖置 `—`，`CYS-DBT-003` 改为依赖 `CYS-TRF-004` 并标 ◐（`Proto` 死代码确实已消除；但它的另一条验收标准 `cargo clippy -- -D warnings` 未达成 —— 仓库仍有既有 warning，clippy 也尚未入门禁，不冒充通过）。**教训**：状态标记的刷新会顺带暴露依赖图的陈年错误，所以刷新时不能只看状态列。 |

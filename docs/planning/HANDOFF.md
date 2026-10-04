@@ -16,13 +16,16 @@
 
 ## 1. 三十秒版本
 
-数据平面（C++ 收包 → 共享内存环 → Rust 分析）已打通往返链路，本轮把 Rust 侧
-「流量分析」从「Flow/Session 计数」推进到**能识别应用协议**：
+数据平面（C++ 收包 → 共享内存环 → Rust 分析）已打通往返链路；Rust 侧「流量分析」
+已经走完**从「能识别」到「能产出记录」**这一段：单包识别 → 流表/会话 → 特征 → JSONL 记录。
+链路是 `Packet → FlowTable → Session → FeatureExtractor → FlowRecord`。
 
 | 能力 | 状态 | 落地位置 |
 | --- | --- | --- |
 | 深度包检测（TLS/JA3、DNS、HTTP） | ◐ 已落地，三方互证通过 | `dataplane/traffic-engine/src/dpi/` |
 | TCP 乱序重组 + TCP 选项解析 | ◐ 已落地，三方互证通过 | `dataplane/traffic-engine/src/reassembly/` |
+| 流表 / 超时 / 逐出 / 回调 + TCP 状态机 + 会话管理 | ☑ 已落地（CYS-TRF-006→◐ / 007→◐ / 008/009/010/011/012→☑） | `dataplane/traffic-engine/src/{flow,session,tcp}/` |
+| 特征提取 + FlowRecord + 离线 pcap CLI | ☑ 已落地（CYS-TRF-004/005/014/027/033/035） | `src/{feature,record,pipeline,bin/analyze}.rs` |
 | 真实网卡抓包（Linux AF_PACKET / macOS BPF） | ◐ 编译与断言通过，**真抓包未验收** | `dataplane/packet-engine/src/backends/` |
 | 跨语言共享环端到端 | ☑ 19 项断言通过 | `scripts/verify/e2e-shared-ring.sh` |
 | 控制平面（Go 四服务） | ◐ 引擎内核已落地（约 9000 行源码 / 7000 行测试），**但待办表未同步** | `services/` |
@@ -35,17 +38,18 @@
 > **照 BACKLOG 去「落地 policyd 骨架」= 重复劳动。** 做控制平面前先读代码
 > （见 §3），真实缺口见 §8。
 
-**门禁实测状态**（2026-10-02 逐项复跑）：
+**门禁实测状态**（2026-10-04 逐项复跑）：
 
 | 门禁 | 结果 | 跑法 |
 | --- | --- | --- |
 | CTest | 6/6 通过 | `--cpp` |
-| Rust 单测 | 158 项通过 | `--rust` |
+| Rust 单测 | 301 项通过（290 lib + 6 bin + 5 集成） | `--rust` |
 | Go | 通过 | `--go` |
 | 前端 vitest | 25 项通过（4 文件） | `cd web/console && npm test` ⚠ 见下 |
 | 通道 ABI parity | 89 行一致 | `--parity`（须同时选 `--cpp --rust`） |
 | DPI 的 tshark 核验 | 22 项一致（跳过 10 项已知例外） | `--dpi` |
 | 重组的 tshark 核验 | 16 项一致（跳过 2 项已知例外） | `--reassembly` |
+| 流记录的 tshark 核验 + 反向故障注入 | **725 项一致**（跳过 7 项，全部有理由；17 项注入全部被检出） | `--flows` |
 | 跨语言 e2e | 4 阶段 / 19 项断言通过 | `--e2e`（须同时选 `--cpp --rust`） |
 | lint（格式 + 真源一致性） | 7 项全过 | `scripts/lint/lint-all.sh` |
 
@@ -55,7 +59,7 @@
 > 前端代码本身是绿的：`cd web/console && npm test` → 25 项通过。
 > 详见 §7.1。**除这一项外，其余各栈单独跑均全绿**（含不带参数跑时的其余部分）。
 
-待办表状态（`count-backlog.sh`）：349 任务 / 9 里程碑 —— 未开始 318 · 进行中 10 · 已完成 21。
+待办表状态（`count-backlog.sh`）：349 任务 / 9 里程碑 —— 未开始 304 · 进行中 13 · 已完成 32（M3 11/39）。
 
 ---
 
@@ -140,6 +144,48 @@
 | 生成器畸形样本其实合法 | 测的是空气 | `tls-bad-inner-len` 偏移漏算 4 字节握手头，改坏的是 random |
 | SACK 选项长度算成 `8n` | SACK 块解析不出 | 应为 `8n+2`（含 kind 与 len 两字节） |
 
+### 2.4 从「能识别」到「能产出记录」（本批）
+
+链路补齐为 `Packet → FlowTable → Session → FeatureExtractor → FlowRecord`，
+新增离线 CLI `cythsec-analyze -r x.pcap -o flows.jsonl`（CYS-TRF-035）。
+
+**几个刻意定下来的语义，别改回去：**
+
+1. **`fwd`/`rev` 是「规范端点序」，不是「发起方/响应方」。** 规范序保证同一会话
+   无论方向都落到同一个键（CYS-TRF-005）；「谁是发起方」是**另一个**字段
+   (`tcp.initiator`，取 SYN 的方向)。把两者混用，下游就会把「方向」当「角色」用。
+2. **TCP 事件判定要吃「段载荷长度」，不是 IP 载荷长度。**
+   `Packet::payload_len` 是 IP 载荷（含 20 字节 TCP 头），`TcpEvent::classify`
+   要的是**去掉头之后的**字节数。本批修掉的真实缺陷就在这里：用含头长度判定，
+   每个纯 ACK（IP 载荷 20、数据 0）都被算成 `Data`；容忍模式下碰巧仍能走到
+   `Established`/`TimeWait`（**所以旧测试全绿**），严格模式下则卡在 `syn_received`
+   且 `FinWait2`/`CloseWait`/`LastAck` 永不可达。修法是把两个量**显式分成两个参数**
+   (`TcpObservation{flags, l4_payload_len}`)，而不是在调用处随手减 20 —— 后者下一个人
+   一定会漏。
+3. **`app.outcome = "not_inspected"` 不能并进 `"unknown"`。** 「没看」和「看了不认识」
+   在统计上后果相反：前者是我们没覆盖，后者是流量本身不成形。
+4. **熵在聚合直方图上算，`0` 有两种含义**（无字节 / 全部相同），用 `bytes` 列消歧。
+5. **`schema_version` 随任何列变更抬版本**；`risk_score` 在 CYS-TRF-031 之前恒为 `null`
+   （宁可留空，也不要先填一个假分数进存储）。
+
+**新增的第三方门禁（`--flows`）**：`scripts/verify/check-flow-records.sh` 用 tshark
+独立解析样本，逐流核对 **725 项**（会话集合 / 包数字节数 / 双向计数 / 方向切换 /
+首末时间戳 / TCP 末态 / 发起方 / 中途接入 / 应用识别 / 解码失败计数 / 统计自证）。
+两个关键设计：
+
+- **TCP 末态用第二实现判定**：拿着 tshark 给的标志位序列，按规则表**重新推**一个末态，
+  而不是去抄 Rust 的迁移表 —— 抄表等于让实现给自己打分。规则覆盖不到的组合打印
+  `SKIP` 并**不计入通过**（当前 7 项，全部附理由）。
+- **反向故障注入是默认行为**：17 项篡改（改包数、改状态、翻转发起方、改 tshark 事实、
+  改自家 stderr 摘要、删/重复会话、空输入……）必须**全部被检出**，否则判红。
+  理由见 §4.2：核验器自己写错时，「绿色的通过」和「绿色的没跑」完全一样。
+
+**顺带修正一处过期期望**：`--e2e` 里硬编码「5 个报文」，新增
+`datasets/pcap/sample-session-tcp.pcap`（18 帧）后如期报红（5 → 23）。
+已改成可逐项复核的分解式（`4+1+18` 帧 / `4+1+9` 流 / 1 个非首片分片），
+并把「这组数字是活的、改样本集必须同步改」写进注释 —— 期望值过期就该红，
+不该顺手删掉那条断言。
+
 ---
 
 ## 3. 代码地图
@@ -156,18 +202,26 @@ dataplane/
     tests/                packet / parser / pcap / channel_abi / channel_producer / live_capture
   traffic-engine/         Rust 分析
     src/channel/          共享环消费端（region / consumer / decode / abi_gen）
-    src/dpi/              ★ 本批：tls / dns / http / attributes / types / md5（+ tests）
-    src/reassembly/       ★ 本批：seq / intervals / stream / tcp（+ tests）
-    src/flow/ session/    Flow / Session 最小模型（尚未扩展为分片流表）
+    src/dpi/              tls / dns / http / attributes / types / md5（+ tests）
+    src/reassembly/       seq / intervals / stream / tcp（+ tests）
+    src/flow/             ★ 本批：五元组 + canonical() / 分片流表（超时·LRU 逐出·回调）/ FlowStats
+    src/session/          ★ 本批：会话管理器（双向聚合 / 反向键规范化 / 超时销毁）+ 会话 id 复用池
+    src/tcp/              ★ 本批：TCP 状态机（严格 / 容忍双模式）+ TcpObservation
+    src/feature/          ★ 本批：21 维特征提取（包长/IAT/速率/上下行比/方向切换/载荷熵）
+    src/record/           ★ 本批：FlowRecord（schema_version=1，JSONL 写出）
+    src/pipeline.rs       ★ 本批：pcap → 记录 的库函数（CLI 与测试共用，防两边各错一半）
+    src/pcapfile.rs       ★ 本批：零依赖 pcap 读取（含字节序与截断包判定）
     src/attributes_gen.rs 由 configs/registry/attributes.json 生成
     src/testjson.rs       测试共用最小 JSON 解析器
-    src/bin/              dump_abi / ring_consume
+    src/bin/              dump_abi / ring_consume / analyze（cythsec-analyze）
+    tests/pipeline_sample.rs ★ 本批：用手写期望值锁定 5 个会话的记录内容
 
 configs/registry/         ★ 真源：attributes.json / channel-abi.json
 tools/codegen/            真源 → 四语言绑定生成器
 datasets/                 测试向量（pcap 与 expected.json 是生成物，不入库）
 scripts/verify/           check-attributes / check-channel-abi / check-channel-parity /
                           check-dpi-vectors / check-reassembly-vectors /
+                          check-flow-records（.sh 采集 + .py 比对，自带反向故障注入）/
                           e2e-shared-ring / e2e-control-plane
 
 services/                 Go 控制平面（约 9000 行源码 / 7000 行测试，19 个测试包全过）
@@ -206,7 +260,7 @@ PostgreSQL 持久化、策略版本化、命中统计、审计日志、服务间
 
 ```bash
 bash scripts/test/test-all.sh            # 全部（含向量自动生成）
-bash scripts/test/test-all.sh --rust --dpi --reassembly   # 日常快速回路
+bash scripts/test/test-all.sh --rust --dpi --reassembly --flows   # 日常快速回路
 bash scripts/lint/lint-all.sh            # 七项格式 / 真源一致性
 ```
 
@@ -219,6 +273,7 @@ bash scripts/lint/lint-all.sh            # 七项格式 / 真源一致性
 | `--parity` | 通道 ABI 跨语言取值一致性（逐行 diff） | 89 行一致（需配 `--cpp --rust`） |
 | `--dpi` | **tshark 独立复核** DPI 向量 | 22 项一致（跳过 10 项已知例外） |
 | `--reassembly` | **tshark 独立复核** 重组向量 | 16 项一致（跳过 2 项已知例外） |
+| `--flows` | **tshark 独立复核 FlowRecord**（会话/计数/状态/应用）+ 反向故障注入 | 725 项一致，跳过 7 项；17 项注入全部被检出 |
 | `--e2e` | C++ 进程写 → 共享环 → Rust 进程读并解 Flow | 4 阶段 / 19 项通过（需配 `--cpp --rust`） |
 
 **两条用法约束**（踩过：单独选会被脚本直接拒绝并 `exit 2`）：
@@ -328,6 +383,12 @@ tshark 是唯一能发现「一致地错」的手段。
 | `CYS-TRF-001` | 未拆 cargo workspace | **刻意延后**，见 §2 顺序决策；模块边界已按 crate 语义划分好，将来是纯目录搬移 |
 | — | HTTP 的 UA/状态码/Content-Type/Length 与响应侧未做 | 仅请求行三元组 + Host |
 | — | DNS 的 RCODE/EDNS0 与 ANSWER 解析未做 | 仅 QNAME/QTYPE |
+| `CYS-TRF-006`/`007` | 「1M 并发流插入基准达标」「无内存增长」两条**指标**未达成 | 纯缺基准（`CYS-TRF-037`）；功能与单测已就绪，缺的是数字，不是能力 |
+| `CYS-TRF-012`/`013` | 超时驱动的状态迁移与真实丢包环境参数标定未做 | 当前只有流级超时回收；没有真实丢包样本，就不给默认值之外的结论 |
+| `CYS-TRF-010` | 多线程并发 id 分配未定义 | 分配器由 `SessionManager` 单线程持有；跨线程语义要先定锁边界 |
+| `CYS-TRF-028` | 特征定义仍是「Rust 代码里一份」 | 与训练侧对齐（单一来源 + 双端生成）未做，Python 侧一旦手抄就会各自漂移 |
+| `CYS-TRF-033` | 与 `storage/clickhouse` 建表 DDL 未对齐 | storage 侧尚未落地；现在只保证列名 + `schema_version` |
+| `CYS-TRF-035` | 无真实省网 pcap 上的批量验证 | 现有样本是确定性生成的合成流量，只覆盖已知边界 |
 | — | `VERSION=9.9.9` 与 `Cargo.toml`/`package.json` 的 `0.1.0` 不一致 | `scripts/release/check-version.sh` **当前会失败**，发版前必须定哪个是真值 |
 | policyd 落地侧 | nftables 下发 / 原子生效与回滚 / PostgreSQL 持久化 / 策略版本化 / 命中统计 / 审计日志 / 服务间联动 **全部未做** | 引擎内核已就绪（§3），缺口在「把判定结果落到内核与库」这一段 |
 | `dnsd` / `telemetryd` | 领域模型与 API 在，但与 policyd 的策略模型未统一、无真实后端 | 见 BACKLOG `CYS-DNS-014` / `CYS-TEL-010` 一类联动任务 |
@@ -385,17 +446,19 @@ tshark 是唯一能发现「一致地错」的手段。
 > 建议把 `clang-format` 与 `cargo fmt` 装成 pre-commit 钩子。本批已是第二次
 > 因忘记格式化导致 lint 成片报红。
 
-### 第二梯队：分析闭环（依赖已就绪）
+### 第二梯队：分析闭环（**已于 2026-10-04 落地**，下面剩的是延伸项）
 
-按 BACKLOG 第 4 批的意图，当前最该补的是**从「能识别」走到「能产出记录」**：
+原计划 5–9 项（`CYS-TRF-005/006/007/008/012/027/033/035`）**已全部落地**，
+链路 `Packet → FlowTable → Session → FeatureExtractor → FlowRecord` 已打通，
+并新增 `--flows` 第三方门禁（见 §2.4）。剩下的是延伸项：
 
 | 顺序 | 任务 | 理由 |
 | --- | --- | --- |
-| 5 | `CYS-TRF-005` 规范化五元组 | 极小的改动（P0/S），但双向包能否正确归属同一个会话键，是整个会话模型的地基 |
-| 6 | `CYS-TRF-006/007/008` 分片流表 + 超时老化 + 逐出 | 现在 `flow` 是「最小模型」，没有容量上限与超时，无法承载真实流量 |
-| 7 | `CYS-TRF-012` TCP 状态机完整版 | 替换现有「双向有包即 Established」启发式。**注意**：重组层已提供 FIN/RST 语义与 SYN 锚定，状态机应当复用而不是另写一套 |
-| 8 | `CYS-TRF-027/033` 特征提取 + FlowRecord schema | 产出可存储的记录，「分析闭环」的终点 |
-| 9 | `CYS-TRF-035` 离线 pcap 处理 CLI | 让上面这些能在 `datasets/pcap/` 上批量跑，是最容易做的端到端验证 |
+| 5 | `CYS-TRF-037` Criterion 基准（流表插入/特征提取/重组吞吐） | `006`/`007` 的验收标准里有「1M 并发流」「无内存增长」两条**指标**，没有基准就只能写「未达成」。这是把两个 ◐ 收成 ☑ 的唯一路径 |
+| 6 | `CYS-TRF-028` 特征定义单一来源 + 与训练侧对齐 | 现在特征定义在 Rust 代码里；一旦 Python 侧用手抄一份，两边就会各自漂移，且**两边都会自认为对** |
+| 7 | `CYS-TRF-020/023` 补全（HTTP 响应侧/UA、DNS RCODE/EDNS0） | 已落地部分的自然延伸，向量体系现成，加样本成本低 |
+| 8 | `CYS-TRF-015` 会话级统计（重传/乱序计数、RTT 粗估） | 记录已经在产出，补列即可；重传与乱序要用到序号，重组层已有 |
+| 9 | `CYS-TRF-033` 与 `storage/clickhouse` 建表 DDL 对齐 | `FlowRecord` 现在只保证「列名+版本号」，存储侧尚未落地；这是分析闭环真正出库的口子 |
 
 ### 第三梯队：结构化重构（有明确前置时才做）
 
@@ -436,12 +499,13 @@ tshark 是唯一能发现「一致地错」的手段。
 
 ```bash
 # 1. 工作区干净、状态点正确
-git log --oneline -3                      # 期望看到 4d62530 / fb031ef
+git log --oneline -3                      # 期望看到本次交接的 HEAD
 git status --short                        # 期望为空
 
 # 2. 关键门禁全绿（会自动生成测试向量）
-bash scripts/test/test-all.sh --rust --dpi --reassembly
-#    期望：Rust 158 项通过 + 两道 tshark 核验（22 / 16 项）通过 + 测试汇总全部通过
+bash scripts/test/test-all.sh --rust --dpi --reassembly --flows
+#    期望：Rust 301 项通过 + 三道 tshark 核验（22 / 16 / 725 项）通过
+#          + --flows 的反向故障注入全部被检出 + 测试汇总全部通过
 
 # 3. 格式与真源一致性（前端类型检查也在这里）
 bash scripts/lint/lint-all.sh             # 期望：七项全过（含 node 类型检查与 eslint）
@@ -455,27 +519,37 @@ bash scripts/test/test-all.sh --cpp --rust --parity --e2e
 
 # 6. 待办表状态
 bash docs/planning/scripts/count-backlog.sh | tail -20
-/Users/xuzhongxin/.workbuddy/binaries/python/versions/3.13.12/bin/python3 \
-  docs/planning/scripts/check-deps.py
-#    期望：无环、无悬空、无自依赖；2 处状态不一致为既有已记录项（CYS-PKT-006/024）
+#    期望：未开始 304 · 进行中 13 · 已完成 32
+python3 docs/planning/scripts/check-deps.py
+#    期望：无环、无悬空、无自依赖；5 处状态不一致全部是**已记录**项：
+#      - CYS-PKT-006 / CYS-PKT-024：既有项（前置的接口部分已交付，属语义重叠）
+#      - CYS-TRF-008 / 010 / 014：前置 CYS-TRF-006/007 为 ◐ —— 依赖的是分片流表与超时的
+#        **功能**（已可用），未达成的只是「1M 并发流」「无内存增长」两条**指标**（缺基准）
 ```
 
 **若看到 `✗ [node] npm ci 失败（可能需要网络）`**：那是 §7.1 的环境拦截，
 不是网络问题也不是代码缺陷——照上面第 5 步单独跑 `npm test` 即可。
 
 **环境依赖**：`cmake` / `cargo` / `go` / `node` / `npm` / `python3` / `tshark`（4.6.7）。
-缺 `tshark` 时两道核验会明确打印「未核验…不计为通过」并返回 0 ——
+缺 `tshark` 时三道核验会明确打印「未核验…不计为通过」并返回 0 ——
 **这是刻意的**：装不装 tshark 是环境问题，但绝不能把它显示成"通过"。
 
 ---
 
 ## 10. 一句话交给下一棒
 
-**当前最缺的不是更多协议解析器，而是「从报文到可存储记录」的那一段**：
-流表、超时、状态机、特征、FlowRecord。
-解析能力（DPI）与重排能力（reassembly）已经扎稳并有第三方互证，
-但它们目前只输出「识别结论」，还没有一条路径把它们变成能落库、能查询的流量记录。
-第二梯队就是从「能识别」走到「能产出记录」的那条路。
+「从报文到可存储记录」这一段**已经通了**：`Packet → FlowTable → Session →
+FeatureExtractor → FlowRecord`，并有一条 `cythsec-analyze -r x.pcap -o flows.jsonl`
+的离线路径和一道带反向故障注入的 tshark 门禁（`--flows`）。
+
+下一棒最有价值的三件事，按性价比排序：
+
+1. **补基准**（`CYS-TRF-037`）：`CYS-TRF-006/007` 现在卡在「1M 并发流」「无内存增长」
+   这两条**指标**上 —— 能力和单测都有，缺的只是数字。这是把两个 ◐ 收成 ☑ 的唯一路径。
+2. **特征定义单一来源**（`CYS-TRF-028`）：现在定义在 Rust 代码里，训练侧一旦手抄一份，
+   两边会各自漂移且**都自认为对**。这类缺陷不会红，只会让模型离线指标好看、线上无效。
+3. **控制平面落地侧**（`CYS-POL-007/008/005`）：引擎内核已就绪（§3），缺的是 nftables
+   下发、原子回滚与 PG 持久化 —— 也就是把 policyd 从「可试算」变成「可管控」。
 
 **另请留意**：`tshark` 交叉核验是这套代码唯一的"外部真相来源"。
 新增任何协议解析器时，如果找不到第三方参照，宁可显式标注
