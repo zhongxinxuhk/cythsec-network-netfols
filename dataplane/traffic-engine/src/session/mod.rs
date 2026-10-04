@@ -26,8 +26,9 @@ use crate::flow::table::{
     new_fnv_map, FlowEntry, FlowTable, FlowTableConfig, FnvMap, TimeoutClass, TimeoutTable,
 };
 use crate::flow::{FlowKey, Packet};
-use crate::reassembly::tcp::TcpFlags;
-use crate::tcp::{IllegalTransition, Side, TcpConfig, TcpEvent, TcpState, TcpStateMachine};
+use crate::tcp::{
+    IllegalTransition, Side, TcpConfig, TcpEvent, TcpObservation, TcpState, TcpStateMachine,
+};
 
 /// 默认最大会话数。
 pub const DEFAULT_MAX_SESSIONS: usize = 1 << 16;
@@ -200,7 +201,7 @@ impl Session {
         &mut self,
         pkt: &Packet,
         side: Side,
-        flags: Option<&TcpFlags>,
+        tcp: Option<&TcpObservation>,
     ) -> Option<IllegalTransition> {
         if self.packets == 0 {
             self.first_seen_us = pkt.timestamp_us;
@@ -222,13 +223,15 @@ impl Session {
         if !self.is_tcp() {
             return None;
         }
-        let Some(flags) = flags else {
-            // TCP 包但调用方没给标志位：只记账，不推进状态机。
-            // 不"猜一个 ACK"，因为猜错会把状态推到 Established，而那个错误
-            // 之后再也看不出来（状态机自身不会报错）。
+        let Some(tcp) = tcp else {
+            // TCP 包但调用方没给出可解释的段信息（标志位读不到，或帧在四层头之前被
+            // 截断）：只记账，不推进状态机。不"猜一个 ACK"，因为猜错会把状态推到
+            // Established，而那个错误之后再也看不出来（状态机自身不会报错）。
             return None;
         };
-        let event = TcpEvent::classify(flags, pkt.payload_len);
+        // 注意用的是段载荷长度，**不是** pkt.payload_len（后者含四层头，
+        // 会把每个纯 ACK 都判成 Data），见 TcpObservation 的说明。
+        let event = TcpEvent::classify(&tcp.flags, tcp.l4_payload_len);
         self.tcp.apply(event, side).err()
     }
 }
@@ -360,8 +363,11 @@ impl SessionManager {
         v
     }
 
-    /// 观测一个包。`flags` 只有 TCP 包才需要（其它协议传 `None`）。
-    pub fn observe(&mut self, pkt: &Packet, flags: Option<&TcpFlags>) -> Observation {
+    /// 观测一个包。`tcp` 只有 TCP 包才需要（其它协议、或四层头读不到的帧传 `None`）。
+    ///
+    /// 传进来的 `TcpObservation` 里的载荷长度是**段载荷长度**；字节统计仍然
+    /// 使用 `pkt.payload_len`（IP 载荷长度，含四层头），两者口径不同、不可互换。
+    pub fn observe(&mut self, pkt: &Packet, tcp: Option<&TcpObservation>) -> Observation {
         self.stats.packets += 1;
         let key = pkt.key.canonical();
         let side = if pkt.key == key { Side::A } else { Side::B };
@@ -372,7 +378,7 @@ impl SessionManager {
         // 2. 会话：存在则更新，不存在则（可能先逐出一条）新建。
         let tcp_cfg = self.cfg.tcp;
         let (id, is_new, illegal) = if let Some(s) = self.sessions.get_mut(&key) {
-            let illegal = s.observe(pkt, side, flags);
+            let illegal = s.observe(pkt, side, tcp);
             (s.id, false, illegal)
         } else {
             if self.sessions.len() >= self.cfg.max_sessions.max(1) {
@@ -381,7 +387,7 @@ impl SessionManager {
             match self.alloc.alloc() {
                 Some(id) => {
                     let mut s = Session::new(id, key, tcp_cfg);
-                    let illegal = s.observe(pkt, side, flags);
+                    let illegal = s.observe(pkt, side, tcp);
                     self.sessions.insert(key, s);
                     self.stats.sessions_created += 1;
                     (id, true, illegal)
@@ -500,6 +506,7 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::flow::{Proto, IPPROTO_TCP, IPPROTO_UDP};
+    use crate::reassembly::tcp::TcpFlags;
 
     fn key(a: u8, sport: u16, b: u8, dport: u16, proto: u8) -> FlowKey {
         FlowKey::new_ipv4([10, 0, 0, a], sport, [10, 0, 0, b], dport, proto)
@@ -530,6 +537,12 @@ mod tests {
             ack: true,
             ..TcpFlags::default()
         }
+    }
+
+    /// 测试用段观测。测试里不构造四层头，因此把"IP 载荷长度"与"段载荷长度"
+    /// 取同一个值；生产路径由解码器分别给出这两个值（见 pipeline::analyze_pcap）。
+    fn seg(flags: TcpFlags, l4_payload_len: u32) -> TcpObservation {
+        TcpObservation::new(flags, l4_payload_len)
     }
 
     fn ack() -> TcpFlags {
@@ -592,8 +605,8 @@ mod tests {
         let mut m = SessionManager::new(SessionConfig::default());
         let f = tcp_key();
         let b = f.reverse();
-        let o1 = m.observe(&pkt(f, 1, 100), Some(&ack()));
-        let o2 = m.observe(&pkt(b, 2, 200), Some(&ack()));
+        let o1 = m.observe(&pkt(f, 1, 100), Some(&seg(ack(), 100)));
+        let o2 = m.observe(&pkt(b, 2, 200), Some(&seg(ack(), 200)));
         assert_eq!(o1.session_id, o2.session_id, "双向必须归同一条会话");
         assert!(o1.is_new && !o2.is_new);
         assert_eq!(m.session_count(), 1);
@@ -615,8 +628,8 @@ mod tests {
         let mut m = SessionManager::new(SessionConfig::bypass());
         let f = tcp_key();
         let b = f.reverse();
-        let first = m.observe(&pkt(b, 100, 500), Some(&ack()));
-        let second = m.observe(&pkt(f, 200, 100), Some(&ack()));
+        let first = m.observe(&pkt(b, 100, 500), Some(&seg(ack(), 500)));
+        let second = m.observe(&pkt(f, 200, 100), Some(&seg(ack(), 100)));
         assert_eq!(
             first.session_id, second.session_id,
             "先见响应也必须归同一条会话"
@@ -633,8 +646,14 @@ mod tests {
     #[test]
     fn different_ports_or_protocols_are_different_sessions() {
         let mut m = SessionManager::new(SessionConfig::default());
-        m.observe(&pkt(key(1, 1, 2, 80, IPPROTO_TCP), 1, 1), Some(&ack()));
-        m.observe(&pkt(key(1, 1, 2, 443, IPPROTO_TCP), 1, 1), Some(&ack()));
+        m.observe(
+            &pkt(key(1, 1, 2, 80, IPPROTO_TCP), 1, 1),
+            Some(&seg(ack(), 1)),
+        );
+        m.observe(
+            &pkt(key(1, 1, 2, 443, IPPROTO_TCP), 1, 1),
+            Some(&seg(ack(), 1)),
+        );
         m.observe(&pkt(key(1, 1, 2, 80, IPPROTO_UDP), 1, 1), None);
         assert_eq!(m.session_count(), 3);
     }
@@ -646,15 +665,15 @@ mod tests {
         let mut m = SessionManager::new(SessionConfig::default());
         let f = tcp_key();
         let b = f.reverse();
-        m.observe(&pkt(f, 1, 0), Some(&syn()));
+        m.observe(&pkt(f, 1, 0), Some(&seg(syn(), 0)));
         assert_eq!(m.session(&f).unwrap().tcp_state(), TcpState::SynSent);
         assert_eq!(
             m.flow_entry(&f).map(|e| e.class),
             Some(TimeoutClass::TcpTransient),
             "握手未完成时走短超时"
         );
-        m.observe(&pkt(b, 2, 0), Some(&syn_ack()));
-        let o = m.observe(&pkt(f, 3, 0), Some(&ack()));
+        m.observe(&pkt(b, 2, 0), Some(&seg(syn_ack(), 0)));
+        let o = m.observe(&pkt(f, 3, 0), Some(&seg(ack(), 0)));
         assert_eq!(o.state, TcpState::Established);
         assert_eq!(
             m.flow_entry(&f).map(|e| e.class),
@@ -682,14 +701,14 @@ mod tests {
         let mut m = SessionManager::new(SessionConfig::default());
         let f = tcp_key();
         // 严格模式下 Closed 上收到纯 ACK 是非法迁移。
-        let o1 = m.observe(&pkt(f, 1, 0), Some(&ack()));
+        let o1 = m.observe(&pkt(f, 1, 0), Some(&seg(ack(), 0)));
         assert!(o1.illegal.is_some(), "非法迁移必须被记录");
         assert_eq!(o1.state, TcpState::Closed, "拒绝的语义是状态不推进");
         assert_eq!(m.stats().illegal_tcp_events, 1);
         // 后续正常握手仍能推进：单个畸形包不得让流水线停摆。
-        m.observe(&pkt(f, 2, 0), Some(&syn()));
-        m.observe(&pkt(f.reverse(), 3, 0), Some(&syn_ack()));
-        let o = m.observe(&pkt(f, 4, 0), Some(&ack()));
+        m.observe(&pkt(f, 2, 0), Some(&seg(syn(), 0)));
+        m.observe(&pkt(f.reverse(), 3, 0), Some(&seg(syn_ack(), 0)));
+        let o = m.observe(&pkt(f, 4, 0), Some(&seg(ack(), 0)));
         assert_eq!(o.state, TcpState::Established);
         assert_eq!(m.stats().illegal_tcp_events, 1, "正常迁移不计入非法");
     }
@@ -719,11 +738,11 @@ mod tests {
         let mut m = SessionManager::new(cfg);
         let f = tcp_key();
         // 一条已建立，一条停在 SYN（transient）。
-        m.observe(&pkt(f, 0, 0), Some(&syn()));
-        m.observe(&pkt(f.reverse(), 0, 0), Some(&syn_ack()));
-        m.observe(&pkt(f, 0, 0), Some(&ack()));
+        m.observe(&pkt(f, 0, 0), Some(&seg(syn(), 0)));
+        m.observe(&pkt(f.reverse(), 0, 0), Some(&seg(syn_ack(), 0)));
+        m.observe(&pkt(f, 0, 0), Some(&seg(ack(), 0)));
         let slow = key(3, 50000, 4, 80, IPPROTO_TCP);
-        m.observe(&pkt(slow, 0, 0), Some(&syn()));
+        m.observe(&pkt(slow, 0, 0), Some(&seg(syn(), 0)));
         assert_eq!(m.session_count(), 2);
 
         let (sessions, flows) = m.expire(50);
@@ -747,10 +766,15 @@ mod tests {
             ..TimeoutTable::default()
         };
         let mut m = SessionManager::new(cfg);
-        let first = m.observe(&pkt(tcp_key(), 0, 0), Some(&syn())).session_id;
+        let first = m
+            .observe(&pkt(tcp_key(), 0, 0), Some(&seg(syn(), 0)))
+            .session_id;
         m.expire(100);
         let second = m
-            .observe(&pkt(key(9, 999, 8, 80, IPPROTO_TCP), 200, 0), Some(&syn()))
+            .observe(
+                &pkt(key(9, 999, 8, 80, IPPROTO_TCP), 200, 0),
+                Some(&seg(syn(), 0)),
+            )
             .session_id;
         assert_eq!(
             second, first,
@@ -766,10 +790,10 @@ mod tests {
         let k1 = key(1, 1, 2, 80, IPPROTO_TCP);
         let k2 = key(1, 2, 2, 80, IPPROTO_TCP);
         let k3 = key(1, 3, 2, 80, IPPROTO_TCP);
-        m.observe(&pkt(k1, 10, 1), Some(&syn()));
-        m.observe(&pkt(k2, 20, 1), Some(&syn()));
-        m.observe(&pkt(k1, 30, 1), Some(&ack())); // k1 重新活跃
-        m.observe(&pkt(k3, 40, 1), Some(&syn())); // 触发逐出
+        m.observe(&pkt(k1, 10, 1), Some(&seg(syn(), 1)));
+        m.observe(&pkt(k2, 20, 1), Some(&seg(syn(), 1)));
+        m.observe(&pkt(k1, 30, 1), Some(&seg(ack(), 1))); // k1 重新活跃
+        m.observe(&pkt(k3, 40, 1), Some(&seg(syn(), 1))); // 触发逐出
         assert_eq!(m.session_count(), 2);
         assert!(m.session(&k1).is_some(), "最近活跃的会话不得被逐出");
         assert!(m.session(&k2).is_none());
@@ -784,7 +808,7 @@ mod tests {
         for p in [443u16, 80, 22] {
             m.observe(
                 &pkt(key(1, 1000 + p, 2, p, IPPROTO_TCP), 1, 1),
-                Some(&ack()),
+                Some(&seg(ack(), 1)),
             );
         }
         let keys: Vec<FlowKey> = m.sessions_sorted().iter().map(|s| s.key).collect();
@@ -804,9 +828,15 @@ mod tests {
         cfg.id_start = u64::MAX - 1;
         cfg.max_sessions = 8;
         let mut m = SessionManager::new(cfg);
-        let ok = m.observe(&pkt(key(1, 1, 2, 80, IPPROTO_TCP), 1, 1), Some(&syn()));
+        let ok = m.observe(
+            &pkt(key(1, 1, 2, 80, IPPROTO_TCP), 1, 1),
+            Some(&seg(syn(), 1)),
+        );
         assert_eq!(ok.session_id, u64::MAX - 1);
-        let fail = m.observe(&pkt(key(1, 2, 2, 80, IPPROTO_TCP), 1, 1), Some(&syn()));
+        let fail = m.observe(
+            &pkt(key(1, 2, 2, 80, IPPROTO_TCP), 1, 1),
+            Some(&seg(syn(), 1)),
+        );
         assert_eq!(fail.session_id, 0, "无法分配 id 时必须显式暴露");
         assert_eq!(m.stats().dropped_no_id, 1);
         assert_eq!(m.session_count(), 1);
@@ -817,11 +847,11 @@ mod tests {
     fn observation_reports_side_and_new_flag_consistently() {
         let mut m = SessionManager::new(SessionConfig::default());
         let f = tcp_key();
-        let o1 = m.observe(&pkt(f, 1, 0), Some(&syn()));
+        let o1 = m.observe(&pkt(f, 1, 0), Some(&seg(syn(), 0)));
         assert!(o1.is_new);
         assert_eq!(o1.key, f.canonical());
         assert_eq!(o1.side, Side::A);
-        let o2 = m.observe(&pkt(f.reverse(), 2, 0), Some(&syn_ack()));
+        let o2 = m.observe(&pkt(f.reverse(), 2, 0), Some(&seg(syn_ack(), 0)));
         assert!(!o2.is_new);
         assert_eq!(o2.key, o1.key, "会话键与方向无关");
         assert_eq!(o2.side, Side::B);
@@ -832,10 +862,91 @@ mod tests {
         let mut m = SessionManager::new(SessionConfig::default());
         let tcp = key(1, 53, 2, 53, IPPROTO_TCP);
         let udp = key(1, 53, 2, 53, IPPROTO_UDP);
-        m.observe(&pkt(tcp, 1, 1), Some(&ack()));
+        m.observe(&pkt(tcp, 1, 1), Some(&seg(ack(), 1)));
         m.observe(&pkt(udp, 1, 1), None);
         assert_eq!(m.session_count(), 2);
         assert_eq!(m.session(&tcp).unwrap().key.proto, Proto::Tcp);
         assert_eq!(m.session(&udp).unwrap().key.proto, Proto::Udp);
+    }
+
+    // ---- 单位口径回归（曾经的真实缺陷）----
+
+    #[test]
+    fn a_bare_ack_has_a_twenty_byte_ip_payload_but_no_tcp_data() {
+        // 回归：真实报文里纯 ACK 的 **IP 载荷长度**是 20（一个 TCP 头），
+        // 而**段载荷长度**是 0。曾把 pkt.payload_len 直接当段载荷长度用，
+        // 于是握手的最后一个 ACK 被当成 Data：容忍模式下"看起来正常"
+        // （Data 恰好也把连接推到 Established），严格模式下连接永远停在
+        // SynReceived，且 FinWait2/CloseWait/LastAck 全都到不了。
+        let mut m = SessionManager::new(SessionConfig::default());
+        let f = tcp_key();
+        let bare = |k: FlowKey, ts: u64| Packet {
+            key: k,
+            payload_len: 20,
+            timestamp_us: ts,
+        };
+        m.observe(&bare(f, 1), Some(&TcpObservation::no_payload(syn())));
+        assert_eq!(m.session(&f).unwrap().tcp_state(), TcpState::SynSent);
+        m.observe(
+            &bare(f.reverse(), 2),
+            Some(&TcpObservation::no_payload(syn_ack())),
+        );
+        assert_eq!(m.session(&f).unwrap().tcp_state(), TcpState::SynReceived);
+        let o = m.observe(&bare(f, 3), Some(&TcpObservation::no_payload(ack())));
+        assert_eq!(o.state, TcpState::Established, "纯 ACK 必须走 Ack 分支");
+        assert!(o.illegal.is_none());
+        assert_eq!(m.stats().illegal_tcp_events, 0);
+        // 字节统计仍按 IP 载荷长度记（含头的 20 字节/包）：两个口径并存但绝不混用。
+        assert_eq!(m.session(&f).unwrap().bytes, 60);
+    }
+
+    #[test]
+    fn close_sequence_passes_through_fin_wait2_and_reaches_time_wait() {
+        // 同样的单位问题会让 FinWait2 在真实流量里不可达 —— 因此这里逐步断言，
+        // 而不是只看最后一个状态（"结果对了"不等于"路径对了"）。
+        let mut m = SessionManager::new(SessionConfig::default());
+        let f = tcp_key();
+        let b = f.reverse();
+        let bare = |k: FlowKey, ts: u64| Packet {
+            key: k,
+            payload_len: 20,
+            timestamp_us: ts,
+        };
+        let step = |m: &mut SessionManager, k: FlowKey, ts: u64, o: TcpObservation| {
+            m.observe(&bare(k, ts), Some(&o)).state
+        };
+        assert_eq!(
+            step(&mut m, f, 1, TcpObservation::no_payload(syn())),
+            TcpState::SynSent
+        );
+        assert_eq!(
+            step(&mut m, b, 2, TcpObservation::no_payload(syn_ack())),
+            TcpState::SynReceived
+        );
+        assert_eq!(
+            step(&mut m, f, 3, TcpObservation::no_payload(ack())),
+            TcpState::Established
+        );
+        let mut fin = ack();
+        fin.fin = true;
+        assert_eq!(
+            step(&mut m, f, 4, TcpObservation::no_payload(fin)),
+            TcpState::FinWait1,
+            "先发 FIN 的一方进入 FinWait1"
+        );
+        assert_eq!(
+            step(&mut m, b, 5, TcpObservation::no_payload(ack())),
+            TcpState::FinWait2,
+            "FIN 被确认后进入 FinWait2（这一步曾经不可达）"
+        );
+        assert_eq!(
+            step(&mut m, b, 6, TcpObservation::no_payload(fin)),
+            TcpState::TimeWait
+        );
+        assert_eq!(
+            step(&mut m, f, 7, TcpObservation::no_payload(ack())),
+            TcpState::TimeWait
+        );
+        assert_eq!(m.stats().illegal_tcp_events, 0, "正常关闭不含非法迁移");
     }
 }

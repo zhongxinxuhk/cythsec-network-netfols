@@ -27,7 +27,10 @@ mod region;
 mod tests;
 
 pub use consumer::{ConsumeError, Consumer, ConsumerStats, PacketMeta};
-pub use decode::{decode_flow_key, decode_frame, DecodeError, DecodeStage, DecodedFrame, L3Proto};
+pub use decode::{
+    decode_flow_key, decode_frame, l4_payload, tcp_flags, DecodeError, DecodeStage, DecodedFrame,
+    L3Proto, L4Payload,
+};
 pub use region::{AttachError, Channel, ChannelStats, RegionPerm};
 
 // 四层协议类型由 flow 模块统一提供（CYS-TRF-004），这里只做转发，

@@ -22,6 +22,7 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use crate::flow::{FlowKey, Proto, IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_TCP, IPPROTO_UDP};
+use crate::reassembly::tcp::TcpFlags;
 
 /// 以太网头部长度（不含 VLAN 标签）。
 const ETH_HEADER_LEN: usize = 14;
@@ -212,6 +213,68 @@ pub struct DecodedFrame {
     pub ip_payload_len: u32,
     /// 是否为分片首片（含未分片的普通报文）。首片带四层头，故能够解出五元组。
     pub is_initial_fragment: bool,
+    /// 四层头在**帧内**的绝对偏移（含以太头与所有 VLAN 标签）。
+    ///
+    /// 暴露它是为了让调用方能取到标志位与载荷，而**不必自己重走一遍**
+    /// 「VLAN 嵌套 + IPv6 扩展头」这段最容易写错的位置计算。两份位置计算
+    /// 只要有一处偏差，读出来的就是别的字段，而且通常仍是"合法"字节。
+    pub l4_offset: usize,
+    /// 四层头长度（TCP 由 data offset 得出，UDP 固定 8）。
+    ///
+    /// 为 `None` 表示**抓包截断到连长度字段都读不到**，此时载荷起点无从确定。
+    /// 这与"头长度算出来是 0"是两件事，故用 `Option` 而不是 0 兜底。
+    pub l4_header_len: Option<usize>,
+}
+
+/// 四层载荷视图（区分"线上声明了多少"与"实际抓到多少"）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct L4Payload<'a> {
+    /// 按 IP 头声明推算的四层载荷长度。
+    pub declared_len: usize,
+    /// 实际可用于解析的字节（截断捕获下会短于 `declared_len`）。
+    pub bytes: &'a [u8],
+}
+
+impl L4Payload<'_> {
+    /// 实际字节数是否少于声明长度（snaplen 截断的判据）。
+    ///
+    /// 这个区分很关键：对 DPI 而言"载荷短了"应当导向 `NeedMore`（等后续分片），
+    /// 而"载荷本身就长这样"才导向 `Unknown`。把两者混在一起，unknown 率就会虚高。
+    pub fn is_truncated(&self) -> bool {
+        self.bytes.len() < self.declared_len
+    }
+}
+
+/// 取 TCP 标志位。
+///
+/// 非 TCP，或帧在标志位字节之前被截断时返回 `None` —— 不返回"全零的标志位"：
+/// 全零是个合法取值（无任何标志），用它表示"没读到"会让调用方把截断包当成正常包。
+pub fn tcp_flags(frame: &[u8], d: &DecodedFrame) -> Option<TcpFlags> {
+    if d.l4 != Proto::Tcp {
+        return None;
+    }
+    // 标志位在第 13、14 字节（0 基 12、13）；需要至少 14 字节才读得全。
+    let base = d.l4_offset;
+    let b12 = *frame.get(base + 12)?;
+    let b13 = *frame.get(base + 13)?;
+    Some(TcpFlags::from_bytes(b12, b13))
+}
+
+/// 取四层载荷（跳过四层头）。
+///
+/// 帧在四层头之前被截断（`l4_header_len` 为 `None`）时返回 `None`。
+/// 返回值里的 `bytes` 是**实际捕获到**的部分，可能短于声明长度（见 `is_truncated`）。
+pub fn l4_payload<'a>(frame: &'a [u8], d: &DecodedFrame) -> Option<L4Payload<'a>> {
+    let header_len = d.l4_header_len?;
+    let start = d.l4_offset.checked_add(header_len)?;
+    let bytes = frame.get(start..).unwrap_or(&[]);
+    let declared_len = (d.ip_payload_len as usize).saturating_sub(header_len);
+    // 同时受"实际抓到的字节数"约束：帧尾之后不存在数据。
+    let avail = bytes.len().min(declared_len);
+    Some(L4Payload {
+        declared_len,
+        bytes: &bytes[..avail],
+    })
 }
 
 /// 解码一帧，得到五元组及其附属信息。
@@ -335,6 +398,8 @@ fn decode_ipv4(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
         vlan_tags,
         ip_payload_len: payload_len,
         is_initial_fragment: more_fragments || frag_offset_units == 0,
+        l4_offset,
+        l4_header_len: l4_header_len(frame, l4_offset, l4),
     })
 }
 
@@ -452,7 +517,32 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
         // IPv6 载荷长度字段已含扩展头，减去已走过的扩展头字节即四层段长度。
         ip_payload_len: payload_len.saturating_sub((cursor - (offset + 40)) as u32),
         is_initial_fragment,
+        l4_offset: cursor,
+        l4_header_len: l4_header_len(frame, cursor, l4),
     })
+}
+
+/// 四层头长度；无法确定时返回 `None`。
+///
+/// TCP 的长度来自 data offset（第 13 字节高 4 位 × 4）。`< 20` 的值按**无法确定**处理，
+/// 而不是当成长度 20：把头长度字段填错的报文，载荷起点本来就是未知的，
+/// 猜一个 20 会让后续读到的字节全部错位，而且读出来往往仍是"合法"的载荷。
+fn l4_header_len(frame: &[u8], l4_offset: usize, l4: Proto) -> Option<usize> {
+    match l4 {
+        Proto::Tcp => {
+            let byte = *frame.get(l4_offset + 12)?;
+            let len = usize::from(byte >> 4) * 4;
+            if len < 20 {
+                None
+            } else {
+                Some(len)
+            }
+        }
+        Proto::Udp => Some(8),
+        // ICMP / ICMPv6 / 其余协议：头长度随类型变化，本解码器不展开，
+        // 因此载荷起点无法确定 —— 返回 None，而不是按 8 猜一个。
+        _ => None,
+    }
 }
 
 /// 取四层端口。无端口的协议返回 `(0, 0)`。
@@ -827,5 +917,166 @@ mod tests {
         let d6 = decode_frame(&icmpv6).expect("ICMPv6 应能解出");
         assert_eq!(d6.key.proto, Proto::Icmpv6);
         assert_eq!(d6.key.proto.number(), IPPROTO_ICMPV6);
+    }
+
+    // ---- 四层位置与载荷（供 cythsec-analyze 取标志位与首包载荷） ----
+
+    /// 构造一个带指定 TCP 标志位、头长与载荷的以太帧。
+    fn eth_ipv4_tcp_frame(
+        sport: u16,
+        dport: u16,
+        flags_b13: u8,
+        opt_words: u8,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let data_off_words = 5 + opt_words; // 5 = 无选项时的 20 字节
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&sport.to_be_bytes());
+        tcp.extend_from_slice(&dport.to_be_bytes());
+        tcp.extend_from_slice(&[0, 0, 0, 1]); // seq
+        tcp.extend_from_slice(&[0, 0, 0, 0]); // ack
+        tcp.push(data_off_words << 4);
+        tcp.push(flags_b13);
+        tcp.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]); // window / checksum / urgent
+        while tcp.len() < usize::from(data_off_words) * 4 {
+            tcp.push(0); // 选项区（内容不重要，只测长度定位）
+        }
+        tcp.extend_from_slice(payload);
+
+        let total = 20 + tcp.len();
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&(total as u16).to_be_bytes());
+        ip.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 64, IPPROTO_TCP, 0x00, 0x00]);
+        ip.extend_from_slice(&[10, 0, 0, 1]);
+        ip.extend_from_slice(&[10, 0, 0, 2]);
+        ip.extend_from_slice(&tcp);
+
+        let mut frame = vec![0u8; 12]; // 目的/源 MAC
+        frame.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        frame.extend_from_slice(&ip);
+        frame
+    }
+
+    #[test]
+    fn l4_offset_and_header_len_locate_the_payload() {
+        // 20 字节 TCP 头（无选项）
+        let f = eth_ipv4_tcp_frame(1024, 443, 0x18, 0, b"hello");
+        let d = decode_frame(&f).expect("应能解出");
+        assert_eq!(d.l4_offset, 14 + 20, "以太头 14 + IPv4 头 20");
+        assert_eq!(d.l4_header_len, Some(20));
+        let p = l4_payload(&f, &d).expect("载荷位置可知");
+        assert_eq!(p.bytes, b"hello");
+        assert_eq!(p.declared_len, 5);
+        assert!(!p.is_truncated());
+
+        // 24 字节 TCP 头（data offset = 6，带 4 字节选项）
+        let f2 = eth_ipv4_tcp_frame(1024, 443, 0x18, 1, b"world!");
+        let d2 = decode_frame(&f2).expect("应能解出");
+        assert_eq!(d2.l4_header_len, Some(24));
+        let p2 = l4_payload(&f2, &d2).expect("载荷位置可知");
+        assert_eq!(p2.bytes, b"world!", "选项区长度必须被算进去");
+    }
+
+    #[test]
+    fn l4_offset_accounts_for_vlan_tags() {
+        let base = eth_ipv4_tcp_frame(1024, 443, 0x18, 0, b"x");
+        let mut tagged = base[..12].to_vec();
+        tagged.extend_from_slice(&0x8100u16.to_be_bytes());
+        tagged.extend_from_slice(&[0x00, 0x64]);
+        tagged.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        tagged.extend_from_slice(&base[14..]);
+        let d = decode_frame(&tagged).expect("单层 VLAN 应能解出");
+        assert_eq!(d.l4_offset, 14 + 4 + 20, "VLAN 标签必须计入偏移");
+        assert_eq!(l4_payload(&tagged, &d).unwrap().bytes, b"x");
+    }
+
+    #[test]
+    fn tcp_flags_are_read_from_the_right_place() {
+        // SYN（0x02）
+        let f = eth_ipv4_tcp_frame(1024, 443, 0x02, 0, &[]);
+        let d = decode_frame(&f).expect("应能解出");
+        let fl = tcp_flags(&f, &d).expect("TCP 应能读到标志位");
+        assert!(fl.syn && !fl.ack);
+        assert!(fl.is_syn());
+
+        // SYN+ACK（0x12）与 FIN+ACK（0x11）
+        let f2 = eth_ipv4_tcp_frame(443, 1024, 0x12, 0, &[]);
+        let d2 = decode_frame(&f2).expect("应能解出");
+        assert!(tcp_flags(&f2, &d2).unwrap().is_syn_ack());
+        let f3 = eth_ipv4_tcp_frame(1024, 443, 0x11, 0, &[]);
+        let d3 = decode_frame(&f3).expect("应能解出");
+        let fl3 = tcp_flags(&f3, &d3).unwrap();
+        assert!(fl3.fin && fl3.ack);
+
+        // 非 TCP：不得给出"全零标志位"，那会被下游当成合法取值。
+        let udp = eth_ipv4_udp_frame();
+        let du = decode_frame(&udp).expect("应能解出");
+        assert_eq!(tcp_flags(&udp, &du), None, "非 TCP 必须返回 None");
+    }
+
+    fn eth_ipv4_udp_frame() -> Vec<u8> {
+        let mut udp = Vec::new();
+        udp.extend_from_slice(&53u16.to_be_bytes());
+        udp.extend_from_slice(&53u16.to_be_bytes());
+        udp.extend_from_slice(&8u16.to_be_bytes());
+        udp.extend_from_slice(&0u16.to_be_bytes());
+        let total = 20 + udp.len();
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&(total as u16).to_be_bytes());
+        ip.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 64, IPPROTO_UDP, 0x00, 0x00]);
+        ip.extend_from_slice(&[10, 0, 0, 1]);
+        ip.extend_from_slice(&[10, 0, 0, 2]);
+        ip.extend_from_slice(&udp);
+        let mut frame = vec![0u8; 12];
+        frame.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        frame.extend_from_slice(&ip);
+        frame
+    }
+
+    #[test]
+    fn udp_header_len_is_fixed_eight_and_icmp_has_none() {
+        let f = eth_ipv4_udp_frame();
+        let d = decode_frame(&f).expect("应能解出");
+        assert_eq!(d.l4_header_len, Some(8));
+
+        let mut icmp = ipv4_tcp_frame([10, 0, 0, 1], 0, [10, 0, 0, 2], 0);
+        icmp[23] = IPPROTO_ICMP;
+        let di = decode_frame(&icmp).expect("ICMP 应能解出");
+        assert_eq!(
+            di.l4_header_len, None,
+            "ICMP 头长度随类型变化，不得按 8 猜一个"
+        );
+        assert_eq!(l4_payload(&icmp, &di), None);
+    }
+
+    #[test]
+    fn truncated_capture_reports_unknown_payload_start_instead_of_guessing() {
+        // 截断到连 TCP data offset 都读不到：载荷起点未知。
+        let full = eth_ipv4_tcp_frame(1024, 443, 0x18, 0, b"payload");
+        let short = &full[..14 + 20 + 12]; // 端口(4)+seq(4)+ack(4) 之后就是 data offset
+        let d = decode_frame(short).expect("五元组仍可解出（端口完好吗）");
+        assert_eq!(d.l4_header_len, None, "读不到长度就必须说不知道");
+        assert_eq!(l4_payload(short, &d), None);
+    }
+
+    #[test]
+    fn truncated_payload_is_reported_as_truncated_not_as_short_payload() {
+        let full = eth_ipv4_tcp_frame(1024, 443, 0x18, 0, b"0123456789");
+        let cut = &full[..full.len() - 4]; // 少抓 4 字节
+        let d = decode_frame(cut).expect("应能解出");
+        let p = l4_payload(cut, &d).expect("载荷位置可知");
+        assert_eq!(p.bytes, b"012345");
+        assert_eq!(p.declared_len, 10, "声明长度仍是线上的量");
+        assert!(p.is_truncated(), "短于声明长度必须可判别");
+    }
+
+    #[test]
+    fn tcp_header_len_below_minimum_is_rejected_as_unknown() {
+        let mut f = eth_ipv4_tcp_frame(1024, 443, 0x18, 0, b"x");
+        // data offset = 4（16 字节）< 20：不合法，载荷起点未知。
+        f[14 + 20 + 12] = 0x40;
+        let d = decode_frame(&f).expect("五元组仍可解出");
+        assert_eq!(d.l4_header_len, None);
+        assert_eq!(l4_payload(&f, &d), None);
     }
 }

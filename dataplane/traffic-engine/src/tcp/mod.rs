@@ -113,6 +113,35 @@ impl TcpState {
     }
 }
 
+/// 一次 TCP 观测：状态机唯一需要知道的两件事 —— 标志位与**段载荷长度**。
+///
+/// 为什么不复用 `flow::Packet::payload_len`：那是 **IP 载荷长度（含四层头）**，
+/// 用于字节统计；而事件判定问的是"这个段带数据了吗"。用含头的长度去判，
+/// 一个 20 字节的纯 ACK 会被判成 `Data` —— 握手最后一个 ACK 因此不再走 `Ack`
+/// 分支，`FinWait2`/`CloseWait`/`LastAck` 在真实流量里永远到不了；而最终状态
+/// **看起来仍然正常**（容忍模式下 `Data` 恰好也把连接推到 Established）。
+/// 这类错误不会自己暴露，所以单位由类型 + 参数名钉死，且必须显式构造。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpObservation {
+    pub flags: TcpFlags,
+    /// 四层载荷长度，**不含**四层头（TCP 头不算数据）。
+    pub l4_payload_len: u32,
+}
+
+impl TcpObservation {
+    pub const fn new(flags: TcpFlags, l4_payload_len: u32) -> Self {
+        Self {
+            flags,
+            l4_payload_len,
+        }
+    }
+
+    /// 只有标志位、没有数据的段：纯 ACK / SYN / FIN 都属于这一类。
+    pub const fn no_payload(flags: TcpFlags) -> Self {
+        Self::new(flags, 0)
+    }
+}
+
 /// 状态机输入事件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TcpEvent {
@@ -133,7 +162,12 @@ pub enum TcpEvent {
 }
 
 impl TcpEvent {
-    /// 由标志位与载荷长度判定事件类型。
+    /// 由标志位与**四层载荷长度**判定事件类型。
+    ///
+    /// `l4_payload_len` 是四层载荷长度，**不含四层头** —— 也就是"这个段带数据了吗"。
+    /// 传含头的 IP 载荷长度（纯 ACK 也有 20 字节）会把纯 ACK 判成 `Data`，
+    /// 于是握手最后一个 ACK 不走 `Ack` 分支、`FinWait2`/`CloseWait`/`LastAck`
+    /// 在真实流量里永远到不了，而状态看起来仍然"挺正常"。故参数名里带单位。
     ///
     /// 优先级是**刻意的**，且必须写下来，否则"SYN+FIN 同置"这种畸形/探测报文
     /// 会在不同实现里归到不同事件上：
@@ -141,7 +175,7 @@ impl TcpEvent {
     /// RST 最高：RST 的语义是"立即终止"，同置其它位不改变这个事实。
     /// SYN 高于 FIN：`SYN+FIN` 不是合法握手，但当 SYN 处理能保证它不会把状态机
     /// 推进到一个"已关闭"的假终态（真正要防的是攻击者用一个同置包把连接判死）。
-    pub fn classify(flags: &TcpFlags, payload_len: u32) -> Self {
+    pub fn classify(flags: &TcpFlags, l4_payload_len: u32) -> Self {
         if flags.rst {
             TcpEvent::Rst
         } else if flags.syn && flags.ack {
@@ -150,7 +184,7 @@ impl TcpEvent {
             TcpEvent::Syn
         } else if flags.fin {
             TcpEvent::Fin
-        } else if payload_len > 0 {
+        } else if l4_payload_len > 0 {
             TcpEvent::Data
         } else if flags.ack {
             TcpEvent::Ack
@@ -326,13 +360,15 @@ impl TcpStateMachine {
     }
 
     /// 用一批标志位驱动状态机（便捷入口，等价于 `apply(TcpEvent::classify(..), side)`）。
+    ///
+    /// `l4_payload_len` 同样**不含四层头**，见 `TcpEvent::classify`。
     pub fn apply_flags(
         &mut self,
         flags: &TcpFlags,
-        payload_len: u32,
+        l4_payload_len: u32,
         side: Side,
     ) -> Result<Transition, IllegalTransition> {
-        self.apply(TcpEvent::classify(flags, payload_len), side)
+        self.apply(TcpEvent::classify(flags, l4_payload_len), side)
     }
 
     fn illegal(

@@ -41,6 +41,12 @@ path = "src/bin/dump_abi.rs"
 name = "ring-consume"
 path = "src/bin/ring_consume.rs"
 
+# 离线 pcap 分析入口（CYS-TRF-035）：pcap -> FlowRecord(JSONL)。
+# 它让整条数据链无需采集面/共享内存即可端到端验证，同时是那条链的回归载体。
+[[bin]]
+name = "cythsec-analyze"
+path = "src/bin/analyze.rs"
+
 [dependencies]
 
 # 零第三方依赖，保持最小工程可离线构建、便于工具链验证。

@@ -166,11 +166,26 @@ fed_a="$(field "${FEED_A}" "ring-feed summary" published)"
 got_a="$(field "${CONS_A}" "ring-consume summary" packets)"
 flows_a="$(field "${CONS_A}" "ring-consume summary" flows)"
 fail_a="$(field "${CONS_A}" "ring-consume summary" decode_fail)"
-# 期望值由源数据决定，不由实现决定：5 个报文（4 IPv4 + 1 IPv6），互不相同的五元组共 5 条。
-check "A 生产端发布数" "${fed_a}" "5"
-check "A 消费端收到数" "${got_a}" "5"
-check "A 解出的流条数" "${flows_a}" "5"
-check "A 解码失败数" "${fail_a}" "0"
+
+# 期望值由**源数据**决定，不由实现决定。当前样本集（datasets/pcap/*.pcap）：
+#   sample-ipv4-mixed.pcap   4 个报文 / 4 条方向级五元组
+#   sample-ipv6-tcp.pcap     1 个报文 / 1 条
+#   sample-session-tcp.pcap 18 个报文 / 9 条新增方向级五元组（其中 1 个是非首片分片，
+#                           解不出五元组，必须显式计入解码失败而不是悄悄消失）
+# 注意 session 样本的 ICMP 与 mixed 样本的 ICMP 是**同一个五元组**（同 IP、端口均 0、
+# 同协议），因此两条样本合计只有 1 条 ICMP 正向流 —— 14 = 4 + 1 + 9 正是这样来的。
+#
+# 【这组数字是"活的"】2026-10-04 新增 sample-session-tcp.pcap 后，下面这些断言如期
+# 报红（5 → 23），说明它们真的在被数据检验。改样本集时必须同步更新，并保持上面这种
+# 可逐项复核的分解注释 —— 直接改数字而不写清来源，下一次就没人知道该不该改。
+EXPECTED_FRAMES=23       # 4 + 1 + 18
+EXPECTED_FLOWS=14        # 4 + 1 + 9
+EXPECTED_DECODE_FAIL=1   # session 样本里的非首片分片
+EXPECTED_FRAMES_2X=$((EXPECTED_FRAMES * 2))
+check "A 生产端发布数" "${fed_a}" "${EXPECTED_FRAMES}"
+check "A 消费端收到数" "${got_a}" "${EXPECTED_FRAMES}"
+check "A 解出的流条数" "${flows_a}" "${EXPECTED_FLOWS}"
+check "A 解码失败数" "${fail_a}" "${EXPECTED_DECODE_FAIL}"
 check_same "A 端到端记账一致" "生产端 published" "${fed_a}" "消费端 packets" "${got_a}"
 
 # 区域共享计数与两端各自记账的交叉核对。这一组断言的理由是一次实测：往生产端注入
@@ -181,9 +196,9 @@ check_same "A 生产端本地记账与区域计数一致" "本地 published" "${
 cons_region_pub="$(field "${CONS_A}" "ring-consume region" published)"
 cons_region_con="$(field "${CONS_A}" "ring-consume region" consumed)"
 cons_region_tail="$(field "${CONS_A}" "ring-consume region" tail)"
-check "A 区域 published（Rust 侧读到）" "${cons_region_pub}" "5"
-check "A 区域 consumed（Rust 侧写入）" "${cons_region_con}" "5"
-check "A 区域 tail（Rust 侧写入）" "${cons_region_tail}" "5"
+check "A 区域 published（Rust 侧读到）" "${cons_region_pub}" "${EXPECTED_FRAMES}"
+check "A 区域 consumed（Rust 侧写入）" "${cons_region_con}" "${EXPECTED_FRAMES}"
+check "A 区域 tail（Rust 侧写入）" "${cons_region_tail}" "${EXPECTED_FRAMES}"
 check_same "A 区域 head 两端读数一致" "C++ 侧" "$(field "${FEED_A}" "ring-feed region" head)" \
   "Rust 侧" "$(field "${CONS_A}" "ring-consume region" head)"
 check "A 区域 dropped 应为 0" "$(field "${CONS_A}" "ring-consume region" dropped)" "0"
@@ -205,16 +220,16 @@ if ! "${FEED_BIN}" -q "${SAMPLE_ARGS[@]}" --ring "${RING}" >"${FEED_C}" 2>&1; th
   exit 1
 fi
 head_c="$(field "${FEED_C}" "ring-feed summary" head)"
-check "C 追加后 head" "${head_c}" "10"
+check "C 追加后 head" "${head_c}" "${EXPECTED_FRAMES_2X}"
 # 第二轮灌入前，区域内 consumed 应仍停在上一轮 Rust 消费完的位置：这是「Rust 写的计数
 # 对后来 attach 的 C++ 进程可见」的证据，也是「两端对同一块内存的记账一致」的直接检验。
-check "C 区域 published（C++ 侧读到）" "$(field "${FEED_C}" "ring-feed region" published)" "10"
-check "C 区域 consumed（Rust 上轮写入）" "$(field "${FEED_C}" "ring-feed region" consumed)" "5"
+check "C 区域 published（C++ 侧读到）" "$(field "${FEED_C}" "ring-feed region" published)" "${EXPECTED_FRAMES_2X}"
+check "C 区域 consumed（Rust 上轮写入）" "$(field "${FEED_C}" "ring-feed region" consumed)" "${EXPECTED_FRAMES}"
 CONS_C="${OUT_DIR}/consume-c.txt"
 "${CONSUME_BIN}" --ring "${RING}" >"${CONS_C}" 2>&1 || true
 got_c="$(field "${CONS_C}" "ring-consume summary" packets)"
-check "C 续读到的报数（=第二轮灌入量）" "${got_c}" "5"
-check "C 第二轮后区域 consumed" "$(field "${CONS_C}" "ring-consume region" consumed)" "10"
+check "C 续读到的报数（=第二轮灌入量）" "${got_c}" "${EXPECTED_FRAMES}"
+check "C 第二轮后区域 consumed" "$(field "${CONS_C}" "ring-consume region" consumed)" "${EXPECTED_FRAMES_2X}"
 
 # ---------- D. 显式跳过积压 ----------
 echo "==> [e2e] D. --from-head 应跳过积压、消费 0 条"

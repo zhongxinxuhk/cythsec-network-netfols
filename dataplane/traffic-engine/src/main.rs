@@ -6,7 +6,7 @@
 use traffic_engine::flow::{FlowKey, Packet, IPPROTO_TCP};
 use traffic_engine::reassembly::tcp::TcpFlags;
 use traffic_engine::session::{SessionConfig, SessionManager};
-use traffic_engine::tcp::{Side, TcpState};
+use traffic_engine::tcp::{Side, TcpObservation, TcpState};
 use traffic_engine::{build_info, crate_version};
 
 fn flags(syn: bool, ack: bool, fin: bool, rst: bool) -> TcpFlags {
@@ -47,6 +47,8 @@ fn main() {
     let mut mgr = SessionManager::new(SessionConfig::default());
 
     // 完整握手 + 一次双向传输 + 主动关闭。
+    // 每项是（键, 标志位, 四层载荷长度, 时间戳）。载荷长度**不含** TCP 头：
+    // 纯 ACK 是 0，而不是 20。
     let script: [(FlowKey, TcpFlags, u32, u64); 8] = [
         (forward_key, flags(true, false, false, false), 0, 1_000),
         (backward_key, flags(true, true, false, false), 0, 2_000),
@@ -61,10 +63,11 @@ fn main() {
         mgr.observe(
             &Packet {
                 key,
+                // 字节统计口径：IP 载荷长度（含四层头），因此纯 ACK 记 20 字节。
                 payload_len: len,
                 timestamp_us: ts,
             },
-            Some(&f),
+            Some(&TcpObservation::new(f, len)),
         );
     }
 

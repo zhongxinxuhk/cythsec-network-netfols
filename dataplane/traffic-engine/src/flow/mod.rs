@@ -25,7 +25,7 @@ pub use table::{
 };
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// IANA 协议号。**唯一真源在 `configs/registry/attributes.json` 之外的代码侧常量**，
 /// 因此只允许在这里出现一次；解码器与状态机都从这里取，避免多处各写一份 6/17。
@@ -155,6 +155,18 @@ impl FlowKey {
             src_ip: IpAddr::V4(Ipv4Addr::from(src)),
             src_port: sport,
             dst_ip: IpAddr::V4(Ipv4Addr::from(dst)),
+            dst_port: dport,
+            proto: Proto::from_u8(proto),
+        }
+    }
+
+    /// IPv6 版本。decode 层本来就在手写结构体字面量，把它收成一个构造器：
+    /// 两处都手写时，任何一次字段增删都容易只改一边（另一边仍能编译）。
+    pub fn new_ipv6(src: Ipv6Addr, sport: u16, dst: Ipv6Addr, dport: u16, proto: u8) -> Self {
+        Self {
+            src_ip: IpAddr::V6(src),
+            src_port: sport,
+            dst_ip: IpAddr::V6(dst),
             dst_port: dport,
             proto: Proto::from_u8(proto),
         }

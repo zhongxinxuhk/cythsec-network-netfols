@@ -9,11 +9,19 @@
 // tcp 单独成模块（而不是塞进 session）：连接状态机同时被 **flow::table**（超时档位
 // 要按 Established/Transient 分档）与 **session**（会话状态）使用。放进 session 会让
 // flow 反向依赖 session，形成模块环。
+//
+// feature / record 是数据链的出口：会话聚合完成后压成定长特征（feature），
+// 再序列化成 FlowRecord（record）落盘。两者都不依赖 channel —— 离线 CLI 先用
+// channel 解帧，再把解出的 FlowKey/Packet 喂进来。
 pub mod attributes_gen;
 pub mod channel;
 pub mod dpi;
+pub mod feature;
 pub mod flow;
+pub mod pcapfile;
+pub mod pipeline;
 pub mod reassembly;
+pub mod record;
 pub mod session;
 pub mod tcp;
 

@@ -73,6 +73,9 @@ pub struct IatRing {
     /// 累计推入过的 IAT 个数（含已被覆盖的）。
     count: u64,
     sum_us: u64,
+    /// 平方和。用 u128：u64 的平方和在高包数下会溢出 u64，而溢出后的标准差
+    /// 会算成一个"看起来正常"的小值 —— 这种错最难发现，故不放任它回绕。
+    sum_sq_us: u128,
     min_us: u64,
     max_us: u64,
 }
@@ -86,6 +89,7 @@ impl IatRing {
             len: 0,
             count: 0,
             sum_us: 0,
+            sum_sq_us: 0,
             min_us: 0,
             max_us: 0,
         }
@@ -112,6 +116,7 @@ impl IatRing {
         // sum 用 saturating：一条跑满 10G 的长流其 IAT 总和在 u64 下仍然安全，
         // 但饱和加法保证任何输入都不会回绕成一个小值（回绕会把均值算成 0）。
         self.sum_us = self.sum_us.saturating_add(delta_us);
+        self.sum_sq_us += u128::from(delta_us) * u128::from(delta_us);
         self.count += 1;
     }
 
@@ -146,6 +151,27 @@ impl IatRing {
         }
     }
 
+    /// 全体样本的**总体**标准差，微秒；样本数 < 2 时为 0。
+    ///
+    /// 用总体标准差（除以 n）而非样本标准差（除以 n-1）：这里的样本就是"这条流
+    /// 实际发生的全部包间隔"，不是从更大总体里抽的样，所以没有自由度损失可言。
+    /// 方差用 `E[x²] - E[x]²` 展开式直接算，避免为了求均值再遍历一遍缓冲 ——
+    /// 但要注意该式在数值上可能给出极小负数（浮点误差），故钳到 0。
+    pub fn stddev_us(&self) -> f64 {
+        if self.count < 2 {
+            return 0.0;
+        }
+        let n = self.count as f64;
+        let mean = self.sum_us as f64 / n;
+        let mean_sq = self.sum_sq_us as f64 / n;
+        let var = mean_sq - mean * mean;
+        if var <= 0.0 {
+            0.0
+        } else {
+            var.sqrt()
+        }
+    }
+
     /// 按最旧→最新遍历仍保留的样本。
     pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
         let cap = self.buf.len();
@@ -169,6 +195,7 @@ impl IatRing {
             self.max_us = self.max_us.max(other.max_us);
         }
         self.sum_us = self.sum_us.saturating_add(other.sum_us);
+        self.sum_sq_us += other.sum_sq_us;
         self.count += other.count;
         // 环形缓冲只保留"最近"的语义：合并时以本对象的最近样本为准，
         // 仅在本对象为空时采纳对方的缓冲。
@@ -198,6 +225,8 @@ pub struct FlowStats {
     pub iat: IatRing,
     /// 上一个包的到达时间（`None` 表示还没见过包）。
     last_ts_us: Option<u64>,
+    /// 载荷长度平方和（u128，理由同 `IatRing::sum_sq_us`）。
+    sum_payload_sq: u128,
 }
 
 impl Default for FlowStats {
@@ -211,6 +240,7 @@ impl Default for FlowStats {
             hist: [0; HIST_BUCKETS],
             iat: IatRing::new(DEFAULT_IAT_CAPACITY),
             last_ts_us: None,
+            sum_payload_sq: 0,
         }
     }
 }
@@ -227,6 +257,7 @@ impl FlowStats {
     pub fn observe(&mut self, payload_len: u32, ts_us: u64) {
         self.packets += 1;
         self.bytes += u64::from(payload_len);
+        self.sum_payload_sq += u128::from(payload_len) * u128::from(payload_len);
         match self.min_payload_len {
             Some(m) => self.min_payload_len = Some(m.min(payload_len)),
             None => self.min_payload_len = Some(payload_len),
@@ -256,6 +287,26 @@ impl FlowStats {
         }
     }
 
+    /// 载荷长度的**总体**标准差；包数 < 2 时为 0。
+    ///
+    /// 为什么值得单独留一个方差累加器：均值相同、方差截然不同的两条流
+    /// （定长心跳 vs 大小包混合）在只看均值的规则里完全无法区分，
+    /// 而这正是"是不是隧道/是不是扫描"的关键差别。
+    pub fn stddev_payload_len(&self) -> f64 {
+        if self.packets < 2 {
+            return 0.0;
+        }
+        let n = self.packets as f64;
+        let mean = self.bytes as f64 / n;
+        let mean_sq = self.sum_payload_sq as f64 / n;
+        let var = mean_sq - mean * mean;
+        if var <= 0.0 {
+            0.0
+        } else {
+            var.sqrt()
+        }
+    }
+
     /// 合并另一份摘要（多分片/多 worker 场景）。
     ///
     /// 均值的合并必须按计数加权 —— 直接平均两个均值在两侧包数不同时是错的，
@@ -267,6 +318,7 @@ impl FlowStats {
         }
         self.packets += other.packets;
         self.bytes += other.bytes;
+        self.sum_payload_sq += other.sum_payload_sq;
         self.zero_len_packets += other.zero_len_packets;
         for i in 0..HIST_BUCKETS {
             self.hist[i] += other.hist[i];
@@ -462,5 +514,75 @@ mod tests {
         a.observe(10, 600);
         // 若合并时把 last_ts 取成了较小的 100，这里会算出 500 并把 0 混进样本。
         assert_eq!(a.iat.iter().collect::<Vec<_>>(), vec![100, 100]);
+    }
+
+    // ---- 离散度（手算期望值；不用实现输出当期望） ----
+
+    #[test]
+    fn stddev_payload_len_needs_two_packets_and_matches_hand_computation() {
+        let mut s = FlowStats::default();
+        assert_eq!(s.stddev_payload_len(), 0.0, "没有样本时离散度为 0");
+        s.observe(100, 1);
+        assert_eq!(s.stddev_payload_len(), 0.0, "单样本没有离散度可言");
+        s.observe(300, 2);
+        // 手算：均值 200，方差 ((100-200)² + (300-200)²)/2 = 10000，标准差 100。
+        assert!((s.stddev_payload_len() - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stddev_distinguishes_a_heartbeat_from_a_mixed_flow() {
+        // 均值相同、标准差不同：这正是"只看均值"会漏掉的情形。
+        let mut steady = FlowStats::default();
+        let mut mixed = FlowStats::default();
+        for _ in 0..4 {
+            steady.observe(500, 1);
+        }
+        for len in [0u32, 1000, 400, 600] {
+            mixed.observe(len, 1);
+        }
+        assert_eq!(steady.mean_payload_len(), mixed.mean_payload_len());
+        assert_eq!(steady.stddev_payload_len(), 0.0);
+        // 手算：均值 500，偏差平方 250000+250000+10000+10000 = 520000，/4 = 130000。
+        assert!((mixed.stddev_payload_len() - 130000f64.sqrt()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn merge_sums_variances_instead_of_averaging_them() {
+        let mut a = FlowStats::default();
+        a.observe(100, 1);
+        a.observe(300, 2);
+        let mut b = FlowStats::default();
+        b.observe(400, 3);
+        b.observe(400, 4);
+        assert_eq!(b.stddev_payload_len(), 0.0, "定长流的离散度为 0");
+        a.merge(&b);
+        // 手算：[100,300,400,400] 均值 300，偏差平方 40000+0+10000+10000=60000，
+        // /4 = 15000，标准差 ≈ 122.47448713915891。
+        assert_eq!(a.mean_payload_len(), 300);
+        assert!((a.stddev_payload_len() - 15000f64.sqrt()).abs() < 1e-9);
+        assert!(
+            a.stddev_payload_len() > 0.0,
+            "把两条流的方差各自算完后取平均会得到 0，但合并后的样本确实更离散"
+        );
+    }
+
+    #[test]
+    fn iat_stddev_matches_hand_computation_and_merges() {
+        let mut r = IatRing::new(8);
+        assert_eq!(r.stddev_us(), 0.0);
+        r.push(0);
+        assert_eq!(r.stddev_us(), 0.0, "单样本无离散度");
+        r.push(200);
+        // 手算：均值 100，方差 (100² + 100²)/2 = 10000，标准差 100。
+        assert!((r.stddev_us() - 100.0).abs() < 1e-9);
+
+        let mut other = IatRing::new(8);
+        other.push(1000);
+        r.merge(&other);
+        // 手算：[0,200,1000] 均值 400，方差 (160000+40000+360000)/3 = 186666.67。
+        assert_eq!(r.count(), 3);
+        assert_eq!(r.mean_us(), 400);
+        assert!((r.stddev_us() - (560000f64 / 3.0).sqrt()).abs() < 1e-9);
+        assert!(r.stddev_us() > 100.0, "合并必须把方差并进来而不是取平均");
     }
 }

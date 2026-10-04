@@ -17,7 +17,7 @@ cd "$ROOT"
 usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
-              [--reassembly] [--e2e] [--live] [--help]
+              [--reassembly] [--flows] [--e2e] [--live] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
   --rust         只跑 Rust 测试（cargo test --offline）
@@ -26,6 +26,7 @@ usage() {
   --parity       只跑通道 ABI 跨语言 parity（需同时能构建 C++ 与 Rust）
   --dpi          只跑 DPI 向量的 tshark 第三方交叉核验（需 tshark）
   --reassembly   只跑 TCP 重组向量的 tshark 第三方交叉核验（需 tshark）
+  --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + 反向故障注入（需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --help         显示本帮助
@@ -200,6 +201,31 @@ test_reassembly() {
   return 1
 }
 
+# FlowRecord 的第三方交叉核验（CYS-TRF-005/007/012/027/033/035 的验收口子）。
+#
+# 前两道 tshark 核验盯的是"解析"与"重组"；这一道盯的是**产出的记录**：
+# 会话划分、包数/字节数、方向切换、TCP 末态、发起方、中途接入标记、应用识别。
+# 它是整条数据链（decode → flow → session → feature → record）唯一的外部证据 ——
+# 前面所有 Rust 单测的期望值都是手写的，只能证明"实现符合我的理解"。
+#
+# 另外它**默认带反向故障注入**：把每一项各改坏一次，要求核验器报错。
+# 没有这一步，"绿色的通过"和"绿色的没跑"完全一样（核验器恒返回成功也会绿灯）。
+test_flows() {
+  echo "==> [flows] FlowRecord 第三方交叉核验（tshark）+ 反向故障注入"
+  local rc=0
+  bash scripts/verify/check-flow-records.sh || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    echo "✓ [flows] 交叉核验通过（含反向故障注入全部被检出）"
+    return 0
+  fi
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [flows] 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  echo "✗ [flows] 交叉核验失败" >&2
+  return 1
+}
+
 # 跨语言共享环端到端（CYS-TRF-034）。
 #
 # 与 parity 的区别：parity 比的是**契约取值**（两端对同一份 ABI 的常量理解是否一致），
@@ -227,7 +253,7 @@ test_live() {
 }
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-BUILD_REASSEMBLY=0; BUILD_E2E=0; BUILD_LIVE=0; ALL=1
+BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; ALL=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpp)  BUILD_CPP=1; ALL=0 ;;
@@ -237,6 +263,7 @@ while [[ $# -gt 0 ]]; do
     --parity) BUILD_PARITY=1; ALL=0 ;;
     --dpi) BUILD_DPI=1; ALL=0 ;;
     --reassembly) BUILD_REASSEMBLY=1; ALL=0 ;;
+    --flows) BUILD_FLOWS=1; ALL=0 ;;
     --e2e) BUILD_E2E=1; ALL=0 ;;
     --live) BUILD_LIVE=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
@@ -246,7 +273,7 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ $ALL -eq 1 ]]; then
   BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_DPI=1
-  BUILD_REASSEMBLY=1; BUILD_E2E=1; BUILD_LIVE=1
+  BUILD_REASSEMBLY=1; BUILD_FLOWS=1; BUILD_E2E=1; BUILD_LIVE=1
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
 # 明确报错比静默跳过好 —— 静默跳过会让人以为验过了。
@@ -261,7 +288,7 @@ done
 check_toolchain
 
 # Rust / C++ / 两道 tshark 核验都要消费向量；Go 与前端不消费。
-if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_E2E)) -gt 0 ]]; then
+if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_E2E)) -gt 0 ]]; then
   gen_datasets || { echo "✗ [vectors] 向量生成失败，后续测试不再执行" >&2; exit 1; }
 fi
 
@@ -273,6 +300,7 @@ failed=0
 [[ $BUILD_PARITY -eq 1 ]] && { test_parity || failed=$((failed+1)); }
 [[ $BUILD_DPI -eq 1 ]]    && { test_dpi    || failed=$((failed+1)); }
 [[ $BUILD_REASSEMBLY -eq 1 ]] && { test_reassembly || failed=$((failed+1)); }
+[[ $BUILD_FLOWS -eq 1 ]]  && { test_flows   || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 [[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
 
