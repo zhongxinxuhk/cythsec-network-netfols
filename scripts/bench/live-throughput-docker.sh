@@ -16,6 +16,12 @@
 #   bash scripts/bench/live-throughput-docker.sh [时长秒]
 # 依赖：Docker 可用；镜像 ubuntu:24.04（自动拉取）。
 #
+# 容器出网坑（本机实测）：宿主开 TUN 模式代理时，容器内 DNS 会解析到 fake-ip
+# （172.19.x.x）且直连超时 —— apt 看似「网络不可达」。解法：让容器显式走宿主
+# HTTP 代理（host.docker.internal:PORT，从 scutil --proxy 自动探测；可用
+# CYTHSEC_BENCH_PROXY 覆盖）。代理需监听局域网（允许 LAN）——本机实测成立。
+# 若无代理环境直连即可，探测不到就留空不注入。
+#
 # 诚实口径：
 #   * 容器为 Docker Desktop 虚拟机，**单容器 ≠ 物理省网设备**；本数据证明的是
 #     三种采集机制在同一 CPU 预算下的相对吞吐，不是绝对线速能力。
@@ -31,7 +37,23 @@ if ! docker info >/dev/null 2>&1; then
   exit 4
 fi
 
+# 探测宿主 HTTP 代理（仅 macOS；非代理环境留空 = 容器直连）。
+PROXY_ENV=()
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  P_HOST="$(scutil --proxy 2>/dev/null | awk '$1=="HTTPProxy"{print $3; exit}')"
+  P_PORT="$(scutil --proxy 2>/dev/null | awk '$1=="HTTPPort"{print $3; exit}')"
+  if [[ -n "${CYTHSEC_BENCH_PROXY:-}" ]]; then
+    PROXY_ENV=(-e "http_proxy=${CYTHSEC_BENCH_PROXY}" -e "https_proxy=${CYTHSEC_BENCH_PROXY}")
+  elif [[ "${P_HOST}" == "127.0.0.1" && -n "${P_PORT}" ]]; then
+    PROXY_ENV=(-e "http_proxy=http://host.docker.internal:${P_PORT}"
+               -e "https_proxy=http://host.docker.internal:${P_PORT}"
+               -e "no_proxy=host.docker.internal")
+    echo "（容器出网将经宿主代理 http://host.docker.internal:${P_PORT}）"
+  fi
+fi
+
 docker run --rm --privileged \
+  ${PROXY_ENV[@]+"${PROXY_ENV[@]}"} \
   -v "${ROOT}":/src:ro \
   ubuntu:24.04 \
   env BENCH_DUR="${DUR}" bash -c '
@@ -46,7 +68,7 @@ apt-get install -y -qq --no-install-recommends \
 mkdir -p /work /build
 
 echo "==> [2/5] 构建生产后端 cythsec-capture（Release）"
-cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DCYTHSEC_BUILD_INFERENCE=OFF >/dev/null
 cmake --build /build --target cythsec-capture -j"$(nproc)" >/dev/null
 CAP=/build/dataplane/packet-engine/cythsec-capture
 [[ -x "$CAP" ]] || { echo "✗ 未找到 cythsec-capture 产物"; exit 5; }
@@ -101,7 +123,8 @@ for round in L V P; do
   # /usr/bin/time 的 wall 与内核时间用于观察「同负载下的 CPU 差异」。
   start_load
   { /usr/bin/time -f "bench time round=${round} user=%U sys=%S wall=%e" \
-      "${CMD[@]}" 2>>/work/results.txt; } >>/work/results.txt
+      "${CMD[@]}" 2>>/work/results.txt; } >>/work/results.txt \
+    || echo "WARN round=${round} 采集中途非 0 退出（原始行仍保留在 results.txt）"
   stop_load
   grep -h "packets transmitted" /work/load-*.txt >> /work/results.txt || true
   echo "offered=$(offered_pps) pps(frames) round=${round}" | tee -a /work/results.txt

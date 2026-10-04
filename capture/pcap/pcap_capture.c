@@ -126,8 +126,8 @@ int main(int argc, char** argv) {
 
   printf("bench stats backend=libpcap-live iface=%s packets=%llu bytes=%llu drops=%llu "
          "ifdrops=%llu duration_ms=%lld\n",
-         iface, (unsigned long long)packets, (unsigned long long)bytes,
-         (unsigned long long)drops, (unsigned long long)ifdrops, (long long)dur);
+         iface, (unsigned long long)packets, (unsigned long long)bytes, (unsigned long long)drops,
+         (unsigned long long)ifdrops, (long long)dur);
   if (dump != NULL) {
     pcap_dump_close(dump);
     printf("bench pcap path=%s written=%llu\n", wpath, (unsigned long long)written);

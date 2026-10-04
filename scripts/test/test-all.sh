@@ -116,9 +116,22 @@ test_go() {
 
 test_node() {
   echo "==> [node] web/console: npm ci + npm test"
-  if ! (cd web/console && npm ci); then
-    echo "✗ [node] npm ci 失败（可能需要网络）" >&2
-    return 1
+  # 依赖已在位就不重装：`npm ci` 的第一步是删掉整个 node_modules（含 .bin 下的
+  # 全部 shim），在带批量删除保护的环境里会被拦下，而拦截文案容易被误读成
+  # 「网络不可达」（见 HANDOFF §7.1）。这里把「环境拦截」与「sql 真失败」分开报。
+  if [[ -x web/console/node_modules/.bin/vitest ]]; then
+    echo "  （node_modules 已就位，跳过 npm ci）"
+  else
+    local out
+    if ! out="$(cd web/console && npm ci 2>&1)"; then
+      echo "${out}" >&2
+      if echo "${out}" | grep -q "SAFE_DELETE_BULK_CONFIRM_REQUIRED"; then
+        echo "✗ [node] npm ci 被环境批量删除保护拦截（环境限制，未执行；不是网络问题）" >&2
+      else
+        echo "✗ [node] npm ci 失败" >&2
+      fi
+      return 1
+    fi
   fi
   if ! (cd web/console && npm test); then
     echo "✗ [node] 测试失败" >&2

@@ -161,8 +161,8 @@ int main(int argc, char** argv) {
   }
 
   size_t map_len = (size_t)block_size * block_nr;
-  uint8_t* ring = (uint8_t*)mmap(NULL, map_len, PROT_READ | PROT_WRITE,
-                                 MAP_SHARED | MAP_LOCKED, fd, 0);
+  uint8_t* ring =
+      (uint8_t*)mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED, fd, 0);
   if (ring == MAP_FAILED) {
     ring = (uint8_t*)mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (ring == MAP_FAILED) {
@@ -258,8 +258,8 @@ int main(int argc, char** argv) {
   fclose(out);
   printf("bench stats backend=af-packet-v3 iface=%s packets=%llu bytes=%llu drops=%llu "
          "ifdrops=0 duration_ms=%d\n",
-         iface, (unsigned long long)packets, (unsigned long long)bytes,
-         (unsigned long long)drops, seconds * 1000);
+         iface, (unsigned long long)packets, (unsigned long long)bytes, (unsigned long long)drops,
+         seconds * 1000);
   printf("bench pcap path=%s written=%llu\n", wpath, (unsigned long long)written);
   munmap(ring, map_len);
   close(fd);
