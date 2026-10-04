@@ -210,7 +210,7 @@
 | ☑ | CYS-PKT-006 | pcap 文件后端 | `src/backends/pcap_file.cpp`；libpcap 离线读取，用于回放与离线单测；支持 `-r file.pcap` CLI | 能完整读完 `datasets/pcap/` 样本且计数正确 | CYS-PKT-005 | P0/M |
 | ◐ | CYS-PKT-007 | pcap 实时后端 | libpcap live capture（兼容模式，非零拷贝，作为兜底与对照基线）。**语义偏离需说明**：本机 macOS 无 libpcap（`/usr/lib/libpcap*` 与 SDK 均无），故以**原生 BPF** 实现等价能力 —— `src/backends/bpf_capture.cpp`（`/dev/bpf0..255` 逐个尝试、`BIOCSBLEN` 后**回读实际值**、`BIOCSETIF`/`BIOCIMMEDIATE`/`BIOCPROMISC`、`bpf_hdr` 20 字节与 `BPF_WORDALIGN` 步进）。Linux 侧 libpcap live 仍未开始 | 已达成：macOS 无特权环境 73 项断言全过（含权限类错误的诊断文案与 `setcap`/`sudo` 提示）。**未达成**：macOS 真实抓包（`/dev/bpf*` 属 `root:wheel 600`、本机无免密 sudo），该路径在 e2e 中显式标 `SKIPPED` 而非显绿 | CYS-PKT-006 | P1/S |
 | ◐ | CYS-PKT-008 | AF_PACKET 后端 | `src/backends/af_packet.cpp`；`TPACKET_V3` + `PACKET_MMAP` 环形缓冲、block 超时。**已落地**：运行时 `setsockopt(PACKET_VERSION)` 探测的 V3→V2→`recvfrom` 降级链、`PACKET_RX_RING` 页对齐与整除约束修正、`poll` 等待可读；`configure` 支持 promisc / ignore_outgoing / allow_fallback / 环参数。**未达成**：验收标准要求的「抓包吞吐显著高于 pcap live」尚无实测数据（缺对照基准），且 `PACKET_STATISTICS` 丢包可观测未接 | 已达成：Ubuntu 24.04(6.8) / Rocky Linux 9(5.14) / openEuler 24.03(6.6) 三发行版容器内**零错误零警告**编译（页大小均 4096），容器内真实抓包通过；**2026-10-05 升级为真实主机 + 真实网卡**：Rocky Linux 10.2 aarch64 虚机（`CONFIG_ARM64_4K_PAGES=y`，2 vCPU）`enp2s0` 上 13/13 断言通过（74 包、tshark 74 帧一致、环 74=74、10 条 Flow，见 HANDOFF §2.7）。**未达成**：与 pcap live 的吞吐对比实测 | CYS-PKT-005 | P0/L |
-| ⬜ | CYS-PKT-009 | AF_PACKET 多队列与分流 | `PACKET_FANOUT` 按 RSS/流哈希分流；队列数与 CPU 数对齐 | 多核线性扩展（≥ 0.7 线性度） | CYS-PKT-008 | P1/M |
+| ⬜ | CYS-PKT-009 | AF_PACKET 多队列与分流 | `PACKET_FANOUT` 按 RSS/流哈希分流；队列数与 CPU 数对齐 | 多核线性扩展（≥ 0.7 线性度）。**2026-10-05 补量化理由**：离线路径的并行接线（`CYS-TRF-006`）实测**上限是派发端**（单线程读盘+解帧+分片+入队 = 2.33 Mpps，8 核封顶 2.53×）——「每核一张独立表」能让流表扩展，但只要有单线程派发端，整条流水线就到不了线速。多队列分流的价值因此被量化：它不只是「减少锁竞争」，而是**去掉那个派发端**（每 worker 自己读自己的队列并自己解帧），这也是 10G 总核预算里唯一还缺的一块 | CYS-PKT-008 | P1/M |
 | ⬜ | CYS-PKT-010 | 收包线程 CPU 亲和 | 线程绑核 + `SO_INCOMING_CPU`；避免跨 NUMA 访问 | `perf` 显示无跨核迁移热点 | CYS-PKT-009 | P1/M |
 | ⬜ | CYS-PKT-011 | XDP 程序骨架 | `xdp/xdp_main.c`；`XDP_PASS`/`XDP_DROP` 分流，编译为 `.o` 供 `ip link` 挂载 | 可挂载到 veth 并观测计数 | CYS-PKT-015 | P1/M |
 | ⬜ | CYS-PKT-012 | eBPF map 与用户态交互 | `src/backends/xdp.cpp`；libbpf loader + `BPF_MAP_TYPE_PERCPU_ARRAY` 统计 | 用户态可读内核计数 | CYS-PKT-011 | P1/L |
@@ -269,11 +269,11 @@
 
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ◐ | CYS-TRF-006 | 分片 FlowTable | `crates/flow`：按哈希分片的 `HashMap<FlowKey, FlowEntry>`，分片数与 worker 数对齐，减少锁竞争 **已落地**：`flow::table::FlowTable` 按 FNV-1a 哈希分片（分片数向上取 2 的幂且不超过 `max_flows`），每片独立 `HashMap`（FNV-1a，`BuildHasherDefault`），**确定性顺序由显式排序给出**（`sorted_keys()` / `entries_sorted()` / `into_entries_sorted()`），不依赖哈希表迭代顺序 —— 可复现是门禁前提，但**不是靠改用 BTreeMap 换来的**（早前条目写成 `BTreeMap`，与实现不符，此处更正）。**已量化（CYS-TRF-037）**：1M 条**全新进程同配置**实测 **0.97 KB/条**（槽位 448B + 键表约 50B + IAT 环形缓冲 512B），单线程 insert **2.06** Mops/s、update **5.6** Mops/s、query-hit **5.0** Mops/s、query-miss **13.8** Mops/s。**10G 差距已用实验定位并选定路线（本批）**：单实例稳态 update 6.9~8.6 Mops/s = 需求的 46~58%；**多实例分核实验**（N 张独立表各占一线程）实测 2 核聚合 13.4~15.3 Mops/s（压线）、4 核 22.6~26.2（= 需求的 1.5~1.8 倍，效率 0.71~0.95）、8 核 28.0~34.8（效率 0.42~0.63）。**结论：走"每核一张独立表"，核预算取 4 核/10G 口**；8 线程不再近线性但**不是表内共享瓶颈**（同机纯计算对照也只有 0.54~0.73，故判据用比值：实测 0.55~0.92）。**连带发现**：`FlowTable` 原先不是 `Send`（观察者 `Box<dyn FlowObserver>` + 测试里用 `Rc`），"每核一张表搬进 worker 线程"根本无法表达；已改为 `Box<dyn FlowObserver + Send>` 并加编译期断言。**未达成**：整条每包流水线的核预算（特征/会话等环节各有自己的 14.88 目标，需各自核算）。**本批的结构性取舍**：为把逐出从 O(每分片容量) 降到 O(1)，条目从"内联在 1.14× 过分配的哈希桶里"改为"槽位数组 + 4B 下标"（`Shard { map: FnvMap<FlowKey, u32>, slots: Vec<Slot> }`）—— 换来逐出 O(1)（52µs → 0.34µs @每片8192）、插入快一倍、内存减半（2390 → 970 B/条），代价是命中路径多一次间接寻址（query-hit 7.68 → 5.02 Mops/s，−35%）；update 在噪声内。同机背靠背对比见 `CYS-TRF-037` 条目。 | 1M 并发流插入基准达标 **已达成**：1M 条可容纳（约 1GB）且插入速率 2.06 Mops/s 已达到「新建流速率」目标（1 Mops/s，按 1M 容量 / 60s 瞬态超时推导；**逐包速率不是新建流速率**，拿 14.88 Mpps 去要求插入属于口径错误）。**未达成**：单表每包路径（update/查询）吞吐 —— 路线已定（每核一张独立表，核预算 4 核/10G 口，见左栏），但**尚未接进实际消费路径**（`analyze`/`ring-consume` 仍是单表）。 | CYS-TRF-005 | P0/L |
+| ◐ | CYS-TRF-006 | 分片 FlowTable | `crates/flow`：按哈希分片的 `HashMap<FlowKey, FlowEntry>`，分片数与 worker 数对齐，减少锁竞争 **已落地**：`flow::table::FlowTable` 按 FNV-1a 哈希分片（分片数向上取 2 的幂且不超过 `max_flows`），每片独立 `HashMap`（FNV-1a，`BuildHasherDefault`），**确定性顺序由显式排序给出**（`sorted_keys()` / `entries_sorted()` / `into_entries_sorted()`），不依赖哈希表迭代顺序 —— 可复现是门禁前提，但**不是靠改用 BTreeMap 换来的**（早前条目写成 `BTreeMap`，与实现不符，此处更正）。**已量化（CYS-TRF-037）**：1M 条**全新进程同配置**实测 **0.97 KB/条**（槽位 448B + 键表约 50B + IAT 环形缓冲 512B），单线程 insert **2.06** Mops/s、update **5.6** Mops/s、query-hit **5.0** Mops/s、query-miss **13.8** Mops/s。**10G 差距已用实验定位并选定路线（本批）**：单实例稳态 update 6.9~8.6 Mops/s = 需求的 46~58%；**多实例分核实验**（N 张独立表各占一线程）实测 2 核聚合 13.4~15.3 Mops/s（压线）、4 核 22.6~26.2（= 需求的 1.5~1.8 倍，效率 0.71~0.95）、8 核 28.0~34.8（效率 0.42~0.63）。**结论：走"每核一张独立表"，核预算取 4 核/10G 口**；8 线程不再近线性但**不是表内共享瓶颈**（同机纯计算对照也只有 0.54~0.73，故判据用比值：实测 0.55~0.92）。**连带发现**：`FlowTable` 原先不是 `Send`（观察者 `Box<dyn FlowObserver>` + 测试里用 `Rc`），"每核一张表搬进 worker 线程"根本无法表达；已改为 `Box<dyn FlowObserver + Send>` 并加编译期断言。**2026-10-05 第二段：离线流水线已接线**（`cythsec-analyze --workers N`，详见 `CYS-TRF-035` 与 HANDOFF §2.8）：每 worker 私有流表/会话/特征/DPI 探针（零共享、无锁），`workers=1` 走就地路径保持历史行为逐字不变，`workers>1` 输出与 `workers=1` **逐字节一致**（派发端按首次出现顺序统一分配会话 id）。**整条流水线的总核预算已量出**：91.4 万包/271 MB 上单核 0.918 Mpps，4/8 worker 加速 2.47×/2.53×，**上限是派发端（读盘+解帧+分片+入队）2.33 Mpps**，worker 侧总工作量 0.603 s —— 即 **10G 最坏帧（64B/14.88 Mpps）只覆盖 16%，且这部分差距不能靠加核解决**（16 档已回落）。要线性必须让"读包+解帧"也分掉 → 每队列一环，即 `CYS-PKT-009`。**未达成**：在线路径（`ring-consume`）仍是单表单线程。**本批的结构性取舍**：为把逐出从 O(每分片容量) 降到 O(1)，条目从"内联在 1.14× 过分配的哈希桶里"改为"槽位数组 + 4B 下标"（`Shard { map: FnvMap<FlowKey, u32>, slots: Vec<Slot> }`）—— 换来逐出 O(1)（52µs → 0.34µs @每片8192）、插入快一倍、内存减半（2390 → 970 B/条），代价是命中路径多一次间接寻址（query-hit 7.68 → 5.02 Mops/s，−35%）；update 在噪声内。同机背靠背对比见 `CYS-TRF-037` 条目。 | 1M 并发流插入基准达标 **已达成**：1M 条可容纳（约 1GB）且插入速率 2.06 Mops/s 已达到「新建流速率」目标（1 Mops/s，按 1M 容量 / 60s 瞬态超时推导；**逐包速率不是新建流速率**，拿 14.88 Mpps 去要求插入属于口径错误）。**已达成（2026-10-05 第二段）**：**离线消费路径已接线** —— `cythsec-analyze --workers N`，每 worker 私有表/会话/特征，N>1 与 N=1 输出逐字节一致（`cargo test` 常驻断言）。**未达成**：① 在线消费路径 `ring-consume` 仍是单表单线程（按队列分环属 `CYS-PKT-009`）；② 整条流水线的吞吐上限已量出是**派发端**（2.33 Mpps ≈ 10G 最坏帧的 16%），**加核解决不了**。 | CYS-TRF-005 | P0/L |
 | ◐ | CYS-TRF-007 | 流超时老化 | TCP established / TCP transient / UDP / ICMP / default 五档超时表（可配置） **已落地**：五档超时表（TCP established / TCP transient / UDP / ICMP / default）可配置，`expire(now)` 按档回收并触发 `on_timeout`；`TimeWait` 刻意复用 transient 档（理由在源码：TIME_WAIT 期间几乎不再有包）。**本批修掉一处真实缺陷**：`expire()` 原本把全部到期条目搬进一个 `Vec<FlowEntry>`（每条 432B）排序后派发，临时内存随条目数线性增长；250k 条的「填满→全到期」每轮让进程 RSS 抬升 99MiB 且不保证回落，直接违反本条的「无内存增长」。改为只收**键**（每条 40B）、按全局键序逐条删除并派发后，回调顺序（全局按键升序）与逐出语义不变，RSS 增量降到 +6MiB/轮、超时扫描 1.62 → 2.50 M 条/s；唯一可观察差异是「回调期间表里可能仍留有尚未派发的到期条目」（旧实现先删完再派发），已在源码注明并接受。**已量化（CYS-TRF-037）**：定容 1M 条后灌 5× 容量个包（5M 包）**RSS 增量 0 MiB**；「填满→全部到期」churn 的逐轮 RSS 增量从 **+99 MiB/轮 降到 +6 MiB/轮**（本批修掉 `expire()` 持有的 O(条目数) 临时 `Vec<FlowEntry>`，见左栏描述）。**未达成**：小时级长稳曲线 —— 本批只跑到 12 轮，残余 +6 MiB/轮（分配器不归还小块，逻辑活跃条目恒为 0，非逻辑泄漏），不足以宣称「长稳」。 | 超时流被正确回收；无内存增长 **已达成**：各档超时回收、不误杀活动流的单测；定容灌包 RSS 不增长（0 MiB）；全表到期后 RSS 不再按条目数抬升。**未达成**：小时级长稳观测。 | CYS-TRF-006 | P0/M |
 | ☑ | CYS-TRF-008 | 逐出策略 | 流表容量上限 + LRU/随机逐出，逐出时触发 `on_evict` 回调 **已落地**：容量上限 + 逐出触发 `on_evict`。**本批把逐出从 O(每分片容量) 改成 O(1)（仍是精确 LRU）**：分片内用**槽位数组 + 双向链表**维护活动序（`Shard { map: FnvMap<FlowKey, u32>, slots: Vec<Slot>, free, head, tail }`）—— 插入挂尾、命中移尾、逐出摘头，全是 O(1)，不需要扫描任何候选。旧的全扫实现保留为 `EvictPolicy::LruScan`（对照 + 小表/离线复算用），`EvictPolicy::Lru`（链表）是默认。**复杂度成了可测断言**：`TableStats::evict_candidates` 累计"逐出时考察过的候选数"，单测要求链表策略**恒为 0**、扫描策略恰好 `每片容量 × 逐出次数`。**语义只差一处并已文档化**：时间戳相同时旧实现按最小键打破平局，链表按"谁更晚被访问"（链表本身即全序，且更贴近 LRU 本意）；`list_lru_and_scan_lru_choose_the_same_victims` 在时间戳严格递增的轨迹上断言两种实现的**逐出序列与存活集合完全一致**。**被实测否掉的方案**：Redis 式采样 LRU（K=8）在合成负载上只有 58.4% 热点命中率（精确 LRU 99.9%），省网里"流被逐出又重建"会把同一条会话的记录切成两段 —— 不划算，理由写进 `EvictPolicy` 注释。 | 达到上限时内存稳定 已达成：容量触发 / 逐出选择 / 回调时序单测；`--max-sessions` 生效由 `tests/pipeline_sample.rs::limit_and_session_capacity_are_honoured` 锁定（上限 2 → 逐出 3、留 2 条记录）。**本批新增 9 项单测**：默认策略 = 链表 LRU、链表逐出考察 0 候选、扫描逐出考察整片、链表与扫描逐出序列一致、大分片里逐出全局最老者（采样式会在此失败）、同时间戳按访问序、槽位复用（数组不随累计插入增长）、`clear()` 复位链表且保留容量、热点流命中率 ≥95%。 | CYS-TRF-007 | P0/M |
 | ☑ | CYS-TRF-009 | 流生命周期回调 | `on_new` / `on_update` / `on_evict` / `on_timeout`，供特征与存储消费 **已落地**：`FlowObserver` 四个钩子（`on_new` / `on_update` / `on_evict` / `on_timeout`）。回调只拿 `&FlowEntry`（**不可改流表**）—— 回调里改状态会让门禁结果取决于回调实现，可复现性优先；`NoopObserver` 用来区分「没人订阅」与「显式置空」。 | 回调时序测试通过 已达成：回调时序（新建 → 更新 → 逐出/超时）单测。 | CYS-TRF-008 | P1/M |
-| ☑ | CYS-TRF-010 | 会话 id 分配器 | 单调递增 + 复用池；替换 `Session::new(id, ...)` 的手工传参 **已落地**：`session::SessionIdAllocator`（单调递增 + 复用池，`release` 后最小 id 优先复用）；`Session::new` 不再手工传 id。 | 高并发下无重复 id 已达成：分配 / 释放 / 复用不重复 id 的单测。**未达成**：多线程并发分配（分配器由 `SessionManager` 单线程持有，跨线程语义尚未定义）。 | CYS-TRF-006 | P1/S |
+| ☑ | CYS-TRF-010 | 会话 id 分配器 | 单调递增 + 复用池；替换 `Session::new(id, ...)` 的手工传参 **已落地**：`session::SessionIdAllocator`（单调递增 + 复用池，`release` 后最小 id 优先复用）；`Session::new` 不再手工传 id。 | 高并发下无重复 id 已达成：分配 / 释放 / 复用不重复 id 的单测。**未达成**：多线程并发分配（分配器由 `SessionManager` 单线程持有，跨线程语义尚未定义）。**2026-10-05 部分推进**：离线分片模式把 id 分配**上移到派发端**（worker 侧不需要并发分配器，id 与 worker 数无关，见 HANDOFF §2.8）；但**在线多队列**要"全局唯一 id"还是"每队列独立 id + 队列号前缀"仍未定 —— 前者需要一个跨队列分配器（回到锁），后者会让同一个 id 在不同队列上重复出现。 | CYS-TRF-006 | P1/S |
 | ☑ | CYS-TRF-011 | 会话管理器 | 双向流聚合、反向 key 自动规范化、会话超时与销毁 **已落地**：`session::SessionManager` 双向流聚合成会话、反向键规范化、按 `SessionConfig` 超时销毁；**先见响应、后见 SYN** 也能正确归属（`initiator` 由 SYN 方向决定，而非由首包决定）。 | 乱序到包（先见响应）也能正确归属 已达成：乱序到包归属 / 双向合并 / 超时销毁 / id 复用单测；`--flows` 门禁用 tshark 的会话集合反向核对（多一条、少一条都红）。 | CYS-TRF-010 | P0/M |
 | ☑ | CYS-TRF-012 | TCP 状态机完整版 | SYN、SYN-ACK、ACK、FIN/FIN-ACK、RST、超时、`TIME_WAIT` 简化；替换现有「双向有包即 Established」启发式 **已落地**：`tcp::TcpState` 状态机（SYN / SYN-ACK / ACK / FIN / FIN-ACK / RST / TIME_WAIT 简化），非法迁移计数而不 panic，严格与容忍两模式。**本轮修掉一个真实缺陷**：分流事件原先用 IP 载荷长度（含 20 字节 TCP 头），于是每个纯 ACK 都被判成 `Data`；容忍模式下碰巧仍能走到 `Established`/`TimeWait`（这正是旧测试全绿的原因），严格模式下则停在 `syn_received` 且 `FinWait2`/`CloseWait`/`LastAck` 不可达。已引入 `TcpObservation{flags, l4_payload_len}` 把「段载荷长度（不含头）」与「记账用的 IP 载荷长度」显式分开，并补两个回归测试（纯 ACK 的 20 字节 IP 载荷必须判 `Established`；完整关闭序列必须经 `FinWait2` 到 `TimeWait`）。**未达成**：超时驱动的状态迁移（当前只有流级超时回收）。 | 状态迁移测试覆盖全部合法路径 + 非法路径拒绝 已达成：全部合法路径 + 非法路径拒绝单测（290 个 lib 测试）；`--flows` 门禁用 tshark 的标志位序列**独立重写第二实现**核对末态 / 发起方 / 中途接入，且容忍与严格两模式各核一遍。**未达成**：超时状态迁移。 | CYS-TRF-011 | P0/L |
 | ◐ | CYS-TRF-013 | TCP 状态机可配置 | 超时参数、是否严格模式（容忍丢包环境） **已落地**：`tcp::TcpConfig{strict, ...}` 与 `SessionConfig{table, tcp, max_sessions, id_start}` 全部可配置，`AnalyzeOptions::strict()` 供 CLI 切换。**未达成**：真实丢包环境下的参数标定（没有真实样本，就不给默认值之外的结论）。 | 配置化后行为可测 已达成：严格 / 容忍两模式行为可测（同一份样本，两种期望值都由 tshark 事实推出）。**未达成**：参数标定。 | CYS-TRF-012 | P2/S |
@@ -308,7 +308,7 @@
 | ⬜ | CYS-TRF-032 | 规则 DSL | 简洁规则语法（条件 + 动作），支持热加载 | 规则文件改动后无需重启生效 | CYS-TRF-031 | P2/L |
 | ☑ | CYS-TRF-033 | 输出 FlowRecord schema | 与 `storage/clickhouse` 对齐的列式 schema，含所有特征与评分 **已落地**：`record::FlowRecord`（顶层列 + 特征列 + `schema_version = 1`，`to_json_line` / `write_jsonl`）；任何列 / Schema 变更都必须抬版本号。 | schema 冻结并版本化 已达成：schema 版本化，列名与顺序由 `include_str!` 快照锁定。**未达成**：与 `storage/clickhouse` 建表 DDL 对齐（storage 侧尚未落地）。 | CYS-TRF-027 | P0/M |
 | ◐ | CYS-TRF-034 | 共享内存接入 | 从 `packet-engine` 的共享环消费真实报文（CYS-PKT-024 的消费端）。**已落地**：Rust `src/bin/ring_consume.rs`（attach 既有环 / `--from-head` 跳过积压 / `--expect-*` 断言开关）、`scripts/verify/e2e-shared-ring.sh`（C++ 进程写 → 环 → Rust 进程读并解 Flow，4 阶段 19 项断言，含两端记账与区域计数的交叉核对），已挂入 `test-all.sh --e2e`。**2026-10-05 更新**：真实网卡接入**已在 Linux 侧达成** —— Rocky Linux 10.2 aarch64 测试机上 `enp2s0` 真抓 → pcap → 环 → Rust 解出 10 条 Flow，13/13 断言，且 Rust `decode_fail` 与 tshark 判定一致（HANDOFF §2.7）；**macOS 侧仍未达成**（受 CYS-PKT-007 的 `/dev/bpf*` 权限阻塞）。`xdp/`、`af_xdp/`、`dpdk/` 三个目录仍为空占位 | 已达成：真实 pcap → 共享环 → Flow 端到端（19 项断言）+ **真实网卡 → Flow（Linux 侧，13 项断言）**。待达成：macOS 侧真实网卡 → Flow（受 CYS-PKT-007 阻塞） | CYS-PKT-024 | P0/L |
-| ☑ | CYS-TRF-035 | 离线 pcap 处理 CLI | `cythsec-analyze -r x.pcap -o flows.jsonl`，输出 FlowRecord 流 **已落地**：`src/bin/analyze.rs` → `cythsec-analyze -r x.pcap -o flows.jsonl`（`--strict` / `--limit` / `--inspect-bytes` / `--max-sessions` / `-o -`；统计走 stderr，`-o -` 时 stdout 保持纯净 JSONL）；分析逻辑抽到 `src/pipeline.rs`，CLI 与测试共用同一条路径（否则两边会各错一半）。 | 对 `datasets/pcap/` 全样本可批量处理 已达成：`datasets/pcap/` + `datasets/dpi/` 全部样本可批量处理；`tests/pipeline_sample.rs` 手写期望（18 帧 / 17 解出 / 5 会话）；**新增第三方门禁** `scripts/verify/check-flow-records.sh` —— tshark 独立解析后逐流核对 **927 项**（会话集合 / 包数字节数 / 方向切换 / 首末时间戳 / TCP 末态 / 发起方 / 应用识别 / 解码失败计数 / 统计自证；该核验也吃 DPI 的三份 pcap，故向量 21→32 条后比对项由 725 涨到 927），并默认跑**反向故障注入**（17 项篡改必须全部被检出，「一项都没比对」直接判红），已挂入 `test-all.sh --flows`。 | CYS-TRF-033 | P0/M |
+| ☑ | CYS-TRF-035 | 离线 pcap 处理 CLI | `cythsec-analyze -r x.pcap -o flows.jsonl`，输出 FlowRecord 流 **已落地**：`src/bin/analyze.rs` → `cythsec-analyze -r x.pcap -o flows.jsonl`（`--strict` / `--limit` / `--inspect-bytes` / `--max-sessions` / `--workers N`（**2026-10-05 新增**：每 worker 私有流表/会话/特征，N>1 与 N=1 逐字节一致，统计里报 `workers=` 与每 worker 承担的流数）/ `-o -`；统计走 stderr，`-o -` 时 stdout 保持纯净 JSONL）；分析逻辑抽到 `src/pipeline.rs`，CLI 与测试共用同一条路径（否则两边会各错一半）。 | 对 `datasets/pcap/` 全样本可批量处理 已达成：`datasets/pcap/` + `datasets/dpi/` 全部样本可批量处理；`tests/pipeline_sample.rs` 手写期望（18 帧 / 17 解出 / 5 会话）；**新增第三方门禁** `scripts/verify/check-flow-records.sh` —— tshark 独立解析后逐流核对 **927 项**（会话集合 / 包数字节数 / 方向切换 / 首末时间戳 / TCP 末态 / 发起方 / 应用识别 / 解码失败计数 / 统计自证；该核验也吃 DPI 的三份 pcap，故向量 21→32 条后比对项由 725 涨到 927），并默认跑**反向故障注入**（17 项篡改必须全部被检出，「一项都没比对」直接判红），已挂入 `test-all.sh --flows`。 | CYS-TRF-033 | P0/M |
 | ⬜ | CYS-TRF-036 | 可观测性 | `tracing` + `metrics`：处理速率、丢包、内存占用、各阶段延迟 | 指标可被 telemetryd 抓取 | CYS-TRF-034 | P1/M |
 | ☑ | CYS-TRF-037 | 自研数据面基准（**刻意不用 Criterion**） | 流表插入/查询/逐出/超时、特征更新、TCP 重组、会话归属的吞吐与内存。**已落地**：`dataplane/traffic-engine/src/bin/bench.rs`（二进制 `cythsec-bench`，`--flows/--rounds/--json/--report-only/--require-targets/--target-factor`）+ 门禁 `scripts/verify/check-flow-bench.sh`（挂 `test-all.sh --bench`，含 3 项反向故障注入）。**为什么不引 Criterion**：本工程硬约定是零第三方依赖 + `--offline` 可构建，基准工具不该成为例外；代价是**没有**离群值剔除 / 置信区间 / 跨 commit 自动比对，只报点估计（每项跑两遍、取第二遍，两遍都打印）。 | 基准可跨 commit 对比 **已达成**：目标值**由工作量需求推导**（10Gbps 最坏包速率 14.88 Mpps、1M 条扫描 ≤200ms、10Gbps 净载荷 ≥1.25GB/s），回归下限另设（≥2× 余量）且**默认不进 ALL**（机器相关）。首轮即抓出三处：`expire()` 的 O(n) 临时数组（**已修**，churn RSS +99→+6MiB/轮、扫描 1.62→2.50M 条/s）、`evict_lru` 每次逐出全扫分片 O(每分片容量)（**已修**：分片内双向链表，52µs → 0.34µs@每片8192、1.09µs → 0.21µs@每片256，容量 32× → 耗时 52× 降到 1.6~1.8×，并新增 `stats().evict_candidates` 把复杂度变成断言）、稳态查表够不上 10G。**本批又加 6 项判据（共 19 项）**：4 个线程档位（`table-steady-1/2/4/8t`，每核一张独立表，1.5 万→4 组实测 6.9/13.4~15.3/22.6~26.2/28.0~34.8 Mops/s）、`table-scaling-vs-ceiling`（流表扩展效率 ÷ **同机纯计算对照**的扩展效率，实测 0.55~0.92，目标 0.5「同量级」、下限 0.25）、`table-cores-for-10g`（最小档位使聚合 ≥1.5×14.88Mpps → 实测 **4 核**）。判据用**比值**而不是绝对效率，理由：这台机器 8 线程纯计算对照也只有 0.54~0.73，用绝对效率会把机器上限误报成代码缺陷。**新增第 4 项反向注入**：`--inject-serialized-scaling` 把并行档换成「所有线程抢一张表 + 互斥锁」，要求扩展性判据判红（实测比值 0.06~0.10）—— 单测 `serialized_table_is_flagged_as_not_scaling` 用真表真锁跑同一形态。**本批第 13 项判据**：`table-evict-scale-ratio`（容量 32× 下耗时比必须 ≈1，上限 3×）—— 这是唯一**与机器无关**的判据，换机器后依然能判"是不是又变回 O(cap)"。**另修正一处判据错误**：`table-steady-memory` 原先拿"填充后 → 灌完 5× 容量"作差，把"页第一次被触碰"（1M 条时 +206MiB）算成内存增长；现改为**预热一轮不计入判定**、逐轮记录、取预热后各轮增量的最大值（两版都判 0.00 MiB）。**未达成**：无统计显著性、无自动化跨 commit 历史对比（只能人工比数字）。 | CYS-TRF-027 | P2/M |
 | ⬜ | CYS-TRF-038 | 集成测试 | `crates/*/tests/`：用固定 pcap 样本断言 Flow/Session/特征输出 | 断言快照可更新且受审 | CYS-TRF-035 | P1/M |
@@ -709,13 +709,13 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 ## 6. 统计汇总
 
 <!-- STATS:START -->
-**任务总数：349**（不含 M0 已归档的 11 项）
+**任务总数：350**（不含 M0 已归档的 11 项）
 
 ### 6.1 按里程碑
 
 | 里程碑 | 名称 | 任务数 |
 | --- | --- | --- |
-| M1 | 工程基座加固 | 54 |
+| M1 | 工程基座加固 | 55 |
 | M2 | 数据平面真实收包 | 38 |
 | M3 | 流量分析深化 | 39 |
 | M4 | 控制平面补全 | 45 |
@@ -724,24 +724,24 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 | M7 | ML 与威胁情报 | 37 |
 | M8 | 平台适配与部署 | 28 |
 | M9 | 测试·安全·文档·发布 | 46 |
-| **合计** | — | **349** |
+| **合计** | — | **350** |
 
 ### 6.2 按优先级
 
 | 优先级 | 任务数 | 占比 |
 | --- | --- | --- |
-| P0 | 137 | 39.3% |
-| P1 | 141 | 40.4% |
-| P2 | 61 | 17.5% |
+| P0 | 137 | 39.1% |
+| P1 | 142 | 40.6% |
+| P2 | 61 | 17.4% |
 | P3 | 10 | 2.9% |
 
 ### 6.3 按规模
 
 | 规模 | 任务数 | 占比 |
 | --- | --- | --- |
-| S | 83 | 23.8% |
-| M | 199 | 57.0% |
-| L | 61 | 17.5% |
+| S | 84 | 24.0% |
+| M | 199 | 56.9% |
+| L | 61 | 17.4% |
 | XL | 6 | 1.7% |
 
 ### 6.4 按域
@@ -749,7 +749,7 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 | 域码 | 任务数 |
 | --- | --- |
 | `TRF` | 39 |
-| `INF` | 34 |
+| `INF` | 35 |
 | `PKT` | 31 |
 | `CON` | 28 |
 | `RTD` | 24 |
@@ -773,17 +773,17 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 302 |
-| 进行中 | 14 |
-| 已完成 | 33 |
+| 未开始 | 297 |
+| 进行中 | 12 |
+| 已完成 | 41 |
 
 ### 6.6 里程碑完成度
 
 | 里程碑 | 已完成 | 总数 | 完成率 |
 | --- | --- | --- | --- |
-| M1 | 13 | 54 | 24% |
+| M1 | 19 | 55 | 35% |
 | M2 | 3 | 38 | 8% |
-| M3 | 12 | 39 | 31% |
+| M3 | 14 | 39 | 36% |
 | M4 | 0 | 45 | 0% |
 | M5 | 4 | 24 | 17% |
 | M6 | 1 | 38 | 3% |
@@ -799,6 +799,7 @@ CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──�
 
 | 日期 | 变更 | 说明 |
 | --- | --- | --- |
+| 2026-10-05（第二段） | **把「每核一张独立表」接进消费路径：`cythsec-analyze --workers N`（N>1 与 N=1 输出逐字节一致），并量出整条流水线的上限是派发端** | ① **做了什么**：抽出 `PipelineState`（私有流表+会话+特征+DPI 探针），**每包路径只有一份实现**、就地与分片两条驱动共用；`analyze_pcap_with(reader, opts, workers)` 中 `workers=1` 走就地路径（与历史行为逐字一致、零额外开销）；CLI 加 `--workers N`，统计报 `workers= / worker_flows= / evicted=`。两条关键设计：**分片按 `key.canonical()`**（按原始五元组分片会把一条会话的两个方向拆到两个 worker，各建一套状态 → 记录数翻倍且不报错）、**会话 id 由派发端按首次出现顺序统一分配**（worker 各自编号会冲突且随分片变化）—— 后者是"逐字节一致"的来源。② **量出来**（`bash scripts/verify/bench-pipeline.sh 888000 3`，91.4 万包/271MB，脚本**不做阈值判定**）：单核 0.918 Mpps；2/4/8/16 worker 加速 1.49×/2.47×/**2.53×（上限）**/2.49×。**上限归因**：平台值 0.393 s 就是派发端（读盘+解帧+分片+入队）→ **派发端上限 2.33 Mpps**，worker 侧总工作量 0.603 s ⇒ **离线路径的并行上限是派发端而不是流表**，即 10G 最坏帧（64B/14.88 Mpps）只覆盖 **16%**，且**加核解决不了**；要线性必须让"读包+解帧"也分掉（每队列一环，`CYS-PKT-009`）。③ **一个只有测量才暴露的缺陷**：分片哈希原为 FNV-1a 后直接 `% workers`，而 FNV 的**低位只由最后几个字节决定**、真实流键尾部（目的端口 443、协议号 6）又完全相同 → 低位恒定：20000 条流在 8 个 worker 上只用到 0/4 号，2/4 个 worker 时**全部**落 0 号（`worker_flows=[20000,0,0,0]`）—— **输出完全正确、单测全绿、并行度为零**。修法：取模前加 splitmix64 雪崩混合；测试改为按**真实流量字节布局**（变化在前部）断言**均衡度上下界**（旧测试只断言"8 个分片都被用到"，而它用的键恰好把变化放在别的字节上，所以漏了）。④ **顺带修掉测试自身的一个盲区**：不变量测试原先只做"两条路互相比"，**把同一个错犯在两条路上就看不见**（实测：删掉统计合并整行后仍然相等）→ 补**绝对口径**断言（每个解码成功的包恰好被 observe 一次 = `session.packets == packets_decoded`、会话数 = 记录数、应用分布总数 = 记录数）。⑤ **反向注入**：分片改原始五元组 → 红；去掉派发端定序 → 红；删统计合并一项 → 红（补绝对口径之前是绿的）；三条都实测后还原复核全绿。**已知限制**：分片模式每 worker 各持 `--max-sessions` 额度（总容量 = N×额度），一旦发生逐出各 worker 存活集合本就不同 → 此时"与 `--workers 1` 一致"不再成立（CLI 每次都打印 `evicted=`）；**只是离线路径**接线，在线 `ring-consume` 仍是单表；测量是页缓存热+独占核的单机数字，不能当在线能力 |
 | 2026-10-05 | **接入 Linux aarch64 测试机当"第二台机器"：真机真网卡 13/13 验收，并修掉 3 处换机器才暴露的假红** | ① **为什么做**：此前所有验证只在 macOS/M1 Pro 上跑过，而仓库宣称支持的发行版里有 Rocky Linux ——「本机全绿 ≠ 别的机器能过」是 HANDOFF §7 第 7 条已经吃过一次的亏。把 VMware Fusion 上的 **Rocky Linux 10.2 aarch64 虚机（2 vCPU / 3 GB / `CONFIG_ARM64_4K_PAGES=y`）**接进回路，源码用 `git archive` 同步（**不用** `tar --exclude`：bsdtar 会匹配任意层级同名目录，实测静默丢掉 `scripts/build/build-all.sh` 与 `services/telemetryd/internal/target/*.go`），工具链装成与本机**逐位相同**的 `rustc 1.97.1`。② **结果**：`--rust` **337 项全过**（与本机计数一致）、`--cpp` **6/6**、`--live` **13/13 真实网卡断言**（`enp2s0` 采 74 包、tshark 复核 74 帧 = 落盘数、环内消费 74 = 灌入数、解出 10 条 Flow、Rust `decode_fail` 与 tshark 前缀非 IP 帧数同为 0）→ `CYS-PKT-008` 的证据从"容器内"升级为"真机真网卡"，`CYS-TRF-034` 的 **Linux 侧达成**；`--bench --report-only` 取到跨机数据（1/2/4/8 线程 6.73 / 7.41 / 12.85 / 13.20 Mops/s，比值判据 0.94 仍成立）。③ **修掉 3 处"把本机/平台假设当普遍事实"的假红**（全部加/扩了自证）：`test-all.sh` 的工具链预检不看所选分组（`--rust` 也要求 cmake/go/node，在只有 cargo 的机器上先卡 cmake、装完又卡 go）→ 改为按分组取工具链的纯函数 `required_tools()` + `--self-test` 反向注入（PATH 无 cmake 时 `--rust` 必须通过、`--cpp` 必须点名判红）；`bench.rs` 的串行档断言「效率 < 下限 0.25」在 2 核上是 **0.33**（核太少表达不出抢锁）→ 改为机器无关形态（永远断言串行 < 并行；`ap ≥ 4` 才断言比值下限；另加与核数无关的兜底「串行档顶档聚合 < 该档下限」），两机复验各 13/13；`test_live_capture.cpp` 写死两个平台常量（`0xFFFF` 在 Linux 是具名的 `ARPHRD_VOID`、`kNoSuchIface` 32 字符 > `IF_NAMESIZE`=16 会先命中"接口名过长"分支）→ 改用 `0x10000`（超出 16 位编号空间，期望值由常量算出）与短接口名，两机复验各 6/6。④ **修正一处记错的事实**：该机是 **4 KiB 页**而非 64 KiB，`af_packet.h` 的 PAGE_SIZE 运行时假设仍有覆盖价值，但 **64 KiB 页路径仍无覆盖环境**。④ **顺带修掉一处默认门禁的潜伏假红**：`--live` 的 D 项用 `tshark -e eth.type` 当裁判，而 STP BPDU 是 802.3+LLC 帧（没有 EtherType）→ `eth.type` 为空 → 旧 awk 的 `NF` 过滤把空行整行丢掉 → 裁判少数 6 帧、把「两实现一致判 6、裁判判 0」报成不一致；**只要网内有交换机发 STP，这道默认门禁就长期假红**（本机 en0 实测 6 帧；此前各批「13 项全过」只是因为抓包窗口里恰好没有 LLC 帧，虚拟机那次是 0==0 空过）。改裁判口径为 `frame.protocols`（无 ip/ipv6 即非 IP，抽成 `nonip_count()`），不一致时摊开三方计数与错误码；修后本机 8==8、虚拟机 0==0。并把它做成**每次都会跑的自证**（合成「1 帧 LLC/STP + 1 帧 IPv4」样本，断言裁判只数 1 帧非 IP；反向注入旧口径立刻红 0 != 1），该关口由 13 项变 14 项。**未达成**：该机 2 vCPU 上吞吐类结论不可用（`--bench` 只能 `--report-only`，照阈值跑必红且**不得据其判红**）；macOS 侧真抓包仍需一次免密 sudo 现场 |
 | 2026-10-04 | **稳态吞吐与 10G 的差距：先量再决定 —— 走「每核一张独立表」，核预算 4 核/10G 口（`CYS-TRF-006` 路线定案、`CYS-TRF-037` 加 6 项判据与第 4 项注入）** | ① **先做便宜实验，再决定**（HANDOFF §8 第一梯队第 1 项明确要求「别在没有实验数据的情况下直接重构流表」）：新增「多实例分核实验」—— N 张**完全独立**的 `FlowTable` 各占一线程跑稳态 update，外加两条对照：**纯计算对照**（同线程数、同操作次数、只做寄存器运算，量出**机器本身**的多线程上限）与**小工作集对照**（每实例 2000 条 ≈3MB，能进每核 L2）。实测（M1 Pro / 10 逻辑核 / release / 每实例 12.5 万条）：1 线程 6.9~8.6、2 线程 13.4~15.3（效率 0.82~0.96）、4 线程 22.6~26.2（0.71~0.95）、8 线程 28.0~34.8 Mops/s（0.42~0.63）。② **结论：2 核即压线达标、4 核留 1.5~1.8 倍余量 → 核预算 4 核/10G 口**（判据项 `table-cores-for-10g` 取「最小档位使聚合 ≥1.5×14.88Mpps」，余量留给同核上的特征/会话等环节）；**热/冷字段拆分暂不做**，它是「省核」才需要的优化，而核预算远小于常见机型核数，触发条件（目标机型核预算 < 所需核数，或单表规模再涨一个数量级）已写进 HANDOFF §2.6。③ **8 线程不再近线性，但不是表内的共享瓶颈**：同机纯计算对照同样上不去（0.54~0.73），小工作集对照每线程吞吐只比大工作集高 34~67% 且仍只有自身单线程的 0.4~0.5 倍 → 机器级并发上限是主因、访存是次要因素。判据因此改成**比值**（流表效率 ÷ 对照效率）；把目标贴着实测均值设（0.7~0.8）会让判定在抖动区间里随机翻转，故目标取 0.5（拦的是塌到 0.1 量级的共享瓶颈）、下限 0.25。④ **顺带发现一个结构性前提**：`FlowTable` 原先**不是 `Send`**（观察者 `Box<dyn FlowObserver>`、测试实现用 `Rc`）——「每核一张表搬进 worker 线程」这条路**根本无法表达**（bench 直接编译失败）。改为 `Box<dyn FlowObserver + Send>`（只要 `Send`、不要 `Sync`：表不需要被多线程共享引用），并加编译期断言 `table_is_send_so_it_can_move_to_a_worker_thread`；测试观察者随之从 `Rc<RefCell>` 换成 `Arc<Mutex>`。⑤ **判据的判据**：新增反向注入 `--inject-serialized-scaling`（门禁第 4 项，要求判红且退出非零）+ 单测（真表真锁、真线程）；同时修掉一处我自己引入的阈值错误 —— 8 线程档的回归下限按线性算是 16，**比需求目标 14.88 还严**，会让「未达标」同时被报成「退步」（仓库硬规则：两类阈值不可混用），已把每档下限封顶到需求目标，并由 `floors_are_never_stricter_than_targets` 守住。⑥ **判据总数 13 → 19**（门禁的手写用例数清单同步更新，否则「N 项全过」会因为少跑几项而依然是绿的）；另修一处**测量口径错误**：纯计算对照原先只做与流表同样**次数**的运算（约 0.15ms），与线程启动开销同量级 → 放大 32 倍到同一量级（约 5ms/线程）。⑦ **顺带修正前一批遗留的文档漂移**：HANDOFF §6 里「HTTP 的 UA/状态码/… 未做」「DNS 的 RCODE/EDNS0 未做」两行与「21 条向量」在上一批完成后未回写，已改为已完成（并写明 Content-Length 未登记属性、`dns-negative-garbage` 的 tshark 分歧）。**未达成**：① 多实例尚未接进实际消费路径（`analyze`/`ring-consume` 仍是单表）；② 整条每包流水线的**总**核预算未核算（特征/会话等环节各有 14.88 Mpps 目标，实测 4~7 Mops/s）；③ 2 线程档在压线附近抖动（13.4~15.3 vs 需求 14.88），达标判定会随运行摆动 —— 这是**实测事实**，也是「推荐 3~4 个 worker」的理由。 |
 | 2026-09-14 | 初版建立 | 基于 `eaaa575` 全量代码审查生成；含 20 个域、9 个里程碑、全部任务编号 |

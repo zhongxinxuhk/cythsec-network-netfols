@@ -21,10 +21,12 @@
 // 3. **DTO 只跑首包**，每个方向第一个非空载荷各一次，与 DPI 的定位一致
 //    （不等重组，见 dpi/mod.rs）。把重组结果喂给 DPI 是后续步骤。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
+use std::sync::mpsc;
+use std::thread;
 
-use crate::channel::{decode_frame, l4_payload, tcp_flags};
+use crate::channel::{decode_frame, l4_payload, tcp_flags, DecodedFrame};
 use crate::dpi::{self, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
@@ -82,6 +84,11 @@ pub struct AnalyzeStats {
     /// 会话计数与特征计数不一致的记录数（正常恒为 0）。
     pub counter_mismatches: u64,
     pub sorted_by_key: bool,
+    /// 消费侧并行度（1 = 就地单线程）。
+    pub workers: usize,
+    /// 每个 worker 承担的**记录数**。只报总数看不出「分片有没有倾斜」，
+    /// 而倾斜会让并行度变成摆设（一个 worker 干完所有活）。
+    pub worker_flows: Vec<usize>,
     /// 应用识别结论分布。
     pub app_outcomes: BTreeMap<&'static str, u64>,
     pub session: ManagerStats,
@@ -93,6 +100,392 @@ impl AnalyzeStats {
     pub fn decode_error_count(&self) -> u64 {
         self.decode_errors.values().sum()
     }
+}
+
+/// 分片队列长度：够深以吸收派发抖动，够浅以免整份 pcap 的负载都堆在内存里。
+/// 队列满时派发端会阻塞 —— 这正是我们想要的背压，而不是无界堆积。
+const SHARD_QUEUE_LEN: usize = 256;
+
+/// 已解码的一条记录：派发端解一次帧，worker 直接消费。
+///
+/// 为什么把 `DecodedFrame` 一起带过去：worker 若自己再解一遍，每个包就付两次
+/// 解帧开销 —— 那不是并行，是把同一件活干两遍。
+struct DecodedPacket {
+    data: Vec<u8>,
+    decoded: DecodedFrame,
+    timestamp_us: u64,
+}
+
+/// 每个 worker **私有**的流水线状态。
+///
+/// 静态分片保证同一条会话（双向）只落在一个 worker 上，于是这里不需要任何锁 ——
+/// 「每核一张独立表」（HANDOFF §2.6 定下的路线）要的正是这个形态：流表、会话、
+/// 特征、DPI 探针全部私有，worker 之间零共享。
+struct PipelineState {
+    mgr: SessionManager,
+    features: BTreeMap<FlowKey, FeatureExtractor>,
+    probes: BTreeMap<FlowKey, Probe>,
+    payload_start_unknown: u64,
+}
+
+impl PipelineState {
+    fn new(opts: &AnalyzeOptions) -> Self {
+        Self {
+            mgr: SessionManager::new(opts.session),
+            features: BTreeMap::new(),
+            probes: BTreeMap::new(),
+            payload_start_unknown: 0,
+        }
+    }
+
+    /// 喂一个包。**就地模式与分片模式共用这一条每包路径**：各写一份必然漂移，
+    /// 而漂移的表现是「单线程跑出来的记录与多线程不是一回事」—— 最难发现的那种错。
+    fn observe(&mut self, pkt: &DecodedPacket, opts: &AnalyzeOptions) {
+        let d = &pkt.decoded;
+        let key = d.key.canonical();
+        let payload_view = l4_payload(&pkt.data, d);
+        if payload_view.is_none() {
+            self.payload_start_unknown += 1;
+        }
+        // 状态机要的是**段载荷长度**（不含四层头），字节统计要的是 IP 载荷长度
+        // （含四层头）。这两个数必须分别传：混用会把每个纯 ACK 判成 Data。
+        let seg = tcp_flags(&pkt.data, d).zip(payload_view).map(|(f, p)| {
+            TcpObservation::new(f, u32::try_from(p.declared_len).unwrap_or(u32::MAX))
+        });
+
+        let obs = self.mgr.observe(
+            &Packet {
+                key: d.key,
+                payload_len: d.ip_payload_len,
+                timestamp_us: pkt.timestamp_us,
+            },
+            seg.as_ref(),
+        );
+
+        let payload_bytes: &[u8] = payload_view.map(|p| p.bytes).unwrap_or(&[]);
+        self.features.entry(key).or_default().observe(&FlowSample {
+            side: obs.side,
+            payload_len: d.ip_payload_len,
+            timestamp_us: pkt.timestamp_us,
+            payload: payload_bytes,
+        });
+
+        let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false);
+        let probe = self.probes.entry(key).or_default();
+        if !probe.is_done(obs.side) && !payload_bytes.is_empty() {
+            let n = payload_bytes.len().min(opts.inspect_bytes);
+            let outcome = dpi::identify(&payload_bytes[..n], d.key.proto.number(), d.key.dst_port);
+            // 截断捕获必须导向「还需要更多字节」：我们自己少拷了字节，不能算「不认识」。
+            let info = if truncated && matches!(outcome, Outcome::Unknown) {
+                AppInfo::from_outcome(&Outcome::NeedMore, n)
+            } else {
+                AppInfo::from_outcome(&outcome, n)
+            };
+            *probe.slot(obs.side) = Some(info);
+        }
+    }
+
+    /// 产出记录，并把**属于本 worker** 的统计（会话/特征/应用分布）累加进 `stats`。
+    /// 派发端的统计（读包数、解帧数、截断数、解码错误）不在这里，由派发循环直接记。
+    fn finish(self, stats: &mut AnalyzeStats) -> Vec<FlowRecord> {
+        let sessions = self.mgr.sessions_sorted();
+        let mut records: Vec<FlowRecord> = Vec::with_capacity(sessions.len());
+        for s in sessions {
+            let fv = self
+                .features
+                .get(&s.key)
+                .map(|e| e.vector())
+                .unwrap_or_else(|| FeatureExtractor::default().vector());
+            // 内部互证：会话计数与特征计数必须一致（两条路径喂的是同一串包）。
+            if fv.get(crate::feature::idx::PACKETS) != s.packets as f64
+                || fv.get(crate::feature::idx::BYTES) != s.bytes as f64
+            {
+                stats.counter_mismatches += 1;
+            }
+            if !fv.is_finite() {
+                stats.non_finite_vectors += 1;
+            }
+            let app = self
+                .probes
+                .get(&s.key)
+                .map(|p| p.resolve())
+                .unwrap_or_else(AppInfo::not_inspected);
+            *stats.app_outcomes.entry(app.outcome).or_insert(0) += 1;
+            records.push(FlowRecord {
+                schema_version: RECORD_SCHEMA_VERSION,
+                session_id: s.id,
+                key: s.key,
+                tcp_state: if s.is_tcp() {
+                    Some(s.tcp_state())
+                } else {
+                    None
+                },
+                initiator: s.initiator(),
+                adopted_midstream: s.adopted_midstream(),
+                illegal_tcp_events: s.tcp.illegal_events(),
+                first_seen_us: s.first_seen_us,
+                last_seen_us: s.last_seen_us,
+                packets: s.packets,
+                bytes: s.bytes,
+                direction_switches: s.direction_switches,
+                features: fv,
+                app,
+                risk_score: None,
+            });
+        }
+        stats.payload_start_unknown += self.payload_start_unknown;
+        add_manager_stats(&mut stats.session, &self.mgr.stats());
+        stats.records = records.len();
+        records
+    }
+}
+
+/// FNV-1a 的一步。自实现而不用 `DefaultHasher`：后者的输出不保证跨版本稳定，
+/// 而分片结果一旦随时间漂移，「这条流当时落在哪个 worker」就对不上号了。
+fn fnv1a_step(h: u64, b: u8) -> u64 {
+    (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+}
+
+/// splitmix64 的收尾混合。
+///
+/// 为什么必须有这一步（这不是"更保险一点"）：**FNV-1a 的低位只取决于最后几个字节**
+/// —— 乘法不会把高位信息带进低位。而真实流量的流键尾部（目的端口、协议号）在同一批
+/// 流量里往往完全相同，于是 `h % workers` 取到的低位恒定，全部流挤到一个 worker 上。
+/// 实测：20000 条流、8 个 worker 时只用到了 0 号和 4 号（`h % 4` 恒为 0），
+/// 2/4 个 worker 时**全部**落在 0 号 —— 并行度是零，而输出仍然"正确"。
+/// 这个 bug 是吞吐测量（每个 worker 承担多少条流）暴露的，当时的分布测试是绿的。
+fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// 流键 → 分片号。**必须传 `canonical()` 过的键**：按原始五元组算，会把一条会话的
+/// 两个方向分到不同 worker，于是各自只看到半条会话 —— 记录数翻倍而没有任何报错。
+fn shard_of(key: &FlowKey, workers: usize) -> usize {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h = fnv1a_step(h, *b);
+        }
+    };
+    match key.src_ip {
+        std::net::IpAddr::V4(a) => {
+            feed(&[4]);
+            feed(&a.octets());
+        }
+        std::net::IpAddr::V6(a) => {
+            feed(&[6]);
+            feed(&a.octets());
+        }
+    }
+    feed(&key.src_port.to_be_bytes());
+    match key.dst_ip {
+        std::net::IpAddr::V4(a) => {
+            feed(&[4]);
+            feed(&a.octets());
+        }
+        std::net::IpAddr::V6(a) => {
+            feed(&[6]);
+            feed(&a.octets());
+        }
+    }
+    feed(&key.dst_port.to_be_bytes());
+    feed(&[key.proto.number()]);
+    (mix64(h) % workers as u64) as usize
+}
+
+/// 会话统计逐项相加。**必须逐项**：漏一项的表现是那项指标悄悄比单线程运行小
+/// （例如 12 次非法 TCP 迁移只报了 3 次），而总数看起来完全正常。
+fn add_manager_stats(dst: &mut ManagerStats, src: &ManagerStats) {
+    dst.packets += src.packets;
+    dst.sessions_created += src.sessions_created;
+    dst.sessions_expired += src.sessions_expired;
+    dst.sessions_evicted += src.sessions_evicted;
+    dst.illegal_tcp_events += src.illegal_tcp_events;
+    dst.dropped_no_id += src.dropped_no_id;
+}
+
+/// 把 worker 的局部统计并入总统计（派发端自己的那几项不在这里）。
+fn merge_worker_stats(dst: &mut AnalyzeStats, src: &AnalyzeStats) {
+    dst.payload_start_unknown += src.payload_start_unknown;
+    dst.non_finite_vectors += src.non_finite_vectors;
+    dst.counter_mismatches += src.counter_mismatches;
+    for (k, v) in &src.app_outcomes {
+        *dst.app_outcomes.entry(*k).or_insert(0) += *v;
+    }
+    add_manager_stats(&mut dst.session, &src.session);
+}
+
+fn new_stats<R: Read>(reader: &PcapReader<R>, workers: usize) -> AnalyzeStats {
+    AnalyzeStats {
+        linktype: reader.linktype(),
+        linktype_name: reader.header().linktype_name(),
+        workers,
+        ..Default::default()
+    }
+}
+
+/// 收尾：定 `records`/`sorted_by_key`，并跑那几条「输出不可信」的硬条件。
+/// 单线程与分片两条路都走这里 —— 自检只有一份，才不会被绕过。
+fn finalize(
+    records: Vec<FlowRecord>,
+    mut stats: AnalyzeStats,
+) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
+    stats.records = records.len();
+    stats.sorted_by_key = records.windows(2).all(|w| w[0].key <= w[1].key);
+
+    let mut problems: Vec<String> = Vec::new();
+    if stats.non_finite_vectors != 0 {
+        problems.push(format!(
+            "{} 条记录的特征向量含非有限值",
+            stats.non_finite_vectors
+        ));
+    }
+    if stats.counter_mismatches != 0 {
+        problems.push(format!(
+            "{} 条记录的会话计数与特征计数不一致",
+            stats.counter_mismatches
+        ));
+    }
+    if !stats.sorted_by_key {
+        problems.push("输出未按会话键排序（不可复现）".to_string());
+    }
+    if !problems.is_empty() {
+        return Err(problems.join("；"));
+    }
+    Ok((records, stats))
+}
+
+/// 就地（单线程）驱动：与历史行为**逐字一致** —— 顺序、会话 id、统计口径都不变。
+fn drive_inline<R: Read>(
+    mut reader: PcapReader<R>,
+    opts: &AnalyzeOptions,
+) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
+    let mut stats = new_stats(&reader, 1);
+    let mut state = PipelineState::new(opts);
+    loop {
+        let rec = match reader.next_record() {
+            Ok(Some(r)) => r,
+            Ok(None) => break,
+            Err(e) => return Err(format!("读第 {} 条记录失败：{e}", stats.packets_read + 1)),
+        };
+        stats.packets_read += 1;
+        if rec.is_truncated() {
+            stats.truncated_captures += 1;
+        }
+        let decoded = match decode_frame(&rec.data) {
+            Ok(d) => d,
+            Err(e) => {
+                // 解码失败**不中断**：省网抓包里畸形帧与非首片分片是常态。
+                *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                continue;
+            }
+        };
+        stats.packets_decoded += 1;
+        state.observe(
+            &DecodedPacket {
+                data: rec.data,
+                decoded,
+                timestamp_us: rec.timestamp_us,
+            },
+            opts,
+        );
+    }
+    let records = state.finish(&mut stats);
+    stats.worker_flows = vec![records.len()];
+    finalize(records, stats)
+}
+
+/// 分片驱动：派发端（本线程）读盘 + 解帧 + **定序** + 按流键分片，
+/// `workers` 个 worker 各自持有私有状态、彼此零共享。
+fn drive_sharded<R: Read>(
+    mut reader: PcapReader<R>,
+    opts: &AnalyzeOptions,
+    workers: usize,
+) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
+    let mut stats = new_stats(&reader, workers);
+    let mut senders = Vec::with_capacity(workers);
+    let mut handles = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let (tx, rx) = mpsc::sync_channel::<DecodedPacket>(SHARD_QUEUE_LEN);
+        senders.push(tx);
+        let opts = opts.clone();
+        handles.push(thread::spawn(move || {
+            let mut state = PipelineState::new(&opts);
+            while let Ok(pkt) = rx.recv() {
+                state.observe(&pkt, &opts);
+            }
+            let mut wstats = AnalyzeStats::default();
+            let records = state.finish(&mut wstats);
+            (records, wstats)
+        }));
+    }
+
+    // ---- 派发 ----
+    // 会话 id 在这里分配（按**首次出现顺序**），而不是让各 worker 自己编号：
+    // worker 各自的计数器会互相冲突，编号还会随分片结果变化。派发端看到的是
+    // 同一个包流，所以它分出来的 id 与 worker 数无关。
+    let mut ids: HashMap<FlowKey, u64> = HashMap::new();
+    let mut next_id: u64 = 1;
+    loop {
+        let rec = match reader.next_record() {
+            Ok(Some(r)) => r,
+            Ok(None) => break,
+            Err(e) => return Err(format!("读第 {} 条记录失败：{e}", stats.packets_read + 1)),
+        };
+        stats.packets_read += 1;
+        if rec.is_truncated() {
+            stats.truncated_captures += 1;
+        }
+        let decoded = match decode_frame(&rec.data) {
+            Ok(d) => d,
+            Err(e) => {
+                *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                continue;
+            }
+        };
+        stats.packets_decoded += 1;
+        let key = decoded.key.canonical();
+        if !ids.contains_key(&key) {
+            ids.insert(key, next_id);
+            next_id += 1;
+        }
+        let shard = shard_of(&key, workers);
+        senders[shard]
+            .send(DecodedPacket {
+                data: rec.data,
+                decoded,
+                timestamp_us: rec.timestamp_us,
+            })
+            .map_err(|_| "内部错误：分片 worker 在派发完成前退出".to_string())?;
+    }
+    drop(senders);
+
+    // ---- 收拢 ----
+    let mut records: Vec<FlowRecord> = Vec::new();
+    for h in handles {
+        let (mut rs, wstats) = h
+            .join()
+            .map_err(|_| "内部错误：分片 worker panic".to_string())?;
+        stats.worker_flows.push(wstats.records);
+        merge_worker_stats(&mut stats, &wstats);
+        records.append(&mut rs);
+    }
+    // 与单线程同一个排序口径：按规范键升序（`sessions_sorted` 用的也是它）。
+    records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    for r in records.iter_mut() {
+        match ids.get(&r.key) {
+            Some(id) => r.session_id = *id,
+            None => {
+                return Err(format!(
+                    "内部错误：会话键 {:?} 没有在派发端登记（分片与记录装配不一致）",
+                    r.key
+                ))
+            }
+        }
+    }
+    finalize(records, stats)
 }
 
 /// 每个会话的 DPI 探针：只对每个方向的**第一个非空载荷**做一次识别。
@@ -146,163 +539,46 @@ pub fn analyze_pcap<R: Read>(
     reader: R,
     opts: &AnalyzeOptions,
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
-    let mut reader = PcapReader::new(reader).map_err(|e| format!("解析 pcap 头失败：{e}"))?;
-    let mut stats = AnalyzeStats {
-        linktype: reader.linktype(),
-        linktype_name: reader.header().linktype_name(),
-        ..Default::default()
-    };
+    analyze_pcap_with(reader, opts, 1)
+}
+
+/// 带并行度的入口。
+///
+/// `workers <= 1` 走**就地**路径（与历史行为逐字一致）；`workers > 1` 走静态分片
+/// 路径：派发端单线程读盘/解帧，worker 各自持有私有的流表、会话、特征与 DPI 探针。
+///
+/// 两条必须写下来的约束（否则下一个人会把它们当成实现细节而改回去）：
+///
+/// 1. **分片按 `key.canonical()`**（方向无关）。按原始五元组分片会把一条会话的
+///    两个方向分到不同 worker，于是各自只看到半条会话 —— 记录数翻倍而没人报错。
+/// 2. **`workers > 1` 时会话 id 由派发端按「首次出现顺序」统一分配**，与 worker 数
+///    无关；本模式**每个 worker 各自持有 `max_sessions` 额度**（总容量 = N × 上限）。
+///    因此前提是容量充足：一旦发生逐出或 id 耗尽，各 worker 的存活集合本就会不同，
+///    此时「与 `--workers 1` 输出一致」不再成立（`workers = 1` 保持历史语义不变）。
+///
+/// 派发端是这条路的**上限**：读盘 + 解帧 + 分片 + 入队都在它身上，因此离线路径的
+/// 加速比不可能等于核数。真正要线性的是按队列分环（每个 worker 一个环，CYS-PKT-009），
+/// 那时连派发端都不需要。
+pub fn analyze_pcap_with<R: Read>(
+    reader: R,
+    opts: &AnalyzeOptions,
+    workers: usize,
+) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
+    let workers = workers.max(1);
+    let reader = PcapReader::new(reader).map_err(|e| format!("解析 pcap 头失败：{e}"))?;
     if reader.linktype() != LINKTYPE_ETHERNET {
         return Err(format!(
             "链路层类型 {}（{}）暂不支持，本流水线按以太帧解码；\
              可先转换：`tshark -F pcap -r in -w out.pcap`（或 editcap -T ether）",
-            stats.linktype, stats.linktype_name
+            reader.linktype(),
+            reader.header().linktype_name()
         ));
     }
-
-    let mut mgr = SessionManager::new(opts.session);
-    let mut features: BTreeMap<FlowKey, FeatureExtractor> = BTreeMap::new();
-    let mut probes: BTreeMap<FlowKey, Probe> = BTreeMap::new();
-
-    loop {
-        let rec = match reader.next_record() {
-            Ok(Some(r)) => r,
-            Ok(None) => break,
-            Err(e) => return Err(format!("读第 {} 条记录失败：{e}", stats.packets_read + 1)),
-        };
-        stats.packets_read += 1;
-        if rec.is_truncated() {
-            stats.truncated_captures += 1;
-        }
-        let d = match decode_frame(&rec.data) {
-            Ok(d) => d,
-            Err(e) => {
-                // 解码失败**不中断**：省网抓包里畸形帧与非首片分片是常态，
-                // 一个坏帧就让整份分析停摆，等于把"能分析"降级成"不能分析"。
-                *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
-                continue;
-            }
-        };
-        stats.packets_decoded += 1;
-
-        let key = d.key.canonical();
-        let payload_view = l4_payload(&rec.data, &d);
-        if payload_view.is_none() {
-            stats.payload_start_unknown += 1;
-        }
-        // 状态机要的是**段载荷长度**（不含四层头），字节统计要的是 IP 载荷长度
-        // （含四层头）。这两个数必须分别传：混用会把每个纯 ACK 判成 Data，
-        // 于是握手最后一个 ACK 不再走 Ack 分支（见 TcpObservation 的说明）。
-        // 用 declared_len（线上声明的长度）而不是捕获到的字节数：载荷被 snaplen
-        // 截断的包在线上仍然带了数据，不能因为自己少拷了字节就当成空的。
-        let seg = tcp_flags(&rec.data, &d).zip(payload_view).map(|(f, p)| {
-            TcpObservation::new(f, u32::try_from(p.declared_len).unwrap_or(u32::MAX))
-        });
-
-        let obs = mgr.observe(
-            &Packet {
-                key: d.key,
-                payload_len: d.ip_payload_len,
-                timestamp_us: rec.timestamp_us,
-            },
-            seg.as_ref(),
-        );
-
-        let payload_bytes: &[u8] = payload_view.map(|p| p.bytes).unwrap_or(&[]);
-        features.entry(key).or_default().observe(&FlowSample {
-            side: obs.side,
-            payload_len: d.ip_payload_len,
-            timestamp_us: rec.timestamp_us,
-            payload: payload_bytes,
-        });
-
-        let probe = probes.entry(key).or_default();
-        if !probe.is_done(obs.side) && !payload_bytes.is_empty() {
-            let n = payload_bytes.len().min(opts.inspect_bytes);
-            let outcome = dpi::identify(&payload_bytes[..n], d.key.proto.number(), d.key.dst_port);
-            // 截断捕获必须导向"还需要更多字节"：我们自己少拷了字节，不能算"不认识"。
-            let info = if payload_view.map(|p| p.is_truncated()).unwrap_or(false)
-                && matches!(outcome, Outcome::Unknown)
-            {
-                AppInfo::from_outcome(&Outcome::NeedMore, n)
-            } else {
-                AppInfo::from_outcome(&outcome, n)
-            };
-            *probe.slot(obs.side) = Some(info);
-        }
+    if workers == 1 {
+        drive_inline(reader, opts)
+    } else {
+        drive_sharded(reader, opts, workers)
     }
-
-    // ---- 产出记录 ----
-    let sessions = mgr.sessions_sorted();
-    let mut records: Vec<FlowRecord> = Vec::with_capacity(sessions.len());
-    for s in sessions {
-        let fv = features
-            .get(&s.key)
-            .map(|e| e.vector())
-            .unwrap_or_else(|| FeatureExtractor::default().vector());
-        // 内部互证：会话计数与特征计数必须一致（两条路径喂的是同一串包）。
-        // 不一致说明有包只进了其中一条路 —— 这种错不会自己冒出来，必须显式检查。
-        if fv.get(crate::feature::idx::PACKETS) != s.packets as f64
-            || fv.get(crate::feature::idx::BYTES) != s.bytes as f64
-        {
-            stats.counter_mismatches += 1;
-        }
-        if !fv.is_finite() {
-            stats.non_finite_vectors += 1;
-        }
-        let app = probes
-            .get(&s.key)
-            .map(|p| p.resolve())
-            .unwrap_or_else(AppInfo::not_inspected);
-        *stats.app_outcomes.entry(app.outcome).or_insert(0) += 1;
-        records.push(FlowRecord {
-            schema_version: RECORD_SCHEMA_VERSION,
-            session_id: s.id,
-            key: s.key,
-            // 非 TCP 没有连接状态：写 None，而不是拿 Closed 冒充。
-            tcp_state: if s.is_tcp() {
-                Some(s.tcp_state())
-            } else {
-                None
-            },
-            initiator: s.initiator(),
-            adopted_midstream: s.adopted_midstream(),
-            illegal_tcp_events: s.tcp.illegal_events(),
-            first_seen_us: s.first_seen_us,
-            last_seen_us: s.last_seen_us,
-            packets: s.packets,
-            bytes: s.bytes,
-            direction_switches: s.direction_switches,
-            features: fv,
-            app,
-            risk_score: None,
-        });
-    }
-    stats.records = records.len();
-    stats.sorted_by_key = records.windows(2).all(|w| w[0].key <= w[1].key);
-    stats.session = mgr.stats();
-
-    // ---- 自检：不满足就让调用方看到失败，而不是给出一份"看起来成功"的输出 ----
-    let mut problems: Vec<String> = Vec::new();
-    if stats.non_finite_vectors != 0 {
-        problems.push(format!(
-            "{} 条记录的特征向量含非有限值",
-            stats.non_finite_vectors
-        ));
-    }
-    if stats.counter_mismatches != 0 {
-        problems.push(format!(
-            "{} 条记录的会话计数与特征计数不一致",
-            stats.counter_mismatches
-        ));
-    }
-    if !stats.sorted_by_key {
-        problems.push("输出未按会话键排序（不可复现）".to_string());
-    }
-    if !problems.is_empty() {
-        return Err(problems.join("；"));
-    }
-    Ok((records, stats))
 }
 
 #[cfg(test)]
@@ -327,6 +603,282 @@ mod tests {
             out.extend_from_slice(f);
         }
         out
+    }
+
+    /// 一条 IPv4/TCP 帧（20 字节 TCP 头，无选项）。IP 校验和不参与解码，留 0。
+    fn tcp_frame(
+        src: [u8; 4],
+        dst: [u8; 4],
+        sport: u16,
+        dport: u16,
+        flags: u8,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&sport.to_be_bytes());
+        tcp.extend_from_slice(&dport.to_be_bytes());
+        tcp.extend_from_slice(&[0, 0, 0, 1]); // seq
+        tcp.extend_from_slice(&[0, 0, 0, 0]); // ack
+        tcp.push(5 << 4); // data offset = 5 words
+        tcp.push(flags);
+        tcp.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]); // window / checksum / urgent
+        tcp.extend_from_slice(payload);
+        l3_frame(src, dst, 6, &tcp)
+    }
+
+    /// 一条 IPv4/UDP 帧。
+    fn udp_frame(src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
+        let mut udp = Vec::new();
+        udp.extend_from_slice(&sport.to_be_bytes());
+        udp.extend_from_slice(&dport.to_be_bytes());
+        udp.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+        udp.extend_from_slice(&[0, 0]); // checksum
+        udp.extend_from_slice(payload);
+        l3_frame(src, dst, 17, &udp)
+    }
+
+    fn l3_frame(src: [u8; 4], dst: [u8; 4], proto: u8, l4: &[u8]) -> Vec<u8> {
+        let total = 20 + l4.len();
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&(total as u16).to_be_bytes());
+        ip.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 64, proto, 0x00, 0x00]);
+        ip.extend_from_slice(&src);
+        ip.extend_from_slice(&dst);
+        ip.extend_from_slice(l4);
+        let mut frame = vec![0u8; 12]; // MAC
+        frame.extend_from_slice(&0x0800u16.to_be_bytes());
+        frame.extend_from_slice(&ip);
+        frame
+    }
+
+    /// `flows` 条完整握手的 TCP 流 + 1 条中途接入的 TCP 流 + 1 条 UDP 流 + 1 个畸形帧。
+    ///
+    /// 为什么要这么多流：分片并行只在「有活可分」时才被真正检验 ——
+    /// 一个两包的 pcap 无论几个 worker 都会得出同一条记录，那样的测试什么都没验。
+    fn multi_flow_pcap(flows: u16) -> Vec<u8> {
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        for i in 0..flows {
+            let c = [10, 0, (i / 256) as u8, (i % 256) as u8];
+            let srv = [10, 1, 0, 1];
+            let sport = 20_000 + i;
+            frames.push(tcp_frame(c, srv, sport, 443, 0x02, &[])); // SYN
+            frames.push(tcp_frame(srv, c, 443, sport, 0x12, &[])); // SYN-ACK
+            frames.push(tcp_frame(
+                c,
+                srv,
+                sport,
+                443,
+                0x18,
+                b"GET / HTTP/1.1\r\nHost: x\r\n\r\n",
+            ));
+            frames.push(tcp_frame(
+                srv,
+                c,
+                443,
+                sport,
+                0x18,
+                b"HTTP/1.1 200 OK\r\n\r\n",
+            ));
+            frames.push(tcp_frame(c, srv, sport, 443, 0x11, &[])); // FIN
+        }
+        // 中途接入（没见过握手）：产出 adopted_midstream 的记录
+        frames.push(tcp_frame(
+            [10, 2, 0, 1],
+            [10, 1, 0, 2],
+            33_333,
+            80,
+            0x18,
+            b"mid",
+        ));
+        // 非 TCP：会话状态必须是 None 而不是 Closed
+        frames.push(udp_frame(
+            [10, 3, 0, 1],
+            [10, 3, 0, 2],
+            5_000,
+            53,
+            b"\x00\x01\x01\x00",
+        ));
+        // 解不出帧的垃圾：解码失败要计入派发端统计，且不能打断派发
+        frames.push(vec![0u8; 10]);
+        tiny_pcap(LINKTYPE_ETHERNET, &frames)
+    }
+
+    fn jsonl(records: &[FlowRecord]) -> String {
+        let mut out = Vec::new();
+        crate::record::write_jsonl(&mut out, records).expect("写 JSONL 失败");
+        String::from_utf8(out).expect("JSONL 必须是 UTF-8")
+    }
+
+    /// **本轮改动的核心不变量**：worker 数不改变输出 —— 一条记录、一个字节都不变。
+    ///
+    /// 这条测试是「每核一张独立表」敢接进消费路径的前提：分片只允许改变**谁算的**，
+    /// 不允许改变**算出来的东西**。它同时覆盖了方向分片（一条流的两个方向必须同分片）、
+    /// 畸形帧（派发端计数）、非 TCP 会话（状态 None）、DPI 首包识别（应用分布合并）。
+    #[test]
+    fn worker_count_does_not_change_the_records() {
+        let bytes = multi_flow_pcap(12);
+        let opts = AnalyzeOptions::default();
+        let (base, base_stats) = analyze_pcap_with(&bytes[..], &opts, 1).expect("单线程");
+        assert!(
+            base.len() > 4,
+            "样本必须产出足够多的记录，否则这条测试什么都没验：{} 条",
+            base.len()
+        );
+        assert_eq!(base_stats.workers, 1);
+        assert_eq!(base_stats.worker_flows, vec![base.len()]);
+        assert_eq!(
+            base_stats.decode_error_count(),
+            1,
+            "垃圾帧要被计入派发端统计"
+        );
+        // **绝对口径**：只有「两条路互相比」是不够的 —— 同一个错犯在两条路上就看不见
+        // （实测：把统计合并整行删掉后，互比仍然相等）。这三条断言的是「应该是什么」：
+        //   1. 每个解码成功的包恰好被 observe 一次（漏合并会让它比 packets_decoded 小）；
+        //   2. 每条记录背后恰好一条会话（记录只能来自会话）；
+        //   3. 应用识别分布的总数等于记录数（漏合并 app_outcomes 会让它偏小）。
+        assert_eq!(
+            base_stats.session.packets, base_stats.packets_decoded,
+            "单线程：有包没被喂进流水线（会话统计与解帧数对不上）"
+        );
+        assert_eq!(
+            base_stats.session.sessions_created,
+            base.len() as u64,
+            "单线程：会话数与记录数对不上"
+        );
+        assert_eq!(
+            base_stats.app_outcomes.values().sum::<u64>(),
+            base.len() as u64,
+            "单线程：应用识别分布的总数不等于记录数"
+        );
+        let want = jsonl(&base);
+
+        for workers in [2usize, 3, 4, 8] {
+            let (got, stats) = analyze_pcap_with(&bytes[..], &opts, workers).expect("分片");
+            assert_eq!(got, base, "{workers} 个 worker 的记录与单线程不一致");
+            assert_eq!(
+                jsonl(&got),
+                want,
+                "{workers} 个 worker 的 JSONL 与单线程不逐字节一致"
+            );
+            assert_eq!(stats.workers, workers);
+            assert_eq!(stats.worker_flows.len(), workers, "每个 worker 都要有账");
+            assert_eq!(
+                stats.worker_flows.iter().sum::<usize>(),
+                got.len(),
+                "各 worker 记录数之和必须等于总记录数"
+            );
+            // 派发端统计与合并后的统计都不能被分片改变
+            assert_eq!(stats.packets_read, base_stats.packets_read);
+            assert_eq!(stats.packets_decoded, base_stats.packets_decoded);
+            assert_eq!(stats.decode_error_count(), base_stats.decode_error_count());
+            assert_eq!(stats.session.packets, base_stats.session.packets);
+            assert_eq!(
+                stats.session.sessions_created,
+                base_stats.session.sessions_created
+            );
+            assert_eq!(stats.app_outcomes, base_stats.app_outcomes);
+            assert_eq!(stats.counter_mismatches, 0);
+            assert_eq!(stats.non_finite_vectors, 0);
+            assert!(stats.sorted_by_key);
+            // 分片路径同样按绝对口径核一遍（合并漏项在这里现形）
+            assert_eq!(
+                stats.session.packets, stats.packets_decoded,
+                "{workers} 个 worker：有包没被喂进流水线（统计合并漏项）"
+            );
+            assert_eq!(
+                stats.session.sessions_created,
+                got.len() as u64,
+                "{workers} 个 worker：会话数与记录数对不上"
+            );
+            assert_eq!(
+                stats.app_outcomes.values().sum::<u64>(),
+                got.len() as u64,
+                "{workers} 个 worker：应用识别分布的总数不等于记录数"
+            );
+        }
+    }
+
+    /// 分片必须**均衡**，而且要用「像真实流量那样的键」来测。
+    ///
+    /// 这条测试的键刻意复刻真实流量的形态：变化的字节在**前部**（源 IP、源端口），
+    /// 尾部（目的端口 443 + 协议号 6）在一批流里完全相同。早期版本只验证「8 个分片
+    /// 都被用到」，而它用的键把变化放在别的字节上，于是**漏掉了**「低位被恒定尾字节
+    /// 钉死」这个缺陷：实测 20000 条真实流在 8 个 worker 上只用到 2 个，
+    /// 2/4 个 worker 时全部挤在 0 号。因此这里必须同时断言均衡度，不能只断言「用到过」。
+    #[test]
+    fn shard_hash_is_stable_and_balanced_for_realistic_keys() {
+        const FLOWS: u64 = 4_096;
+        for workers in [2usize, 4, 8] {
+            let mut counts = vec![0u64; workers];
+            for f in 0..FLOWS as u64 {
+                let src = [
+                    10,
+                    ((f >> 16) & 0xff) as u8,
+                    ((f >> 8) & 0xff) as u8,
+                    (f & 0xff) as u8,
+                ];
+                let k = FlowKey::new_ipv4(src, 1_024 + (f as u16), [10, 128, 0, 1], 443, 6);
+                let shard = shard_of(&k, workers);
+                assert_eq!(shard, shard_of(&k, workers), "同一键必须稳定落同一分片");
+                counts[shard] += 1;
+            }
+            let fair = FLOWS / workers as u64;
+            let min = *counts.iter().min().unwrap();
+            let max = *counts.iter().max().unwrap();
+            assert!(
+                min >= fair / 2,
+                "{workers} 个 worker 分片严重倾斜：最少的只有 {min} 条（公平值 {fair}），分布 {counts:?}"
+            );
+            assert!(
+                max <= fair * 2,
+                "{workers} 个 worker 分片严重倾斜：最多的有 {max} 条（公平值 {fair}），分布 {counts:?}"
+            );
+            assert_eq!(
+                counts.iter().filter(|n| **n > 0).count(),
+                workers,
+                "{workers} 个 worker 里有分片一条流都没拿到：{counts:?}"
+            );
+        }
+    }
+
+    /// 一条会话的两个方向必须落同一分片：否则两边各建一套状态，
+    /// 记录的包数会各算一半，而两边都不会报错（这正是不变量测试要拦的事）。
+    #[test]
+    fn both_directions_of_a_flow_share_one_shard() {
+        let k = FlowKey::new_ipv4([10, 0, 0, 1], 1234, [10, 0, 0, 2], 443, 6);
+        let rev = k.reverse();
+        for n in [2usize, 3, 5, 8] {
+            assert_eq!(
+                shard_of(&k.canonical(), n),
+                shard_of(&rev.canonical(), n),
+                "{n} 个分片时两个方向落到了不同 worker"
+            );
+        }
+    }
+
+    /// 空抓包 + 多 worker：线程要能正常收尾（不能挂住），并且账要平。
+    #[test]
+    fn empty_capture_with_workers_terminates() {
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[]);
+        let (records, stats) =
+            analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 4).expect("空文件");
+        assert!(records.is_empty());
+        assert_eq!(stats.workers, 4);
+        assert_eq!(stats.worker_flows, vec![0, 0, 0, 0]);
+        assert_eq!(stats.packets_read, 0);
+    }
+
+    /// 所有包都解不出帧时，worker 一条记录也产不出，但派发端仍要如实计数。
+    #[test]
+    fn all_garbage_frames_are_counted_on_the_dispatch_side() {
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[vec![0u8; 10], vec![0u8; 12]]);
+        let (records, stats) =
+            analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 3).expect("垃圾帧");
+        assert!(records.is_empty());
+        assert_eq!(stats.packets_read, 2);
+        assert_eq!(stats.packets_decoded, 0);
+        assert_eq!(stats.decode_error_count(), 2);
+        assert_eq!(stats.worker_flows, vec![0, 0, 0]);
     }
 
     #[test]

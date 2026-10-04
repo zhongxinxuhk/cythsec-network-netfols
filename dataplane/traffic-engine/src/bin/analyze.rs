@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::process::ExitCode;
 
-use traffic_engine::pipeline::{analyze_pcap, AnalyzeOptions, AnalyzeStats};
+use traffic_engine::pipeline::{analyze_pcap_with, AnalyzeOptions, AnalyzeStats};
 use traffic_engine::record::write_jsonl;
 use traffic_engine::{build_info, crate_version};
 
@@ -28,6 +28,7 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
       --limit <N>          最多输出 N 条记录（按会话键排序后截取前 N 条）
       --inspect-bytes <N>  喂给 DPI 的首包字节数上限（默认 512）
       --max-sessions <N>   会话表容量上限（默认 65536）
+      --workers <N>        消费侧并行 worker 数（默认 1 = 就地单线程，见下）
       --strict             严格 TCP 模式：未见到握手的会话不采纳（默认容忍，见下）
   -q, --quiet              不打印统计摘要
   -V, --version            打印版本信息
@@ -37,6 +38,11 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
   * 默认**容忍模式**：离线抓包的起点几乎总是切在会话中间，严格模式会把这类会话
     一律判成 Closed，那不是协议的真实状态。需要严格判定时加 `--strict`。
   * 文件末尾仍打开的会话**照常产出记录**（它们承载了数据）。
+  * `--workers N`（N>1）按**方向无关的会话键**静态分片，每个 worker 私有流表、会话、
+    特征与 DPI 探针（即「每核一张独立表」，无锁）；派发端单线程读盘/解帧/分片，
+    会话 id 也由派发端按首次出现顺序统一分配，因此 `--workers N` 与 `--workers 1`
+    在容量充足时输出**逐字节一致**。两点限制：每个 worker 各自持有 `--max-sessions`
+    额度（总容量 = N × 额度），且一旦发生会话逐出，各 worker 的存活集合本就会不同。
 
 输出:
   每行一条 JSON 的 FlowRecord（schema 见 traffic_engine::record）。
@@ -52,6 +58,7 @@ struct Args {
     limit: Option<usize>,
     inspect_bytes: usize,
     max_sessions: usize,
+    workers: usize,
     strict: bool,
     quiet: bool,
 }
@@ -69,6 +76,7 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
     let mut limit: Option<usize> = None;
     let mut inspect_bytes = traffic_engine::dpi::DEFAULT_INSPECT_BYTES;
     let mut max_sessions = 1usize << 16;
+    let mut workers = 1usize;
     let mut strict = false;
     let mut quiet = false;
 
@@ -118,6 +126,18 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
                 }
                 max_sessions = n;
             }
+            "--workers" => {
+                let v = take_value("--workers")?;
+                let n = v
+                    .parse::<usize>()
+                    .map_err(|_| format!("--workers 需要一个正整数，得到 `{v}`"))?;
+                // 上限只挡明显的笔误（例如把字节数填进来）。超配不禁止：交叉验证时
+                // 刻意跑 N > 核数是有意义的（看是不是队列/锁在拖后腿）。
+                if n == 0 || n > 256 {
+                    return Err(format!("--workers 需要在 1..=256 之间，得到 `{v}`"));
+                }
+                workers = n;
+            }
             "--strict" => strict = true,
             "-q" | "--quiet" => quiet = true,
             other => return Err(format!("无法识别的参数 `{other}`（用 --help 看用法）")),
@@ -132,6 +152,7 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
         limit,
         inspect_bytes,
         max_sessions,
+        workers,
         strict,
         quiet,
     })))
@@ -175,6 +196,24 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     let _ = writeln!(err, "[cythsec-analyze] app_outcome: {}", apps.join(" "));
+    let shards: Vec<String> = stats.worker_flows.iter().map(|n| n.to_string()).collect();
+    let _ = writeln!(
+        err,
+        "[cythsec-analyze] workers={} worker_flows=[{}] evicted={}",
+        stats.workers,
+        shards.join(","),
+        stats.session.sessions_evicted
+    );
+    if stats.workers > 1 {
+        // 这句必须打印：不打印的话，下游无法判断"这份输出与单线程是否可比"。
+        let _ = writeln!(
+            err,
+            "[cythsec-analyze] 分片模式：每 worker 私有状态、会话 id 由派发端定序；\
+             与 --workers 1 逐字节一致的前提是未发生会话逐出（本次 evicted={}，\
+             且每 worker 各自持有 --max-sessions 额度）",
+            stats.session.sessions_evicted
+        );
+    }
     let _ = writeln!(
         err,
         "[cythsec-analyze] non_finite_feature_vectors={} counter_mismatches={} sorted_by_key={}",
@@ -198,7 +237,7 @@ fn run(args: &Args) -> Result<usize, String> {
         },
     };
 
-    let (records, stats) = analyze_pcap(BufReader::new(file), &opts)
+    let (records, stats) = analyze_pcap_with(BufReader::new(file), &opts, args.workers)
         .map_err(|e| format!("分析 `{}` 失败：{e}", args.input))?;
 
     let emitted = match args.limit {

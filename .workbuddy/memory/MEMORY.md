@@ -1,6 +1,6 @@
 # CythSec 项目长期记忆
 
-> 最近更新：2026-10-05（状态点 `4b1e0c4`）
+> 最近更新：2026-10-05（状态点 `2ca80b6` 之后：离线流水线已接线 `--workers N`）
 > 接力文档：`docs/planning/HANDOFF.md` ｜ 主待办表：`docs/planning/BACKLOG.md`
 
 ## 核心体系（不可违反）
@@ -14,7 +14,11 @@
 - `bash scripts/test/test-all.sh`（全部，会先自动生成测试向量）
 - 日常快速回路：`--rust --dpi --reassembly`
 - `--parity` 与 `--e2e` **必须与 `--cpp --rust` 同时选**（否则脚本 `exit 2` 拒绝）
-- `bash scripts/lint/lint-all.sh`（7 项：cpp / rust / go / codegen×2 / node 类型检查 / node eslint）
+- `bash scripts/lint/lint-all.sh`（9 项：cpp / rust / go / codegen×2 / version（含自证）/ repo / node 类型检查 / node eslint）
+- **测量脚本（不是门禁，不会自动跑）**：`bash scripts/verify/bench-pipeline.sh [包数] [轮数]`
+  —— 量「整条离线流水线加 worker 有没有用、上限在哪」（先 `cargo build --release --offline`）。
+  绝对吞吐机器相关，**刻意不做阈值判定**；它的正确性部分由 `--rust` 里的单测常驻把关
+  （1/2/3/4/8 个 worker 输出逐字节一致、分片均衡度、两方向同分片）
 - `--node`：`node_modules` 已在位时脚本会**自动跳过 `npm ci`**（不会误红）；若强制走 `npm ci`
   （`CYTHSEC_FORCE_NPM_CI=1`）而被环境 safe-delete 钩子拦（7884 目标 > 阈值 50），脚本按
   `ENV_INTERCEPTED` 单独分类并明说"不是网络问题"，不再把环境限制报成代码失败
@@ -30,6 +34,11 @@
 6. 新增/修改门禁后必须做**反向注入验证**（绿色的「通过」与绿色的「没跑」长得一样）
 7. **状态标记与实现同批提交**；刷新滞后状态时逐项核对验收标准，不凭印象批量打勾
 8. **文档里的数字与结论当场复跑**；沿用的旧结论必须重新验证
+9. **把结构化键映射到 N 个桶（分片/分区/负载均衡）时，必须"先雪崩混合再取模"** ——
+   FNV-1a 的**低位只由最后几个字节决定**，而流键尾部（目的端口、协议号）在同一批流量里
+   完全相同 → `fnv(...) % workers` 的低位恒定，全部流挤到少数 worker 上，
+   **输出完全正确、单测全绿、并行度为零**。测均衡要用**真实流量的字节布局**
+   （变化在前部）并断言均衡度**上下界**，只断言"每个分片都用到过"会漏掉它（2026-10-05 实测踩到）
 
 ## 测试环境
 
@@ -76,6 +85,13 @@
   "index file is too small"；③ bsdtar 的 xattr 警告是噪声（加 `--no-xattrs` 或 `2>/dev/null`），不是失败。
 
 ## 已知偏差（不要在报告里抹平）
+
+- **整条离线流水线的并行上限是"派发端"，不是流表**（2026-10-05 实测）：`cythsec-analyze
+  --workers N` 单核 0.918 Mpps，2/4/8/16 worker 加速 1.49×/2.47×/**2.53×（上限）**/2.49×，
+  平台值 0.393 s 就是派发端（读盘+解帧+分片+入队）→ **2.33 Mpps ≈ 10G 最坏帧（64B/14.88 Mpps）
+  的 16%，且加核解决不了**。要线性必须让"读包+解帧"也分掉（每队列一环 = `CYS-PKT-009`）。
+  在线路径 `ring-consume` **仍是单表单线程**；分片模式下每个 worker 各持 `--max-sessions`
+  额度，一旦发生逐出，输出与 `--workers 1` 不再逐字节一致（CLI 每次打印 `evicted=`）
 
 - `BACKLOG.md` §3.4 M4 控制平面状态**滞后于代码**（`policyd` / `dnsd` / `telemetryd` / `pkg`
   已存在且 19 个 Go 测试包全过，真实缺口在**落地侧**：nftables / 原子回滚 / PG / 版本化 /
