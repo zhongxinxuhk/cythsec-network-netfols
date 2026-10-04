@@ -21,7 +21,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::flow::FlowKey;
+use crate::flow::{FlowKey, Proto, IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_TCP, IPPROTO_UDP};
 
 /// 以太网头部长度（不含 VLAN 标签）。
 const ETH_HEADER_LEN: usize = 14;
@@ -37,15 +37,15 @@ const ETHERTYPE_IPV6: u16 = 0x86DD;
 /// 802.1Q / 802.1ad / 部分厂商的私有 VLAN EtherType。
 const ETHERTYPE_VLAN: [u16; 3] = [0x8100, 0x88A8, 0x9100];
 
-/// IPv4 协议号。
-const IPPROTO_ICMP: u8 = 1;
-const IPPROTO_TCP: u8 = 6;
-const IPPROTO_UDP: u8 = 17;
-const IPPROTO_ICMPV6: u8 = 58;
-/// ESP：负载整体加密，四层头不可见。
-const IPPROTO_ESP: u8 = 50;
+/// IPv4 协议号中的**扩展头**（不是四层协议）。
+///
+/// TCP/UDP/ICMP/ICMPv6 四个协议号不在这里定义：它们是 `crate::flow::Proto` 的取值，
+/// 定义在 flow 模块（唯一真源）。此处再写一份 `const IPPROTO_TCP: u8 = 6;`
+/// 会让"改一处忘一处"变成静默的协议误判。
 /// AH：认证头，本身不加密，走完它仍能看到四层头。
 const IPPROTO_AH: u8 = 51;
+/// ESP：负载整体加密，四层头不可见。
+const IPPROTO_ESP: u8 = 50;
 /// IPv6 分片头。
 const IPPROTO_FRAGMENT: u8 = 44;
 
@@ -76,57 +76,12 @@ impl L3Proto {
     }
 }
 
-/// 四层协议。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum L4Proto {
-    Tcp,
-    Udp,
-    Icmp,
-    Icmpv6,
-    /// 其余协议：五元组仍成立（协议号已区分），只是端口无意义。
-    Other(u8),
-}
-
-impl L4Proto {
-    pub const fn from_u8(v: u8) -> Self {
-        match v {
-            IPPROTO_TCP => L4Proto::Tcp,
-            IPPROTO_UDP => L4Proto::Udp,
-            IPPROTO_ICMP => L4Proto::Icmp,
-            IPPROTO_ICMPV6 => L4Proto::Icmpv6,
-            other => L4Proto::Other(other),
-        }
-    }
-
-    /// 协议号，即 `FlowKey.proto` 的取值。
-    pub const fn number(self) -> u8 {
-        match self {
-            L4Proto::Tcp => IPPROTO_TCP,
-            L4Proto::Udp => IPPROTO_UDP,
-            L4Proto::Icmp => IPPROTO_ICMP,
-            L4Proto::Icmpv6 => IPPROTO_ICMPV6,
-            L4Proto::Other(v) => v,
-        }
-    }
-
-    /// 该协议的头里是否有端口字段。
-    ///
-    /// ICMP 与「其余协议」没有端口概念，其 `FlowKey` 端口恒为 0。这不是兜底，
-    /// 而是这类协议的流本来就只由地址与协议号标识。
-    pub const fn has_ports(self) -> bool {
-        matches!(self, L4Proto::Tcp | L4Proto::Udp)
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            L4Proto::Tcp => "tcp",
-            L4Proto::Udp => "udp",
-            L4Proto::Icmp => "icmp",
-            L4Proto::Icmpv6 => "icmpv6",
-            L4Proto::Other(_) => "other",
-        }
-    }
-}
+// 四层协议类型统一为 `flow::Proto`（CYS-TRF-004），本模块的 `DecodedFrame::l4`
+// 与 `FlowKey.proto` 都是它。
+//
+// 原先这里有一份与 `flow::Proto` 逐值重复的 `L4Proto`（同样的 Tcp/Udp/Icmp/Icmpv6/Other）。
+// 两份定义的风险是"改一处忘一处"：增删一个协议号时两边不会同时报错，
+// 只会静默地让解码结果与流表键不一致。
 
 /// 解码失败的具体位置，用于把「帧太短」这类模糊描述落到具体一步。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +202,7 @@ pub struct DecodedFrame {
     /// 五元组。可直接构造 `flow::Packet`。
     pub key: FlowKey,
     pub l3: L3Proto,
-    pub l4: L4Proto,
+    pub l4: Proto,
     /// VLAN 标签层数（0 表示未打标）。
     pub vlan_tags: u8,
     /// 四层段长度（IPv4 总长 / IPv6 载荷长度减去各层头）。
@@ -355,7 +310,7 @@ fn decode_ipv4(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
     }
 
     let proto = frame[offset + 9];
-    let l4 = L4Proto::from_u8(proto);
+    let l4 = Proto::from_u8(proto);
     let mut src = [0u8; 4];
     src.copy_from_slice(&frame[offset + 12..offset + 16]);
     let mut dst = [0u8; 4];
@@ -373,7 +328,7 @@ fn decode_ipv4(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
             src_port,
             dst_ip: IpAddr::V4(Ipv4Addr::from(dst)),
             dst_port,
-            proto: l4.number(),
+            proto: l4,
         },
         l3: L3Proto::Ipv4,
         l4,
@@ -480,7 +435,7 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
         }
     }
 
-    let l4 = L4Proto::from_u8(next_header);
+    let l4 = Proto::from_u8(next_header);
     let (src_port, dst_port) = decode_ports(frame, cursor, l4)?;
 
     Ok(DecodedFrame {
@@ -489,7 +444,7 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
             src_port,
             dst_ip: IpAddr::V6(Ipv6Addr::from(dst)),
             dst_port,
-            proto: l4.number(),
+            proto: l4,
         },
         l3: L3Proto::Ipv6,
         l4,
@@ -504,7 +459,7 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
 ///
 /// 只需要 4 字节即可得到端口对，因此**不要求完整四层头**：截断捕获常见于「只抓头」的
 /// 采集配置，此时端口完全可用，拿不到完整的 20 字节 TCP 头并不影响五元组成立。
-fn decode_ports(frame: &[u8], l4_offset: usize, l4: L4Proto) -> Result<(u16, u16), DecodeError> {
+fn decode_ports(frame: &[u8], l4_offset: usize, l4: Proto) -> Result<(u16, u16), DecodeError> {
     if !l4.has_ports() {
         return Ok((0, 0));
     }
@@ -556,7 +511,7 @@ mod tests {
         let frame = ipv4_tcp_frame([10, 0, 0, 1], 12345, [93, 184, 216, 34], 443);
         let d = decode_frame(&frame).expect("应能解出");
         assert_eq!(d.l3, L3Proto::Ipv4);
-        assert_eq!(d.l4, L4Proto::Tcp);
+        assert_eq!(d.l4, Proto::Tcp);
         assert_eq!(d.vlan_tags, 0);
         assert_eq!(d.ip_payload_len, 20, "IPv4 总长 40 减去头 20");
         assert_eq!(
@@ -723,8 +678,8 @@ mod tests {
         let mut frame = ipv4_tcp_frame([10, 0, 0, 1], 0, [10, 0, 0, 2], 0);
         frame[23] = IPPROTO_ICMP;
         let d = decode_frame(&frame).expect("ICMP 应能解出");
-        assert_eq!(d.l4, L4Proto::Icmp);
-        assert_eq!(d.key.proto, IPPROTO_ICMP);
+        assert_eq!(d.l4, Proto::Icmp);
+        assert_eq!(d.key.proto, Proto::Icmp, "端口为 0 但协议号必须保住");
         assert_eq!((d.key.src_port, d.key.dst_port), (0, 0));
     }
 
@@ -778,7 +733,7 @@ mod tests {
         v.extend_from_slice(&5353u16.to_be_bytes());
 
         let d = decode_frame(&v).expect("应能走完扩展头");
-        assert_eq!(d.l4, L4Proto::Udp);
+        assert_eq!(d.l4, Proto::Udp);
         assert_eq!(d.key.dst_port, 5353);
         assert_eq!(d.ip_payload_len, 8, "载荷 16 减去扩展头 8");
     }
@@ -857,14 +812,20 @@ mod tests {
     }
 
     #[test]
-    fn l4_proto_roundtrip() {
-        for v in [0u8, 1, 6, 17, 47, 58, 255] {
-            assert_eq!(L4Proto::from_u8(v).number(), v, "协议号往返应无损");
-        }
-        assert!(L4Proto::Tcp.has_ports());
-        assert!(L4Proto::Udp.has_ports());
-        assert!(!L4Proto::Icmp.has_ports());
-        assert!(!L4Proto::Other(47).has_ports());
-        assert_eq!(L4Proto::Icmpv6.as_str(), "icmpv6");
+    fn decoded_l4_and_flow_key_proto_are_the_same_value() {
+        // 解出的 `l4` 与写进 `FlowKey.proto` 的必须是同一个值。
+        // 两份协议定义并存时这里是一次 `.number()` 的手工搬运，搬错不会报错；
+        // 现在两者是同一个 `flow::Proto`，这条断言把"统一"钉住。
+        let v4 = ipv4_tcp_frame([10, 0, 0, 1], 12345, [93, 184, 216, 34], 443);
+        let d4 = decode_frame(&v4).expect("IPv4/TCP 应能解出");
+        assert_eq!(d4.key.proto, d4.l4);
+        assert_eq!(d4.key.proto.number(), IPPROTO_TCP);
+
+        // 非 TCP/UDP 的协议号必须原样保留（否则 ESP/GRE 会塌缩成同一个"其它"）。
+        let mut icmpv6 = ipv4_tcp_frame([10, 0, 0, 1], 0, [10, 0, 0, 2], 0);
+        icmpv6[23] = IPPROTO_ICMPV6;
+        let d6 = decode_frame(&icmpv6).expect("ICMPv6 应能解出");
+        assert_eq!(d6.key.proto, Proto::Icmpv6);
+        assert_eq!(d6.key.proto.number(), IPPROTO_ICMPV6);
     }
 }

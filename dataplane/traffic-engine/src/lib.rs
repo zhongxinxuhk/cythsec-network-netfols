@@ -1,16 +1,21 @@
 // lib.rs - traffic-engine 核心库入口
-// 将 flow 与 session 作为库模块暴露，便于 main 与单元/集成测试复用。
-// 数据链：Packet -> Flow -> Session
+// 将 flow / session / tcp 作为库模块暴露，便于 main 与单元/集成测试复用。
+// 数据链：Packet -> FlowTable -> Session -> FlowRecord
 //
 // channel 是数据链的源头：C++ packet-engine 经共享内存把裸帧送进来（CYS-PKT-024），
 // 由 channel::decode 解成 FlowKey，再汇入 flow/session。它不依赖 flow/session 的实现，
 // 只依赖其 FlowKey 类型，因此单独成模块、可独立测试。
+//
+// tcp 单独成模块（而不是塞进 session）：连接状态机同时被 **flow::table**（超时档位
+// 要按 Established/Transient 分档）与 **session**（会话状态）使用。放进 session 会让
+// flow 反向依赖 session，形成模块环。
 pub mod attributes_gen;
 pub mod channel;
 pub mod dpi;
 pub mod flow;
 pub mod reassembly;
 pub mod session;
+pub mod tcp;
 
 /// 测试专用的最小 JSON 解析器，供各向量驱动测试共用。
 #[cfg(test)]
