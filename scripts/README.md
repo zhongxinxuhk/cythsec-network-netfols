@@ -12,7 +12,7 @@
 
 | 脚本 | 用途 |
 | --- | --- |
-| `test-all.sh` | 四栈测试 + 通道 ABI parity + 跨语言 e2e，逐栈汇总 |
+| `test-all.sh` | 四栈测试 + 通道 ABI parity + 跨语言 e2e + 三道 tshark 核验 + 数据面基准（`--bench` 需显式开），逐栈汇总 |
 
 ## lint/ 与 fmt/
 
@@ -41,6 +41,10 @@
 | `check-channel-abi.sh` | 通道 ABI 生成物一致性 + 诊断码可达性 |
 | `check-channel-parity.sh` | C++ `cythsec-dump-abi` 与 Rust `dump-abi` 输出逐行 diff（产物留 `build/parity/`） |
 | `check-prometheus-format.py` | Python 独立重实现的 Prometheus 文本格式（0.0.4）严格校验器 |
+| `check-dpi-vectors.sh` | **tshark 独立复核** DPI 向量（挂 `test-all.sh --dpi`） |
+| `check-reassembly-vectors.sh` | **tshark 独立复核** TCP 重组向量（挂 `--reassembly`） |
+| `check-flow-records.sh` | **tshark 独立复核** FlowRecord（会话/计数/状态/应用）+ 17 项反向故障注入（挂 `--flows`） |
+| `check-flow-bench.sh` | 数据面基准（CYS-TRF-037）的**回归下限**门禁 + 3 项反向注入；需求目标只报告（挂 `--bench`，**默认不在 ALL 里**：阈值带机器属性） |
 | `e2e-control-plane.sh` | 四服务端到端验收：启动 routerd/policyd/dnsd/telemetryd → 探测端点 → 校验 metrics → jq 验证结构化日志 → 优雅关闭 |
 | `e2e-shared-ring.sh` | 跨语言共享环 e2e（CYS-TRF-034）：C++ ring-feed 写 mmap → Rust ring-consume 读并聚合 FlowKey |
 

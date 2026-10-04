@@ -475,32 +475,46 @@ impl FlowTable {
     pub fn expire(&mut self, now_us: u64) -> usize {
         self.stats.expire_runs += 1;
         let timeouts = self.cfg.timeouts;
-        let mut removed: Vec<FlowEntry> = Vec::new();
 
-        for shard in &mut self.shards {
+        // 只收集**键**（每条 40B），不收集条目（每条 432B）。
+        //
+        // 早先的实现把所有到期条目搬进一个 `Vec<FlowEntry>`，排序后逐条派发回调。
+        // 那样临时内存是 `条目数 × sizeof(FlowEntry)`，500k 条即 216MiB 的一次性大块；
+        // macOS 在释放后不把 RSS 还回来，实测「填满→全部到期」每轮让进程 RSS 抬升
+        // 约 `条目数 × 432B`（250k 条 → +99MiB/轮），并且不保证回落 ——
+        // 这直接违反 CYS-TRF-007「达到上限时内存稳定」的验收标准。
+        //
+        // 现在改成"先按键序收齐键、再逐条删并派发"：回调顺序（全局按键升序）与逐出
+        // 语义完全不变，临时内存降到 `条目数 × sizeof(FlowKey)`。
+        //
+        // 唯一的可观察差异：回调期间表里可能仍留着**尚未派发**的到期条目（旧实现是先
+        // 全删完再派发）。这个差异被明确接受：回调是只读观察，不该依赖"表此刻已清空"
+        // 这种时序细节；而 RSS 不回落是硬伤。
+        let mut expired_keys: Vec<FlowKey> = Vec::new();
+        for shard in &self.shards {
             if shard.map.is_empty() {
                 continue;
             }
-            let mut expired: Vec<FlowKey> = shard
-                .map
-                .iter()
-                .filter(|(_, e)| e.is_expired(now_us, &timeouts))
-                .map(|(k, _)| *k)
-                .collect();
-            // 排序后再删：HashMap 迭代顺序不定，不排序会让回调顺序随运行变化。
-            expired.sort_unstable();
-            for k in expired {
-                if let Some(e) = shard.map.remove(&k) {
-                    removed.push(e);
-                }
-            }
+            // HashMap 迭代顺序不定 → 统一排序，保证回调顺序随运行稳定。
+            expired_keys.extend(
+                shard
+                    .map
+                    .iter()
+                    .filter(|(_, e)| e.is_expired(now_us, &timeouts))
+                    .map(|(k, _)| *k),
+            );
         }
+        // 键不可能重复（一个键只存在于一个分片里），故无需去重。
+        expired_keys.sort_unstable();
 
-        removed.sort_by(|a, b| a.key.cmp(&b.key));
-        let n = removed.len();
-        for e in removed {
-            self.stats.timeouts += 1;
-            self.notify(Pending::Removed(FlowEvent::Timeout, e));
+        let mut n = 0usize;
+        for k in expired_keys {
+            let idx = self.shard_index(&k);
+            if let Some(e) = self.shards[idx].map.remove(&k) {
+                n += 1;
+                self.stats.timeouts += 1;
+                self.notify(Pending::Removed(FlowEvent::Timeout, e));
+            }
         }
         n
     }
@@ -878,6 +892,62 @@ mod tests {
         assert_eq!(ports.len(), 4);
         ports.sort_unstable();
         assert_eq!(ports, vec![22, 53, 80, 443], "回收顺序必须确定（按会话键）");
+    }
+
+    #[test]
+    fn expire_dispatches_callbacks_in_global_key_order() {
+        // 旧实现是"先收齐再全局排序派发"，新实现是"按键序逐条删除并派发"。
+        // 两条路径都必须给出同一个顺序，否则"回调顺序稳定"就成了空话。
+        let mut t = FlowTable::new(FlowTableConfig {
+            shard_count: 3,
+            max_flows: 64,
+            timeouts: TimeoutTable {
+                tcp_transient_us: 1,
+                ..TimeoutTable::default()
+            },
+            ..FlowTableConfig::default()
+        });
+        let rec = Recorder::new();
+        t.set_observer(Box::new(rec.clone()));
+        for p in [443u16, 22, 80, 53] {
+            t.observe(&pkt(key(1, 1000 + p, 2, p), 10, 1));
+        }
+        assert_eq!(t.expire(1_000), 4);
+        let ports: Vec<u16> = rec
+            .take()
+            .iter()
+            .filter_map(|e| e.strip_prefix("timeout "))
+            .filter_map(|p| p.parse::<u16>().ok())
+            .collect();
+        // 端口升序 = 会话键升序（源地址与目的地址都固定，只有源端口在变）。
+        assert_eq!(ports, vec![22, 53, 80, 443], "回调必须按全局会话键升序派发");
+    }
+
+    #[test]
+    fn expire_keeps_the_non_expired_entries() {
+        // 新实现逐条删除，最容易犯的错是删错分片/删过头 —— 这里按两类超时分层核对。
+        let mut t = FlowTable::new(FlowTableConfig {
+            shard_count: 4,
+            max_flows: 64,
+            timeouts: TimeoutTable::default(),
+            ..FlowTableConfig::default()
+        });
+        for i in 0..8u16 {
+            t.observe(&pkt(key(1, 1000 + i, 2, 80), u64::from(i) * 1000, 1));
+        }
+        // 只让前 3 条老到「空闲 ≥ 瞬态超时」：第 3 条（时间戳 2000）恰好等于阈值即到期，
+        // 第 4 条（时间戳 3000）差 1µs，必须留下 —— 顺带把 >= 边界钉住。
+        let transient = t.cfg().timeouts.tcp_transient_us;
+        let n = t.expire(2_000 + transient);
+        assert_eq!(n, 3, "恰好前 3 条到期");
+        assert_eq!(t.len(), 5);
+        assert_eq!(t.stats().timeouts, 3);
+        for i in 0..3u16 {
+            assert!(!t.contains(&key(1, 1000 + i, 2, 80)), "第 {i} 条应被回收");
+        }
+        for i in 3..8u16 {
+            assert!(t.contains(&key(1, 1000 + i, 2, 80)), "第 {i} 条不该被回收");
+        }
     }
 
     #[test]

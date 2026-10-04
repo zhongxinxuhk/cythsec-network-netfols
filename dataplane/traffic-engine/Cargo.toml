@@ -47,6 +47,13 @@ path = "src/bin/ring_consume.rs"
 name = "cythsec-analyze"
 path = "src/bin/analyze.rs"
 
+# 自研微型基准（CYS-TRF-037）：流表插入/查询、超时扫描、特征更新、重组吞吐、
+# 会话归属，以及「每轮填满→全部到期」的 RSS 平台期（无内存增长）验证。
+# 刻意不引 Criterion：本工程零第三方依赖，基准工具不该成为例外。
+[[bin]]
+name = "cythsec-bench"
+path = "src/bin/bench.rs"
+
 [dependencies]
 
 # 零第三方依赖，保持最小工程可离线构建、便于工具链验证。

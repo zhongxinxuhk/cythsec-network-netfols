@@ -17,7 +17,7 @@ cd "$ROOT"
 usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
-              [--reassembly] [--flows] [--e2e] [--live] [--help]
+              [--reassembly] [--flows] [--e2e] [--live] [--bench] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
   --rust         只跑 Rust 测试（cargo test --offline）
@@ -29,9 +29,14 @@ usage() {
   --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + 反向故障注入（需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
+  --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
   --help         显示本帮助
 
 不带参数时跑全部；parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
+
+--bench 刻意**不在"全部"里**：它的回归下限标定在特定机器上（Apple M1 Pro/macOS 1M 条规模），
+同机连跑两次都能差 20~30%，换机器/换核数/开省电模式都会变。放进默认集合只会变成
+"随机红的门禁"，而随机红等于没有门禁。要跑就显式 --bench。
 EOF
 }
 
@@ -240,6 +245,21 @@ test_e2e() {
   echo "✓ [e2e] 跨语言端到端通过"
 }
 
+# 数据面基准（CYS-TRF-037）。
+#
+# 为什么单独一项、且默认不跑：它量的是**吞吐/内存**，阈值必然带机器属性，
+# 因此它的回归下限只对本机有意义。它回答两个问题：这一版有没有把上一版跑坏
+# （决定退出码），以及现在离需求目标还差多少（只报告）。判定的判定本身也做
+# 反向注入：把阈值放大 1000 倍必须报出"退步"。
+test_bench() {
+  echo "==> [bench] 数据面基准回归门禁（流表/逐出/超时/特征/重组/会话 + 反向故障注入）"
+  if ! bash scripts/verify/check-flow-bench.sh; then
+    echo "✗ [bench] 基准回归门禁失败" >&2
+    return 1
+  fi
+  echo "✓ [bench] 基准回归门禁通过（需求目标的达成情况见上方输出，未达成项不计为本项失败）"
+}
+
 # 与 e2e 的区别：e2e 用 datasets 样本验证跨语言内存契约，本项验证的是
 # 「内核真写的线上格式能不能被我们的解析器正确读回来」—— 这类缺陷（线上
 # bpf_hdr 18B vs sizeof 20B）只有真机流量才能暴露，样本向量测不到。
@@ -253,7 +273,7 @@ test_live() {
 }
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; ALL=1
+BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; ALL=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpp)  BUILD_CPP=1; ALL=0 ;;
@@ -266,6 +286,7 @@ while [[ $# -gt 0 ]]; do
     --flows) BUILD_FLOWS=1; ALL=0 ;;
     --e2e) BUILD_E2E=1; ALL=0 ;;
     --live) BUILD_LIVE=1; ALL=0 ;;
+    --bench) BUILD_BENCH=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -274,6 +295,7 @@ done
 if [[ $ALL -eq 1 ]]; then
   BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_DPI=1
   BUILD_REASSEMBLY=1; BUILD_FLOWS=1; BUILD_E2E=1; BUILD_LIVE=1
+  # BUILD_BENCH 不进这里：机器相关，见 usage 末尾的说明。
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
 # 明确报错比静默跳过好 —— 静默跳过会让人以为验过了。
@@ -303,6 +325,7 @@ failed=0
 [[ $BUILD_FLOWS -eq 1 ]]  && { test_flows   || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 [[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
+[[ $BUILD_BENCH -eq 1 ]] && { test_bench || failed=$((failed+1)); }
 
 if [[ $failed -eq 0 ]]; then
   echo "测试汇总：全部通过 ✓"
