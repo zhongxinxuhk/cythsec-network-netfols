@@ -30,7 +30,7 @@ usage() {
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
-  --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支），不跑任何真实测试
+  --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
   --help         显示本帮助
 
 不带参数时跑全部；parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
@@ -42,7 +42,11 @@ EOF
 }
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || { echo "✗ 工具链缺失: $1" >&2; exit 1; }
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "✗ 工具链缺失: $1" >&2
+    echo "    它只为**本次所选分组**所需；不需要该分组时请只选所需分组（见 --help）" >&2
+    exit 1
+  }
 }
 
 # 测试向量是**生成物**：`datasets/**/*.pcap` 与 `*.json` 都在 .gitignore 里
@@ -62,9 +66,47 @@ gen_datasets() {
   "$py" datasets/reassembly/generate-reassembly-samples.py || return 1
   echo "✓ [vectors] 向量已生成"
 }
+# 本次运行**实际需要**的工具链（纯函数：只读 ${ALL} 与 ${BUILD_*}，因此能被 --self-test 自证）。
+#
+# 为什么不是"一律要求五个"：在最小化机器上只跑 `--rust` 时，缺 cmake/go/node 与本次运行
+# 毫无关系，却会把它挡在门外 —— "选了什么"与"查了什么"不一致。这不是假想问题：
+# 2026-10-05 在 2 vCPU / 3GB 的 Rocky Linux aarch64 测试机上 `--rust` 报「工具链缺失: cmake」，
+# 而该机当时确实没装 cmake，且**本次运行根本不需要它**。
+required_tools() {
+  if [[ "${ALL}" == "1" ]]; then
+    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark
+    return 0
+  fi
+  # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）
+  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_E2E)) -gt 0 ]]; then
+    printf '%s\n' "${PYTHON:-python3}"
+  fi
+  if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS)) -gt 0 ]]; then
+    printf 'cargo\n'
+  fi
+  if [[ $((BUILD_CPP + BUILD_PARITY + BUILD_E2E)) -gt 0 ]]; then
+    printf 'cmake\n'
+    printf 'c++\n'
+  fi
+  if [[ ${BUILD_GO} -eq 1 ]]; then
+    printf 'go\n'
+  fi
+  if [[ ${BUILD_NODE} -eq 1 ]]; then
+    printf 'node\n'
+    printf 'npm\n'
+  fi
+  if [[ $((BUILD_DPI + BUILD_FLOWS + BUILD_LIVE)) -gt 0 ]]; then
+    printf 'tshark\n'
+  fi
+  return 0
+}
+
 check_toolchain() {
-  need_cmd cmake; need_cmd cargo; need_cmd go; need_cmd node; need_cmd npm
-  echo "✓ 工具链可用"
+  local tool
+  while IFS= read -r tool; do
+    need_cmd "${tool}"
+  done < <(required_tools)
+  echo "✓ 工具链可用（本次分组需要：$(required_tools | tr '\n' ' '))"
 }
 
 test_cpp() {
@@ -168,8 +210,11 @@ test_node() {
 # **从未被执行过**的 npm ci 环境拦截分支（node_modules 一直在位，所以永远走的是
 # "跳过 npm ci"）。一个从不执行的分支，等于一段没人看过的代码。
 self_test() {
-  echo "==> [self-test] test-all.sh 自身判定逻辑（npm ci 失败分类 + 拦截分支）"
+  echo "==> [self-test] test-all.sh 自身判定逻辑（npm ci 失败分类 + 拦截分支 + 工具链预检映射）"
   local fails=0 got out rc
+  # 场景计数**动态累加**：硬编码"4 个场景"在加了两个预检场景后就变成了假信息
+  # （数字与实际不符的"通过"提示，比没有提示更糟）。
+  local checks=0
   # 用全局名：trap 执行时 local 变量已出作用域，set -u 会把清理变成报错。
   ST_TMP="$(mktemp -d)"
   trap 'rm -rf "${ST_TMP}"' EXIT
@@ -193,6 +238,7 @@ STUB
   chmod +x "${ST_TMP}/bin/npm"
 
   # 1. 分类函数（单元级）：拦截标记 → ENV_INTERCEPTED，其余 → REAL_FAILURE
+  checks=$((checks+1))
   got="$(printf '%s\n' 'npm error code 1' 'SAFE_DELETE_BULK_CONFIRM_REQUIRED' | classify_npm_ci_failure)"
   if [[ "${got}" == "ENV_INTERCEPTED" ]]; then
     echo "  ✓ 分类：输出含拦截标记 → ENV_INTERCEPTED"
@@ -207,6 +253,7 @@ STUB
   fi
 
   # 2. 拦截分支端到端：必须非 0 退出，且报"环境拦截"而不是"网络"
+  checks=$((checks+1))
   rc=0
   out="$(export PATH="${ST_TMP}/bin:${PATH}" CYTHSEC_FORCE_NPM_CI=1
          export STUB_NPM_CI_TEXT='npm error SAFE_DELETE_BULK_CONFIRM_REQUIRED: bulk delete'
@@ -217,7 +264,65 @@ STUB
     echo "  ✗ 拦截分支未被识别（退出 ${rc}）" >&2; printf '%s\n' "${out}" >&2; fails=$((fails+1))
   fi
 
-  # 3. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
+  # 3. 工具链预检的**选择映射**：选了什么就只查什么（2026-10-05 在 2 核虚机上撞到的问题）
+  checks=$((checks+1))
+  local saved_all="${ALL}"
+  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}"
+  ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
+  got="$(required_tools | tr '\n' ' ')"
+  # 注意用「空格分词的整词」匹配：直接 grep 'go' 会被 "cargo" 命中（本自证第一次跑就抓到了
+  # 这个假阳性 —— 断言写松了，等于没验）。
+  if printf '%s' " ${got} " | grep -qE " cargo " \
+     && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm|tshark) '; then
+    echo "  ✓ 预检映射：只选 --rust → 只要 cargo + ${PYTHON:-python3}（不要求 cmake/go/node）"
+  else
+    echo "  ✗ 预检映射：只选 --rust 却要求了「${got}」" >&2; fails=$((fails+1))
+  fi
+
+  # 端到端反向注入：在**只有 cargo/python3 替身**的 PATH 下
+  #   (a) rust-only 必须通过（缺 cmake 不该挡住它）—— 这条就是本次修复要守的行为；
+  #   (b) cpp-only 必须红，且报"工具链缺失: cmake"（改成"全都不查"也会被这条抓住）。
+  cat > "${ST_TMP}/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  cat > "${ST_TMP}/bin/python3" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "${ST_TMP}/bin/cargo" "${ST_TMP}/bin/python3"
+  rc=0
+  out="$(ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+         BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
+         export PATH="${ST_TMP}/bin"
+         check_toolchain 2>&1)" || rc=$?
+  if [[ ${rc} -eq 0 ]]; then
+    echo "  ✓ 预检反向注入：PATH 里没有 cmake 时，--rust 仍然通过"
+  else
+    echo "  ✗ 预检反向注入：PATH 里没有 cmake 就把 --rust 挡住了（退出 ${rc}）" >&2
+    printf '%s\n' "${out}" >&2; fails=$((fails+1))
+  fi
+  rc=0
+  out="$(ALL=0; BUILD_CPP=1; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+         BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
+         export PATH="${ST_TMP}/bin"
+         check_toolchain 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q '工具链缺失: cmake'; then
+    echo "  ✓ 预检反向注入：--cpp 时缺 cmake 会被判红并点名"
+  else
+    echo "  ✗ 预检反向注入：--cpp 缺 cmake 未被判红（退出 ${rc}）" >&2
+    printf '%s\n' "${out}" >&2; fails=$((fails+1))
+  fi
+  ALL="${saved_all}"
+  BUILD_CPP="${saved_flags:0:1}"; BUILD_RUST="${saved_flags:1:1}"; BUILD_GO="${saved_flags:2:1}"
+  BUILD_NODE="${saved_flags:3:1}"; BUILD_PARITY="${saved_flags:4:1}"; BUILD_DPI="${saved_flags:5:1}"
+  BUILD_REASSEMBLY="${saved_flags:6:1}"; BUILD_FLOWS="${saved_flags:7:1}"; BUILD_E2E="${saved_flags:8:1}"
+  BUILD_LIVE="${saved_flags:9:1}"; BUILD_BENCH="${saved_flags:10:1}"
+
+  # 4. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
+  checks=$((checks+1))
   rc=0
   out="$(export PATH="${ST_TMP}/bin:${PATH}" CYTHSEC_FORCE_NPM_CI=1
          export STUB_NPM_CI_TEXT='npm error code EAI_AGAIN'
@@ -228,7 +333,8 @@ STUB
     echo "  ✗ 真失败分支分类错误（退出 ${rc}）" >&2; printf '%s\n' "${out}" >&2; fails=$((fails+1))
   fi
 
-  # 4. 成功分支：强制走完 npm ci 后仍要继续跑到 npm test（否则"跳过 ci"会变成
+  # 5. 成功分支：强制走完 npm ci 后仍要继续跑到 npm test（否则"跳过 ci"会变成
+  checks=$((checks+1))
   #    "跳过整段前端测试"而门禁全绿）
   rc=0
   out="$(export PATH="${ST_TMP}/bin:${PATH}" CYTHSEC_FORCE_NPM_CI=1
@@ -240,7 +346,7 @@ STUB
   fi
 
   if [[ ${fails} -eq 0 ]]; then
-    echo "自证通过：4 个场景全部符合预期"
+    echo "自证通过：${checks} 个场景全部符合预期"
     return 0
   fi
   echo "自证失败：${fails} 个场景不符预期" >&2

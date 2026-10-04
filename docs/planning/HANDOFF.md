@@ -26,7 +26,7 @@
 | TCP 乱序重组 + TCP 选项解析 | ◐ 已落地，三方互证通过 | `dataplane/traffic-engine/src/reassembly/` |
 | 流表 / 超时 / 逐出 / 回调 + TCP 状态机 + 会话管理 | ☑ 已落地（CYS-TRF-006→◐ / 007→◐ / 008/009/010/011/012→☑） | `dataplane/traffic-engine/src/{flow,session,tcp}/` |
 | 特征提取 + FlowRecord + 离线 pcap CLI | ☑ 已落地（CYS-TRF-004/005/014/027/033/035） | `src/{feature,record,pipeline,bin/analyze}.rs` |
-| 真实网卡抓包（Linux AF_PACKET / macOS BPF） | ◐ 编译与断言通过，**真抓包未验收** | `dataplane/packet-engine/src/backends/` |
+| 真实网卡抓包（Linux AF_PACKET / macOS BPF） | **Linux 侧真抓包已验收（2026-10-05，见 §2.7）**：2 vCPU Rocky Linux 10.2 aarch64 测试机、真实网卡 `enp2s0`、13/13 断言（74 包 / tshark 74 帧一致 / 环 74=74 / 10 条 Flow）；macOS BPF 侧仍受 `/dev/bpf*` 权限阻塞（e2e 内显式 `SKIPPED`，不显绿） | `dataplane/packet-engine/src/backends/` |
 | 数据面基准（吞吐/内存 + 多实例扩展 + 反向注入门禁） | ☑ 19 项 · 回归下限全过 · 需求目标 11~14/19（差距已列明）· **多实例分核实验已定路线：4 核/10G 口** | `src/bin/bench.rs` + `scripts/verify/check-flow-bench.sh` |
 | 跨语言共享环端到端 | ☑ 19 项断言通过 | `scripts/verify/e2e-shared-ring.sh` |
 | 控制平面（Go 四服务） | ◐ 引擎内核已落地（约 9000 行源码 / 7000 行测试），**但待办表未同步** | `services/` |
@@ -284,6 +284,60 @@ N 张**完全独立**的 `FlowTable` 各占一个线程跑稳态 update；外加
 
 ---
 
+### 2.7 换机器验证：Linux aarch64 测试机（2026-10-05）
+
+**为什么做**：此前所有验证都只在 macOS/M1 Pro 上跑过。仓库宣称支持的发行版里有
+Rocky Linux，而「本机全绿 ≠ 别的机器能构建/能过」是 §7 第 7 条已经吃过一次的亏。
+本批把开发机（VMware Fusion 上的 Rocky Linux 10.2 aarch64 虚拟机，2 vCPU / 3 GB /
+4 KiB 页）接进回路，用它当**第二台机器**。（机器信息与接入方式见
+`.workbuddy/memory/MEMORY.md` 的「测试环境」；凭据不入仓库。）
+
+**做法**：`git archive HEAD` 同步源码（**不用** `tar --exclude`，见 §7 第 9 条），
+装上与本机**逐位相同**的 `rustc 1.97.1`（+ gcc 14.3.1 / tshark 4.4.2）后跑同一套脚本。
+
+**结果（全部通过）**：
+
+| 关口 | 结果 |
+| --- | --- |
+| `test-all.sh --rust` | **337 项全过**，与本机计数一致 |
+| `test-all.sh --cpp` | **6/6 通过** |
+| `test-all.sh --live` | **13/13 断言**：真实网卡 `enp2s0` 采集 74 包、`tshark` 复核帧数 74 = 落盘数、环内消费 74 = 灌入数、解出 10 条 Flow、Rust `decode_fail` 与 tshark 前缀非 IP 帧数同为 0（三实现判定一致） |
+| `cythsec-bench --flows 200000 --rounds 2 --report-only` | 1 线程 6.73 / 2 线程 7.41 / 4 线程 12.85 / 8 线程 13.20 Mops/s；**比值判据 `table-scaling-vs-ceiling` = 0.94 仍成立**（该机核数不足，比值口径正是为此设计的）；按单核折算 10G 口需 3 核，含工程余量取实测档位外推 **14 核** > `ap=2` → 该机**跑不满 10G**（机器属性，不是代码问题） |
+
+**换机器才暴露的 3 处「把本机/平台假设当成普遍事实」（全部已修 + 已加自证）**：
+
+1. **`test-all.sh` 的工具链预检不看选了哪些分组** —— `--rust` 也要求 cmake/go/node，
+   在只有 cargo 的机器上直接报「工具链缺失: cmake」而**本次运行根本不需要它**
+   （在虚拟机上是实测撞到的：先卡 cmake，装完 cmake 又卡 go）。改为按所选分组取工具链
+   （纯函数 `required_tools()`，便于自证），并在 `--self-test` 里加**反向注入**：
+   PATH 中没有 cmake 时 `--rust` 必须通过、`--cpp` 必须点名判红。
+2. **`bench.rs` 的串行档断言带机器属性** —— `serialized_table_is_flagged_as_not_scaling`
+   断言「串行效率 < 回归下限 0.25」，10 核实测 0.05~0.10 成立，**2 核上是 0.33**（核太少，
+   表达不出抢锁），于是这条判据自己变成假红。改为机器无关形态：**永远**断言
+   `串行效率 < 并行效率`；只有 `ap ≥ 4` 才断言比值低于下限；另加与核数无关的兜底
+   （串行档**顶档聚合**必须低于该档下限 —— 共享锁的特征就是"多核也上不去"）。
+   两机复验：10 核 13/13、2 核 13/13。
+3. **C++ 实时采集测试里写死了两处平台常量** —— ① 用 `0xFFFF` 当「未知链路类型」：
+   macOS 上确实未知，**Linux 上它是具名的 `ARPHRD_VOID`**（相邻 `0xFFFE` = `ARPHRD_NONE`），
+   于是实现照实返回 `VOID`、断言判红；改用 `0x10000`（超出 16 位 `ARPHRD_*`/`DLT_` 空间），
+   且期望的十六进制回显**由常量算出**。② `kNoSuchIface` 是 32 字符，而 `IF_NAMESIZE`=16，
+   Linux 的 `open()` 会**先命中「接口名过长」分支**，报的不是「不存在」，于是
+   「诊断必须给出可操作线索」这条断言在 aarch64 上红；改用短名（"超长名字不崩溃"本就有专门用例）。
+   两机复验：macOS 6/6、Linux 6/6。
+
+**这三条都不是「Linux 有 bug」，而是测试里写死的机器/平台假设** —— 换一台机器跑一次全暴露，
+且**全都是假红**（把机器属性报成代码缺陷），正是本仓库最反对的那类红。教训与本仓库一贯口径一致：
+**阈值与常量一旦带平台或机器属性，判据要么改成相对量，要么显式限定适用条件。**
+
+**顺带修掉一处默认门禁的潜伏假红（同样是换环境才暴露）**：`--live` 的 D 项断言「Rust 的 `decode_fail` == tshark 判定的前缀非 IP 帧数」原先用 `tshark -e eth.type` 取数，而**网桥周期发的 STP BPDU 是 802.3 + LLC 帧**（`eth:llc:stp`，用长度字段而非 EtherType）→ `eth.type` 输出空行 → 旧写法 `awk 'NF {...}'` 把空行**整行丢掉** → 裁判少数 6 帧，把「两个实现一致判 6、裁判判 0」报成不一致。**只要网络里有交换机在发 STP，这道默认门禁就会长期假红**（本机 en0 上实测 6 帧；此前各批「13 项全过」只是因为抓包窗口里恰好没有 LLC 帧，虚拟机那次是 0==0 空过）。修法：裁判改用 `frame.protocols`（协议栈里没有 ip/ipv6 即非 IP，与解析器口径一致且对任何封装都成立，抽成 `nonip_count()` 并写明为什么不用 `eth.type`），不一致时把三方计数与错误码明细一起摊开便于归因。修后本机 8==8、虚拟机 0==0，均 13/13。
+
+**能力边界（诚实）**：该机 2 vCPU，**吞吐类结论不可用**（`--bench` 只 `--report-only`，
+照门禁阈值跑会红 —— 阈值是机器相对的，不得据其判红）；页大小是 **4 KiB**
+（`CONFIG_ARM64_4K_PAGES=y`），与 macOS 的 16 KiB 不同、对 `af_packet.h` 的 PAGE_SIZE
+运行时假设仍有覆盖价值，但**「64 KiB 页路径」至今没有覆盖环境**（早前文档把它写成 64 KiB 是错的，已改）。
+
+---
+
 ## 3. 代码地图
 
 ```
@@ -510,10 +564,10 @@ tshark 是唯一能发现「一致地错」的手段。
 | 项 | 缺口 | 阻塞原因 |
 | --- | --- | --- |
 | `CYS-PKT-007` | macOS 真抓包未验收 | `/dev/bpf*` 属 `root:wheel 600`，本机无免密 sudo。e2e 中显式标 `SKIPPED`，**不显绿** |
-| `CYS-PKT-008` | 「吞吐显著高于 pcap live」无实测对照数据 | 三发行版仅验证了**编译通过 + 真实抓包**（Ubuntu 24.04 / Rocky 9 / openEuler 24.03 容器内） |
+| `CYS-PKT-008` | 「吞吐显著高于 pcap live」无实测对照数据 | 证据已升级（2026-10-05）：除三发行版容器内编译外，**真实主机 + 真实网卡**上 13/13 断言通过（Rocky 10.2 aarch64 虚机 `enp2s0`，见 §2.7）；仍缺的是**与 pcap live 的吞吐对照** |
 | `CYS-TRF-019` | 「样本集准确率 ≥ 95%」无样本集 | 现有 **32 条**向量只证明**边界正确**，不构成准确率指标 |
 | `CYS-TRF-016` | 双向 `Reassembler` / 超时 / 连接表驱逐未做 | 当前只有单向 `Stream` |
-| `CYS-TRF-034` | 「真实网卡 → Flow」未达成 | 受 `CYS-PKT-007/008` 阻塞；已达成的是「真实 pcap → 环 → Flow」 |
+| `CYS-TRF-034` | 「真实网卡 → Flow」**Linux 侧已达成**（2026-10-05）：`enp2s0` 真抓 → pcap → 环 → Rust 解出 10 条 Flow，且 Rust `decode_fail` 与 tshark 判定一致 | **macOS 侧仍未达成**（受 `CYS-PKT-007` 的 `/dev/bpf*` 权限阻塞）；「真实 pcap → 环 → Flow」早已达成 |
 | `CYS-TRF-001` | 未拆 cargo workspace | **刻意延后**，见 §2 顺序决策；模块边界已按 crate 语义划分好，将来是纯目录搬移 |
 | ~~HTTP 的 UA/状态码/Content-Type 与响应侧~~ | **已做**（2026-10-04 第四段，`CYS-TRF-020`→☑）：请求侧 URI/UA/Content-Type + 响应侧状态码/原因/Content-Type；**未登记**：`Content-Length`（已解析但字典未登记该属性，按「只产出已登记属性」的硬约束不产出） | — |
 | ~~DNS 的 RCODE/EDNS0 与 ANSWER 解析~~ | **已做**（2026-10-04 第四段，`CYS-TRF-023`→☑）：RCODE（仅响应）/QCLASS/应答地址集合/指针跳数/EDNS0 UDP 上限；**已知分歧**：`dns-negative-garbage` 上 tshark 报 rcode=15 而我们判「不是 DNS」（rcode>11），已在 `expected.json` 显式标注 `tshark.verified=false` | — |
@@ -625,6 +679,34 @@ tshark 是唯一能发现「一致地错」的手段。
    再逐文件比对 32 个入库向量与生成物字节；`--self-test` 可单独跑。
    挂在 `test-all.sh --dpi`（默认全量门禁含该项）上。
 
+9. **跨机同步代码：`tar --exclude` 会静默吃掉源码，`git archive` 才是对的**（2026-10-05）
+   macOS 自带的 `tar` 是 bsdtar：`--exclude=./target` / `--exclude=./build` 匹配的是
+   **任意层级**的同名目录，实测静默丢掉了 `scripts/build/build-all.sh` 与
+   `services/telemetryd/internal/target/*.go`（共 5 个文件）—— 正是第 7 条那类
+   「磁盘上有 ≠ 版本控制里有」，而且这次连目标机上都是缺的。正确姿势：
+
+   ```bash
+   git archive --format=tar HEAD | ssh <host> 'mkdir -p <dst> && tar -xf - -C <dst> --no-same-owner'
+   COPYFILE_DISABLE=1 tar -cf - .git | ssh <host> 'tar -xf - -C <dst> --no-same-owner'
+   ```
+
+   另外三个坑：① 以 root 解包会保留 macOS 的 uid → git 报「可疑的所有权」，需
+   `chown -R root:root`（或 `safe.directory`）；② 不加 `COPYFILE_DISABLE=1` 会带进
+   AppleDouble `._*`，`.git/objects/pack/._*.idx` 会让 git 报 `index file ... is too small`；
+   ③ bsdtar 的 `LIBARCHIVE.xattr.com.apple.provenance` 警告是噪声（`--no-xattrs` 或丢给 `/dev/null`）。
+   **自证**：同步后目标机上 `git status --short` 必须 **0 行**。
+   相关：**干净克隆里直接 `cargo test` 也会失败** —— `datasets/**/*.pcap|json` 是被
+   `.gitignore` 忽略的生成物，而测试用 `include_bytes!/include_str!` 引用它们，
+   必须走 `scripts/test/test-all.sh --rust`（会先生成向量）。
+
+10. **测试里写死的「平台常识」换机器就是假红**（2026-10-05 一次抓到 3 处，详见 §2.7）
+   - `0xFFFF` 当「未知链路类型」：Linux 上是具名的 `ARPHRD_VOID`（`0xFFFE` = `ARPHRD_NONE`）。
+   - `kNoSuchIface` 用 32 字符：`IF_NAMESIZE`=16 → `open()` 先报「接口名过长」而非「不存在」。
+   - 串行档断言「效率 < 下限 0.25」：2 核机器表达不出抢锁（实测 0.33）。
+   **共同的修法**：取值/阈值不要凭"在 macOS/本机上看起来合理"来定 —— 要么改成相对量
+   （比值、与核数无关的兜底），要么显式限定适用条件（`ap >= 4` 才断言），
+   并把期望值由常量算出而不是抄一份字面量。**假红与假绿同样有害**：假红会让人干脆关掉门禁。
+
 ---
 
 ## 8. 下一棒建议顺序（含理由，可据实际情况调整）
@@ -635,7 +717,7 @@ tshark 是唯一能发现「一致地错」的手段。
 | --- | --- | --- |
 | ~~1~~ | ~~**`evict_lru` 的 O(每分片容量)**~~ **已于 2026-10-04 第二段落地** | 结论与预期相反：**不需要语义决策** —— 分片内改成"槽位数组 + 双向链表"后仍是精确 LRU、仍确定性，逐出摘表头即 O(1)（0.21µs@256 / 0.34µs@8192）。而真正会改语义的**采样 LRU 被实测否掉**（热点命中率 58.4% vs 99.9%）。教训：先量再决定，别把"看起来最省事的近似"当成默认选项 |
 | ~~1~~ | ~~**稳态吞吐与 10G 的差距**~~ **已于 2026-10-04 第三段落地**（见 §2.6） | 便宜实验做完了，结论比预期干脆：**2 核即压线、4 核留 1.5~1.8 倍余量 → 走"每核一张独立表"**，热/冷拆分不作当前路线（触发条件已写明）。8 线程不再近线性**不是表内共享瓶颈**（同机纯计算对照同样上不去），判据因此改成「相对纯计算对照的比值」。顺带发现 `FlowTable` 原先不是 `Send`，这条路本来**根本无法表达**。**剩下的**：把多实例接进实际消费路径 + 核算整条流水线的总核预算 |
-| 2 | `CYS-PKT-007/008` 收尾：`e2e-live-capture.sh` + 吞吐对照实测 | 唯一阻塞 `CYS-TRF-034` 验收的项；吞吐数据是省网需求的核心论据 |
+| 2 | `CYS-PKT-007/008` 收尾：**Linux 侧已于 2026-10-05 验收**（真机真网卡 13/13，见 §2.7，`CYS-TRF-034` 的 Linux 侧随之达成）；**剩下**：① macOS 侧真抓包（需一次免密 sudo 现场，`/dev/bpf*`）；② `af_packet` 与 pcap live 的**吞吐对照**实测 | 吞吐对照是省网需求的核心论据；macOS 侧不解决则「两平台都验过」始终是半句真话 |
 | ~~3~~ | ~~`VERSION` 不一致~~ **已落地**（`64f4079` 定真源 + 2026-10-04 挂进门禁 + 自证） | 真源 `VERSION=0.1.0`，四端全部派生；`check-version.sh` 成为 `lint-all.sh` 第 6 条并带 `--self-test`（3 处注入必须判红）。教训：**检查器不挂门禁等于没有检查器** —— 它当时已存在且能跑，但没有任何脚本调用它 |
 | 4 | `CYS-TRF-020/023` 补全（HTTP 响应侧与 UA、DNS RCODE/EDNS0） | 已落地部分的自然延伸，向量体系现成，加样本成本低 |
 | ~~5~~ | ~~修 `test_node()` 的 `npm ci` 拦截（见 §7.1）~~ **已落地**（2026-10-04） | 见 §7.1：改成"依赖在位就跳过 `npm ci`"，并把失败分类抽成可自证函数 + `--self-test` 4 场景（含此前从未执行过的拦截分支）。`--node` 现在全绿 |

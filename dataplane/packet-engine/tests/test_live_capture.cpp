@@ -42,6 +42,7 @@
 #endif
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -122,7 +123,15 @@ const char* kBaseDefaultReason() {
   return "本后端未提供失败原因";
 }
 
-const char* kNoSuchIface = "cythsec-nonexistent-iface-0xDEAD";
+// 不存在的接口名：**必须短于 IF_NAMESIZE（Linux 与 macOS 均为 16）**。
+//
+// 早前用的是 32 字符的 "cythsec-nonexistent-iface-0xDEAD"：在 macOS 的 BPF 路径上它走到
+// BIOCSETIF→ENXIO「不存在」分支，测试是绿的；而在 Linux 的 AF_PACKET 路径上，
+// `src.size() >= IF_NAMESIZE` 的**「接口名过长」分支先命中**，报出的是另一种原因，
+// 于是「诊断给出了可操作线索（不存在 / --list-ifaces）」这条断言在 aarch64 Rocky 上
+// 直接变红（2026-10-05 实测）。「超长名字」本身就是另一条专门用例（只要求不崩溃），
+// 两种场景不该挤在同一个常量里。
+const char* kNoSuchIface = "cyth-noif0";
 
 // ---------------------------------------------------------------------------
 // 1. 接口枚举（跨发行版通用性的地基）
@@ -617,10 +626,19 @@ void test_link_type_names() {
 
   // 未知编号必须回显原始值。排障时「看到没见过的编号」比「看到一句笼统的未知」
   // 有用得多 —— 前者可以直接拿去查，后者只能再改代码加日志。
-  const std::string unknown = link_type_name(0xFFFFu);
+  //
+  // **取值不能随手挑**：早前用 0xFFFF，在 macOS 上确实未知，但在 Linux 上 0xFFFF 是
+  // 具名的 ARPHRD_VOID（相邻还有 0xFFFE = ARPHRD_NONE）→ Linux 实现照实返回 "VOID"，
+  // 这两条断言于是在 aarch64 Rocky 上变红（2026-10-05 实测）。
+  // 取 0x10000：超出 16 位的 ARPHRD_*/DLT_ 编号空间，两端都必然落到 default 分支；
+  // 期望值由常量算出，不写死字面量（否则改常量时断言会静默失配）。
+  constexpr uint32_t kUnknownLinkType = 0x10000u;
+  const std::string unknown = link_type_name(kUnknownLinkType);
   check(!unknown.empty(), "link_type_name(未知值) 非空");
   check(unknown.find("未知") != std::string::npos, "未知链路类型被明确标为「未知」");
-  check(unknown.find("ffff") != std::string::npos || unknown.find("FFFF") != std::string::npos,
+  char want_hex[16];
+  std::snprintf(want_hex, sizeof(want_hex), "%04x", kUnknownLinkType);
+  check(unknown.find(want_hex) != std::string::npos,
         "未知链路类型的可读名回显原始编号（便于直接查证）");
 }
 

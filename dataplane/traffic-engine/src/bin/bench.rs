@@ -1871,9 +1871,11 @@ mod tests {
         });
         let par_agg = ops as f64 / d_par / 1e6;
         let par_eff = scaling_efficiency(par_agg, par_agg / n as f64, n, ap);
-        // 串行档：同一批键，但共用一张表 + 互斥锁
+        // 串行档：同一批键，但共用一张表 + 互斥锁。
+        // 容量按**顶档**给：否则顶档那一段会因为表太小而付逐出代价，把"锁竞争"
+        // 与"容量不足"混在一起 —— 那是两件不同的事。
         let mut shared = FlowTable::new(FlowTableConfig {
-            max_flows: PER * n * 2,
+            max_flows: PER * 8 * 2,
             shard_count: 16,
             ..Default::default()
         });
@@ -1893,14 +1895,39 @@ mod tests {
         });
         let ser_single = PER as f64 / d_ser1 / 1e6;
         let ser_eff = scaling_efficiency(ser_agg, ser_single, n, ap);
+        // **机器无关**的断言：竞争必须让它变差（任何核数都成立）。
         assert!(
             ser_eff < par_eff,
             "串行形态的效率（{ser_eff:.2}）必须低于并行形态（{par_eff:.2}）"
         );
+        // 「效率比值跌到回归下限之下」**只在核数足够时**才成立：竞争要在多个核上
+        // 同时抢锁才会把比值压垮，2 核机器根本表达不出来（2026-10-05 在 2 vCPU 的
+        // Rocky aarch64 虚机上实测：10 核上比值 0.05~0.10，2 核上 0.33 > 下限 0.25）。
+        // 硬断言会把"机器小"报成"判据坏" —— 那正是本仓库反复强调的假红。
+        if ap >= 4 {
+            assert!(
+                ser_eff < FLOOR_SCALING_VS_CEILING,
+                "核数充足（ap={ap}）时串行形态的效率 {ser_eff:.2} 必须低于回归下限 \
+                 {FLOOR_SCALING_VS_CEILING}；否则判据无法把它与「有共享瓶颈」区分开"
+            );
+        }
+        // 兜底判据（与门禁实际用的一致）：串行档在**顶档**的聚合吞吐必须低于该档下限。
+        // 这条与核数无关 —— 下限按 `档位 × 每核下限` 线性给，核数不足时它只会更宽松，
+        // 而共享锁是"多核也上不去"，所以各档聚合下限才是拦得住的那种判据。
+        const TOP: usize = 8;
+        let mut top_insts: Vec<Instance> = (0..TOP)
+            .map(|i| build_instance(PER, 0x7c01_0000 + i as u64))
+            .collect();
+        let top_ops = PER * TOP;
+        let (_, d_top) = twice(|| {
+            serialized_duration(&top_insts, TOP, &shared);
+        });
+        let top_agg = top_ops as f64 / d_top / 1e6;
+        let top_floor = (FLOOR_STEADY_PER_CORE_MOPS * TOP as f64).min(PER_PACKET_TARGET_MOPS);
         assert!(
-            ser_eff < FLOOR_SCALING_VS_CEILING,
-            "串行形态的效率 {ser_eff:.2} 必须低于回归下限 {FLOOR_SCALING_VS_CEILING}；\
-             否则判据无法把它与「有共享瓶颈」区分开"
+            top_agg < top_floor,
+            "串行档在 {TOP} 线程的聚合 {top_agg:.2} Mops/s 必须低于该档回归下限 {top_floor:.2}\
+             （共享锁的特征就是多核也上不去）"
         );
     }
 

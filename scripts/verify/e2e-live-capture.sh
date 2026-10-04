@@ -22,7 +22,9 @@
 #   C. 自家解析器回读：cythsec-parse 计数 == capture 交付数。
 #      —— 写盘 / 读盘 / 采集三方对同一批字节计数一致，排除「落盘丢尾包」。
 #   D. 真实网卡 → 环 → Flow（两段式，中间经文件）：把本轮真实抓到的报文灌入
-#      共享环，Rust 消费端解出 flow>=1 且 decode_fail=0。
+#      共享环，Rust 消费端解出 flow>=1，且**非 IP 帧的判定与第三方裁判（tshark）
+#      一致**（不是断言 decode_fail=0：ARP/STP 这类帧解不出五元组是正确行为，
+#      要验的是两个独立实现对「哪些帧不可解」看法相同；裁判的口径见 nonip_count）。
 #      —— 这是 TRF-034「真实报文进、可分析记录出」在当前架构下的形态；
 #      同进程零拷贝直灌环属后续任务，本脚本不冒充它。
 #
@@ -188,6 +190,19 @@ field() { # field <文件> <记录标签> <键>
 failed=0
 skipped=0
 total=0
+# 第三方裁判：同一窗口内 tshark 判定的「非 IP 帧」数。
+#
+# 判据选择有过一次教训（2026-10-05，本机 en0 上实测）：**不能用 `-e eth.type`**。
+# 网桥/交换机周期发的 STP BPDU 是 802.3 + LLC 帧（`eth:llc:stp`），用**长度字段**而非
+# EtherType，于是 `eth.type` 输出空行；而旧写法 `awk 'NF {...}'` 的 `NF` 过滤会把这
+# 些行**整行丢掉** → 裁判少数 6 帧，把「我们两个实现判 6、裁判判 0」报成不一致
+# （真实情况是三者一致，只是裁判瞎了）。改用 `frame.protocols`：只要协议栈里没有
+# ip/ipv6 就算非 IP —— 与解析器的口径（解不出五元组）一致，且对任何封装都成立。
+nonip_count() { # nonip_count <pcap> <前缀窗口帧数>
+  tshark -r "$1" -c "$2" -T fields -e frame.protocols 2>/dev/null |
+    awk 'NF { p=tolower($0); if (p !~ /(^|:)ip(:|$)/ && p !~ /(^|:)ipv6(:|$)/) c++ } END { print c+0 }'
+}
+
 check() { # check <说明> <实际> <期望>
   total=$((total + 1))
   if [[ "$2" == "$3" ]]; then
@@ -354,7 +369,12 @@ if [[ "${RUST_READY}" == "1" && -s "${PCAP}" ]]; then
     # 要验的是 Rust 与 C++ 两个独立实现对「哪些帧不可解」的判定一致：
     # tshark 按 eth.type 取同一窗口的非 IP 帧数作第三方裁判。
     if command -v tshark >/dev/null 2>&1 && [[ "${LIMIT}" != "0" ]]; then
-      prefix_nonip="$(tshark -r "${PCAP}" -c "${LIMIT}" -T fields -e eth.type 2>/dev/null | awk 'NF {t=tolower($0); if (t!="0x0800" && t!="0x86dd") c++} END {print c+0}' || true)"
+      prefix_nonip="$(nonip_count "${PCAP}" "${LIMIT}" || true)"
+      if [[ "${dfail}" != "${prefix_nonip}" ]]; then
+        # 不一致要能一眼归因：把三方计数与错误码明细都摊开，而不是只报一个数。
+        echo "  · 归因：Rust decode_fail=${dfail} / tshark 非IP=${prefix_nonip} / C++ 不支持 L2=${unsupported_l2:-<空>}" >&2
+        grep -E '^ring-consume decode_fail code=' "${CONS_OUT}" | sed 's/^/    /' >&2 || true
+      fi
       check "D Rust decode_fail == tshark 前缀非IP帧数（三实现判定一致）" "${dfail}" "${prefix_nonip}"
     else
       echo "  ⚠ 无 tshark：decode_fail 一致性项未核验（不计为通过）"

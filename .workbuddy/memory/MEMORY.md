@@ -1,6 +1,6 @@
 # CythSec 项目长期记忆
 
-> 最近更新：2026-10-02（状态点 `d322171`）
+> 最近更新：2026-10-05（状态点 `4b1e0c4`）
 > 接力文档：`docs/planning/HANDOFF.md` ｜ 主待办表：`docs/planning/BACKLOG.md`
 
 ## 核心体系（不可违反）
@@ -15,8 +15,10 @@
 - 日常快速回路：`--rust --dpi --reassembly`
 - `--parity` 与 `--e2e` **必须与 `--cpp --rust` 同时选**（否则脚本 `exit 2` 拒绝）
 - `bash scripts/lint/lint-all.sh`（7 项：cpp / rust / go / codegen×2 / node 类型检查 / node eslint）
-- ⚠ `--node` 在本机**必红**：`npm ci` 被环境 safe-delete 钩子拦（7884 目标 > 阈值 50），
-  报错文案误指「网络」。规避：`cd web/console && npm test`（25 项）
+- `--node`：`node_modules` 已在位时脚本会**自动跳过 `npm ci`**（不会误红）；若强制走 `npm ci`
+  （`CYTHSEC_FORCE_NPM_CI=1`）而被环境 safe-delete 钩子拦（7884 目标 > 阈值 50），脚本按
+  `ENV_INTERCEPTED` 单独分类并明说"不是网络问题"，不再把环境限制报成代码失败
+  （`--self-test` 用 stub npm 自证这条分类；2026-10-05 实测 `--node` 通过）
 
 ## 项目约定（长期）
 
@@ -32,9 +34,44 @@
 ## 测试环境
 
 - **Linux 侧测试机**：macOS（VMware Fusion）上的 Rocky Linux 10.2 aarch64 虚拟机（主机名 `hkcfw`），
-  用于真实抓包 / 真实网卡验证（`CYS-PKT-007` / `CYS-PKT-008` / `CYS-TRF-034`）与 aarch64 64 KiB 页路径。
-  凭据不入本仓库；登录信息与网络拓扑见本地知识库：
-  `/Users/xuzhongxin/Documents/智能体长期神经网络/SuperAGIRAS/50-Environment/VMware-Rocky-TestVM.md`
+  用于真实抓包 / 真实网卡验证（`CYS-PKT-007` / `CYS-PKT-008` / `CYS-TRF-034`）与跨架构（aarch64 / 4 KiB 页）路径。
+  **凭据不入本仓库**；主机名、两地址、Fusion 路径、忘记密码时的 GRUB 重置法与 IP 失联时的租约查法，
+  见本地知识库：`/Users/xuzhongxin/Documents/智能体长期神经网络/SuperAGIRAS/50-Environment/VMware-Rocky-TestVM.md`
+- **接入方式（2026-10-05 建立，推荐）**：专用密钥已装好，免密且口令不进脚本/命令行/仓库：
+  - `ssh cythsec-dev` → NAT `172.16.191.129`（用户给的地址）
+  - `ssh cythsec-dev-ho` → Host-Only `172.16.135.128`（抖动更小，**大文件传输优先用它**）
+  - 私钥 `~/.ssh/id_ed25519_cythsec_dev`（**只在本机**；别名写在 `~/.ssh/config`）
+- **规格与能力边界（决定在这台机上跑什么之前先看这条）**：**2 vCPU / 3 GB 内存 / 45 GB 磁盘 / 无 NUMA**。
+  已装：`rustup 1.97.1`（与本机同版本，含 rustfmt）+ `git` + `gcc`/`make` + `tshark 4.4.2` + `python3.12`。
+  **适合**：跨架构（aarch64）+ 跨发行版的**语义/正确性**验证、真实网卡（AF_PACKET）抓包、
+  与 macOS（16 KiB）不同的**页大小**路径、小规模基准。**不适合**：吞吐类结论 —— 2 核上 4/8 线程档
+  必然超订；且 `cythsec-bench` 的**回归下限是按 M1 Pro 标定的机器相对阈值**（`--bench` 本就默认不在
+  ALL 里），在这台机上只能 `--report-only` 取数，**不得据其判红**（否则等于把"机器小"报成"代码坏"）。
+  **页大小更正（2026-10-05 实测）**：该机 `CONFIG_ARM64_4K_PAGES=y` → **4 KiB 页**，**不是 64 KiB**
+  （早前记的"64 KiB 页路径"有误）。它对 `af_packet.h` 的 PAGE_SIZE 运行时假设仍有价值（提供了一个与
+  macOS 16 KiB 不同的页大小），但 **64 KiB 页路径至今没有覆盖环境**。
+  **2026-10-05 首轮验收结果**：`--rust` **337 项全过**（与本机计数一致）、`--cpp` 6/6、
+  `--live` **13/13 真实网卡断言**（`enp2s0`，74 包 / tshark 74 帧 / 环 74=74 / 10 条 Flow）。
+  同一批还修掉 3 处"把本机/平台假设当普遍事实"的假红（预检不分组、串行档效率断言、
+  C++ 测试里的 `0xFFFF`/超长接口名常量）—— 详见 `docs/planning/HANDOFF.md` §2.7 与 BACKLOG 变更记录。
+- **干净克隆里直接 `cargo test` 会失败**（2026-10-05 在虚拟机上撞到）：`datasets/**/*.pcap|json`
+  被 `.gitignore` 忽略（生成物），而测试用 `include_bytes!/include_str!` 引用它们 →
+  必须走 `bash scripts/test/test-all.sh --rust`（会先生成向量）。另：`test-all.sh` 的工具链预检
+  现已**按所选分组**要求（此前 `--rust` 也会因缺 cmake/go 被挡住，2026-10-05 修 + 自证）。
+- **代码同步姿势（2026-10-05，三个踩过的坑）**：用 `git archive`，**不要**用 `tar --exclude` ——
+  macOS 的 bsdtar `--exclude=./target` 会匹配**任意层级**同名目录，实测静默丢掉
+  `scripts/build/build-all.sh` 与 `services/telemetryd/internal/target/`（正是"本机全绿≠克隆能构建"那一类，
+  靠目标机 `git status` 才发现）：
+
+  ```bash
+  git archive --format=tar HEAD | ssh cythsec-dev-ho 'mkdir -p /root/CythSec && tar -xf - -C /root/CythSec --no-same-owner'
+  COPYFILE_DISABLE=1 tar -cf - .git | ssh cythsec-dev-ho 'tar -xf - -C /root/CythSec --no-same-owner'
+  ssh cythsec-dev-ho 'cd /root/CythSec && git status --short | wc -l'   # 必须为 0 行 = 传输无损的自证
+  ```
+
+  ① 以 root 解包会保留 macOS uid 501 → git 报"可疑的所有权"，需 `chown -R root:root`（或 `safe.directory`）；
+  ② 不加 `COPYFILE_DISABLE=1` 会带进 `._*` AppleDouble，`.git/objects/pack/._*.idx` 会让 git 报
+  "index file is too small"；③ bsdtar 的 xattr 警告是噪声（加 `--no-xattrs` 或 `2>/dev/null`），不是失败。
 
 ## 已知偏差（不要在报告里抹平）
 
