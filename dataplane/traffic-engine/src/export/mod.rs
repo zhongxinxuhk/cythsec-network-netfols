@@ -38,156 +38,10 @@
 
 use std::net::IpAddr;
 
+use crate::ipfix::{Ie, Template, IPFIX_VERSION, MSG_HEADER_LEN, TEMPLATE_SET_ID};
 use crate::record::FlowRecord;
 
 pub mod sink;
-
-/// IPFIX 版本号（RFC 7011 固定为 10）。
-pub const IPFIX_VERSION: u16 = 10;
-/// 报文头长度（字节）。
-pub const MSG_HEADER_LEN: usize = 16;
-/// Set 头长度（字节）。
-pub const SET_HEADER_LEN: usize = 4;
-/// 模板集标识。
-pub const TEMPLATE_SET_ID: u16 = 2;
-/// 数据集标识下界（RFC 7011：≥ 256）。
-pub const FIRST_DATA_SET_ID: u16 = 256;
-/// IANA 为 IPFIX 分配的默认端口（RFC 7011 §10.2.1 注册 4739）。
-pub const IPFIX_PORT: u16 = 4739;
-/// IPv4 模板 id。
-pub const TEMPLATE_ID_V4: u16 = 256;
-/// IPv6 模板 id。
-pub const TEMPLATE_ID_V6: u16 = 257;
-
-/// IPFIX 信息元素编号。
-///
-/// **对照 IANA "IPFIX Information Elements" 注册表（2026-10-05 取表）**：
-/// 1 octetDeltaCount / 2 packetDeltaCount / 4 protocolIdentifier / 7 sourceTransportPort /
-/// 8 sourceIPv4Address / 11 destinationTransportPort / 12 destinationIPv4Address /
-/// 27 sourceIPv6Address / 28 destinationIPv6Address / 34 samplingInterval /
-/// 148 flowId / 152 flowStartMilliseconds / 153 flowEndMilliseconds。
-///
-/// 单位与语义按注册表：`*Milliseconds` 是毫秒（不是微秒），`samplingInterval = 1`
-/// 的含义是「未采样」（RFC 5476：间隔 1 即每个包都观察）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
-pub enum Ie {
-    OctetDeltaCount = 1,
-    PacketDeltaCount = 2,
-    ProtocolIdentifier = 4,
-    SourceTransportPort = 7,
-    SourceIPv4Address = 8,
-    DestinationTransportPort = 11,
-    DestinationIPv4Address = 12,
-    SourceIPv6Address = 27,
-    DestinationIPv6Address = 28,
-    SamplingInterval = 34,
-    FlowId = 148,
-    FlowStartMilliseconds = 152,
-    FlowEndMilliseconds = 153,
-}
-
-impl Ie {
-    /// 注册表里的编号。写成方法而不是让调用点写裸数字：裸数字散落在编码器里
-    /// 正是"字段号写错但两端都同意"这类 bug 的温床（两端都错＝测试全绿）。
-    pub fn code(self) -> u16 {
-        self as u16
-    }
-}
-
-/// 模板里的一个字段：IE + 长度（定长编码）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FieldSpec {
-    pub ie: Ie,
-    pub len: u16,
-}
-
-/// 一个模板（v1 只有 v4/v6 两套，字段结构相同，仅地址 IE 与长度不同）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Template {
-    pub id: u16,
-    pub fields: Vec<FieldSpec>,
-}
-
-impl Template {
-    /// IPv4 模板。
-    pub fn ipv4() -> Self {
-        Self {
-            id: TEMPLATE_ID_V4,
-            fields: vec![
-                FieldSpec {
-                    ie: Ie::SourceIPv4Address,
-                    len: 4,
-                },
-                FieldSpec {
-                    ie: Ie::DestinationIPv4Address,
-                    len: 4,
-                },
-                FieldSpec {
-                    ie: Ie::SourceTransportPort,
-                    len: 2,
-                },
-                FieldSpec {
-                    ie: Ie::DestinationTransportPort,
-                    len: 2,
-                },
-                FieldSpec {
-                    ie: Ie::ProtocolIdentifier,
-                    len: 1,
-                },
-                FieldSpec {
-                    ie: Ie::OctetDeltaCount,
-                    len: 8,
-                },
-                FieldSpec {
-                    ie: Ie::PacketDeltaCount,
-                    len: 8,
-                },
-                FieldSpec {
-                    ie: Ie::FlowStartMilliseconds,
-                    len: 8,
-                },
-                FieldSpec {
-                    ie: Ie::FlowEndMilliseconds,
-                    len: 8,
-                },
-                FieldSpec {
-                    ie: Ie::FlowId,
-                    len: 8,
-                },
-                FieldSpec {
-                    ie: Ie::SamplingInterval,
-                    len: 4,
-                },
-            ],
-        }
-    }
-
-    /// IPv6 模板。
-    pub fn ipv6() -> Self {
-        let mut t = Self::ipv4();
-        t.id = TEMPLATE_ID_V6;
-        t.fields[0] = FieldSpec {
-            ie: Ie::SourceIPv6Address,
-            len: 16,
-        };
-        t.fields[1] = FieldSpec {
-            ie: Ie::DestinationIPv6Address,
-            len: 16,
-        };
-        t
-    }
-
-    /// 一条数据记录的长度（定长编码，与记录内容无关）。
-    pub fn record_len(&self) -> usize {
-        self.fields.iter().map(|f| f.len as usize).sum()
-    }
-
-    /// 模板集的字节长度（4 字节对齐：Set 头 4 + 模板头 4 + 4 字节/字段）。
-    pub fn template_set_len(&self) -> usize {
-        SET_HEADER_LEN + 4 + 4 * self.fields.len()
-    }
-}
 
 /// 导出配置。
 #[derive(Debug, Clone)]
@@ -487,8 +341,11 @@ fn write_ipv6(out: &mut Vec<u8>, ip: &IpAddr) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 只在测试里用到的常量/类型放在这里：放模块级会让非测试构建（CLI）报未使用 import，
+    // 而"关掉警告"是错的做法 —— 警告正是提醒我们 import 的位置不对。
     use crate::dpi::{AppId, Confidence, Outcome};
     use crate::feature::FeatureVector;
+    use crate::ipfix::{SET_HEADER_LEN, TEMPLATE_ID_V4, TEMPLATE_ID_V6, TEMPLATE_SET_ID};
     use crate::record::AppInfo;
     use std::net::Ipv6Addr;
 

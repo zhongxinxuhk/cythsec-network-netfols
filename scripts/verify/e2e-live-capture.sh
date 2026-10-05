@@ -198,9 +198,37 @@ total=0
 # 些行**整行丢掉** → 裁判少数 6 帧，把「我们两个实现判 6、裁判判 0」报成不一致
 # （真实情况是三者一致，只是裁判瞎了）。改用 `frame.protocols`：只要协议栈里没有
 # ip/ipv6 就算非 IP —— 与解析器的口径（解不出五元组）一致，且对任何封装都成立。
-nonip_count() { # nonip_count <pcap> <前缀窗口帧数>
-  tshark -r "$1" -c "$2" -T fields -e frame.protocols 2>/dev/null |
-    awk 'NF { p=tolower($0); if (p !~ /(^|:)ip(:|$)/ && p !~ /(^|:)ipv6(:|$)/) c++ } END { print c+0 }'
+# 「解不出五元组」的**完整**口径 = 三类之和，每一类都由 tshark 独立给出（不自己重算，避免自证）：
+#
+#   ① 非 IP 链路帧：协议栈里没有 ip/ipv6（ARP / LLDP / LLDP / 802.3+LLC 等）。
+#   ② IPv4 非首片：`ip.frag_offset > 0`。端口在首片里，本解码器按设计**拒绝**
+#      （`DecodeError::NonInitialFragment`）—— 而 tshark 的 `frame.protocols` 仍会写成
+#      `eth:ethertype:ip`（它能看到的就那么层次）。**这一条是 2026-10-05 现场踩到的**：
+#      抓包窗口里恰好有 2 个非首片分片，于是 `decode_fail=58` 而「非 IP」只有 56，
+#      默认关口就这么假红了一次（`ring-consume decode_fail code=decode.non_initial_fragment count=2`）。
+#   ③ IPv6 非首片：`ipv6.fraghdr.offset > 0`，同理。
+#
+# 教训（与 §7 那批坑同类）：**"两个独立实现的判定不一致"不等于"有一方错了"** ——
+# 先把"按设计拒绝"的类别逐条枚举进裁判口径，再谈一致性；否则判据里藏着一个
+# 依赖现场流量的隐藏变量，表现就是"偶尔红"。
+undecodable_count() { # undecodable_count <pcap> <前缀窗口帧数>
+  local nonip frag4 frag6
+  nonip="$(tshark -r "$1" -c "$2" -T fields -e frame.protocols 2>/dev/null |
+    awk 'NF { p=tolower($0); if (p !~ /(^|:)ip(:|$)/ && p !~ /(^|:)ipv6(:|$)/) c++ } END { print c+0 }')"
+  # -c 先于 -Y 生效：取的是**同一前缀窗口**里的匹配帧数（与①同窗，才能相加）。
+  frag4="$(tshark -r "$1" -c "$2" -Y 'ip.frag_offset > 0' 2>/dev/null | wc -l | tr -d ' ')"
+  frag6="$(tshark -r "$1" -c "$2" -Y 'ipv6.fraghdr.offset > 0' 2>/dev/null | wc -l | tr -d ' ')"
+  echo $((nonip + frag4 + frag6))
+}
+
+# 分项打印，便于不一致时归因（与 undecodable_count 用的是同一批 tshark 调用口径）。
+undecodable_breakdown() { # undecodable_breakdown <pcap> <窗口>
+  local nonip frag4 frag6
+  nonip="$(tshark -r "$1" -c "$2" -T fields -e frame.protocols 2>/dev/null |
+    awk 'NF { p=tolower($0); if (p !~ /(^|:)ip(:|$)/ && p !~ /(^|:)ipv6(:|$)/) c++ } END { print c+0 }')"
+  frag4="$(tshark -r "$1" -c "$2" -Y 'ip.frag_offset > 0' 2>/dev/null | wc -l | tr -d ' ')"
+  frag6="$(tshark -r "$1" -c "$2" -Y 'ipv6.fraghdr.offset > 0' 2>/dev/null | wc -l | tr -d ' ')"
+  echo "非IP=${nonip} + IPv4非首片=${frag4} + IPv6非首片=${frag6}"
 }
 
 check() { # check <说明> <实际> <期望>
@@ -343,35 +371,71 @@ else
   total=$((total + 1)); failed=$((failed + 1))
 fi
 
-# ---------- D 前置：裁判口径自证 ----------
-# nonip_count 的口径曾经错过一次（用 eth.type，802.3/LLC 帧没有 EtherType → 空行被
-# awk 的 NF 过滤整行丢掉 → 裁判少数若干帧，把一致报成不一致）。那种错法**只在网内有
-# STP 之类 LLC 帧的环境里才显形** —— 靠真实抓包去等它出现，等于靠运气。
-# 所以每次跑都用一个合成的两帧 pcap 自证：1 帧 LLC/STP + 1 帧 IPv4，裁判必须只数出 1。
-# 这一条如果换成 eth.type 口径立刻会红（0 != 1），故它同时是反向注入的接收方。
+# ---------- D 前置：裁判口径自证（两段，且第二段跑**完整判定链**） ----------
+# 这段存在的理由本身就是教训：
+#   ① `nonip_count` 曾用 `eth.type`，802.3/LLC 帧没有 EtherType → 空行被 awk 的 NF 丢掉 →
+#      裁判少数若干帧。那种错法**只在网内有 STP 之类 LLC 帧时**才显形。
+#   ② 现行口径曾**只数非 IP**，漏了"非首片分片"这一类 → 抓包窗口里出现 2 个非首片分片时
+#      `decode_fail=58` vs 裁判 56，默认关口**在现场假红一次**（2026-10-05）。
+# 两次都是同一个病根：**判据里藏了依赖现场流量的隐藏变量**，表现是"偶尔红/偶尔绿"。
+# 所以自证不再只验"裁判会不会数错"，而是**每次都用合成语料跑一遍完整判定链**：
+#   合成 3 帧（LLC/STP + IPv4 + IPv4 非首片）→ 灌共享环 → ring-consume 数 decode_fail，
+#   要求它 == undecodable_count() == 2。
+# 这条自证对两类旧口径都会红：用 eth.type 会得 0；只数非 IP 会得 1。
 if command -v python3 >/dev/null 2>&1 && command -v tshark >/dev/null 2>&1; then
   judge_dir="$(mktemp -d)"
   python3 - "${judge_dir}/mix.pcap" <<'PY'
 import struct, sys
-# 经典 pcap：1 帧 802.3/LLC/STP（长度字段，无 EtherType）+ 1 帧 Ethernet/IPv4。
+# 经典 pcap，3 帧：
+#   ① 802.3/LLC/STP（用长度字段，无 EtherType）—— 旧 `eth.type` 口径在这里瞎。
+#   ② Ethernet/IPv4（可解出五元组）。
+#   ③ Ethernet/IPv4 **非首片**（frag_offset=185，MF=0）：tshark 的 frame.protocols 仍是
+#      `eth:ethertype:ip`（它只能看到那么多层），但端口在首片里 → 本解码器按设计拒绝。
 llc = bytes.fromhex("0180c2000000") + bytes.fromhex("001122334455") + struct.pack(">H", 0x0026) \
     + b"\x42\x42\x03" + b"\x00" * 35
-ip = bytes.fromhex("001122334455") + bytes.fromhex("66778899aabb") + b"\x08\x00" \
-    + bytes.fromhex("4500001c0001000040110000c0a80101c0a80102") + b"\x00" * 8
+eth = bytes.fromhex("001122334455") + bytes.fromhex("66778899aabb") + b"\x08\x00"
+ip = eth + bytes.fromhex("4500001c0001000040110000c0a80101c0a80102") + b"\x00" * 8
+# 非首片：IHL=5、total_length=28、id=1、frag 字段 = 185*8 = 1480 = 0x05C8（MF=0）、TTL=64、proto=17。
+# 布局必须逐字节对齐（v4/IHL → tos → total_len → id → flags+frag → ttl → proto → csum → 地址），
+# 少写/多写一个字节就会把 frag 字段顶偏 —— 本夹第一次就写错了，靠上面「裁判必须判 2」才抓到。
+frag = eth + bytes.fromhex("4500001c000105c840110000c0a80101c0a80102") + b"\x00" * 8
 out = struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1)
-for f in (llc, ip):
+for f in (llc, ip, frag):
     out += struct.pack("<IIII", 0, 0, len(f), len(f)) + f
 open(sys.argv[1], "wb").write(out)
 PY
-  judge_n="$(nonip_count "${judge_dir}/mix.pcap" 2 || true)"
-  rm -rf "${judge_dir}"
+  judge_n="$(undecodable_count "${judge_dir}/mix.pcap" 3 || true)"
+  judge_detail="$(undecodable_breakdown "${judge_dir}/mix.pcap" 3 || true)"
   total=$((total + 1))
-  if [[ "${judge_n}" == "1" ]]; then
-    echo "  ✓ D 裁判口径自证：合成样本（1 帧 LLC/STP + 1 帧 IPv4）判非 IP 帧数 = 1"
+  if [[ "${judge_n}" == "2" ]]; then
+    echo "  ✓ D 裁判口径自证：合成 3 帧（LLC/STP + IPv4 + IPv4非首片）判「解不出五元组」= 2（${judge_detail}）"
   else
-    echo "  ✗ D 裁判口径自证失败：合成样本应判 1 帧非 IP，实际 ${judge_n:-<空>}（用 eth.type 会得到 0）" >&2
+    echo "  ✗ D 裁判口径自证失败：合成样本应判 2，实际 ${judge_n:-<空>}（${judge_detail}；用 eth.type 会得 0，只数非 IP 会得 1）" >&2
     failed=$((failed + 1))
   fi
+
+  # 第二段：同一份合成语料跑**完整判定链**（灌环 → 消费 → decode_fail），
+  # 证明"裁判口径"与"我们解码器按设计拒绝的集合"在这三类上一致 —— 不靠现场流量碰运气。
+  if [[ "${RUST_READY}" == "1" && -x "${FEED_BIN}" ]]; then
+    jring="${judge_dir}/ring-judge.bin"
+    if "${FEED_BIN}" -q -r "${judge_dir}/mix.pcap" --ring "${jring}" --recreate --limit 3 \
+         >"${judge_dir}/feed.txt" 2>&1 &&
+       "${CONSUME_BIN}" --ring "${jring}" >"${judge_dir}/cons.txt" 2>&1; then
+      jfail="$(field "${judge_dir}/cons.txt" "ring-consume summary" decode_fail)"
+      total=$((total + 1))
+      if [[ "${jfail}" == "${judge_n}" ]]; then
+        echo "  ✓ D 完整判定链自证：合成 3 帧 → decode_fail=${jfail} == 裁判口径 ${judge_n}"
+      else
+        echo "  ✗ D 完整判定链自证失败：decode_fail=${jfail:-<空>} != 裁判口径 ${judge_n:-<空>}" >&2
+        grep -E '^ring-consume decode_fail code=' "${judge_dir}/cons.txt" | sed 's/^/    /' >&2 || true
+        failed=$((failed + 1))
+      fi
+    else
+      echo "  ⚠ D 完整判定链自证未核验：环工具未能运行（不计为通过）"
+      skipped=$((skipped + 1))
+    fi
+  fi
+  rm -rf "${judge_dir}"
 else
   echo "  ⚠ 缺 python3 或 tshark：裁判口径自证未核验（不计为通过）"
 fi
@@ -398,17 +462,17 @@ if [[ "${RUST_READY}" == "1" && -s "${PCAP}" ]]; then
     check "D 灌入数 == 前缀窗口" "${fed}" "${LIMIT}"
     check "D 环内消费数 == 灌入数" "${got}" "${fed}"
     check_ge "D 解出的 Flow 条数" "${flows}" "1"
-    # 非 IP 帧（ARP/VLAN/LLDP 等）解不出五元组是**正确行为**，不断言 dfail=0；
-    # 要验的是 Rust 与 C++ 两个独立实现对「哪些帧不可解」的判定一致：
-    # tshark 按 eth.type 取同一窗口的非 IP 帧数作第三方裁判。
+    # 解不出五元组是**正确行为**，不断言 dfail=0；要验的是两个独立实现（Rust 解码器 /
+    # tshark 裁判）对「哪些帧解不出五元组」的判定一致。裁判口径见 undecodable_count()：
+    # 非 IP + IPv4 非首片 + IPv6 非首片（三类都是"按设计拒绝"，不是 bug）。
     if command -v tshark >/dev/null 2>&1 && [[ "${LIMIT}" != "0" ]]; then
-      prefix_nonip="$(nonip_count "${PCAP}" "${LIMIT}" || true)"
-      if [[ "${dfail}" != "${prefix_nonip}" ]]; then
-        # 不一致要能一眼归因：把三方计数与错误码明细都摊开，而不是只报一个数。
-        echo "  · 归因：Rust decode_fail=${dfail} / tshark 非IP=${prefix_nonip} / C++ 不支持 L2=${unsupported_l2:-<空>}" >&2
+      prefix_bad="$(undecodable_count "${PCAP}" "${LIMIT}" || true)"
+      if [[ "${dfail}" != "${prefix_bad}" ]]; then
+        # 不一致要能一眼归因：把三方计数、裁判分项与错误码明细都摊开，而不是只报一个数。
+        echo "  · 归因：Rust decode_fail=${dfail} / tshark 不可解=${prefix_bad}（$(undecodable_breakdown "${PCAP}" "${LIMIT}")） / C++ 不支持 L2=${unsupported_l2:-<空>}" >&2
         grep -E '^ring-consume decode_fail code=' "${CONS_OUT}" | sed 's/^/    /' >&2 || true
       fi
-      check "D Rust decode_fail == tshark 前缀非IP帧数（三实现判定一致）" "${dfail}" "${prefix_nonip}"
+      check "D Rust decode_fail == tshark 前缀「解不出五元组」帧数（两实现判定一致）" "${dfail}" "${prefix_bad}"
     else
       echo "  ⚠ 无 tshark：decode_fail 一致性项未核验（不计为通过）"
     fi

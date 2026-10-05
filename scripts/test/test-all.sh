@@ -468,16 +468,31 @@ test_ipfix() {
   echo "==> [ipfix] IPFIX 导出第三方交叉核验（tshark）+ UDP 通道 + 反向故障注入"
   local rc=0
   bash scripts/verify/check-ipfix-export.sh || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    echo "✓ [ipfix] 交叉核验通过（含 UDP 通道字节比对与反向故障注入全部被检出）"
-    return 0
-  fi
   if [[ $rc -eq 3 ]]; then
     echo "⚠ [ipfix] 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
     return 0
   fi
-  echo "✗ [ipfix] 交叉核验失败" >&2
-  return 1
+  if [[ $rc -ne 0 ]]; then
+    echo "✗ [ipfix] 导出交叉核验失败" >&2
+    return 1
+  fi
+  echo "  ✓ 导出侧：tshark 逐字段相符 + UDP 通道字节逐字节相同 + 5 项产物级注入全部被检出"
+
+  # 采集回路（CYS-TRF-054）：导出侧只管"发得出去"，运营商口径考核的是
+  # "对端收到多少、丢了多少" —— 这个数只有采集侧能算（RFC 7011 §3.1 序列号缺口）。
+  echo "==> [ipfix] IPFIX 采集回路（回环还原 + 导出丢包率可证伪）"
+  rc=0
+  bash scripts/verify/check-ipfix-collect.sh || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [ipfix] 采集回路未核验：环境缺少 cargo/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "✗ [ipfix] 采集回路核验失败" >&2
+    return 1
+  fi
+  echo "✓ [ipfix] 交叉核验通过（导出：UDP 通道字节比对；采集：丢包率可复算；两处注入全部被检出）"
+  return 0
 }
 
 # 跨语言共享环端到端（CYS-TRF-034）。

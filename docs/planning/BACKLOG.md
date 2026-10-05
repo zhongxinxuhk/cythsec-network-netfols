@@ -752,14 +752,14 @@
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
 | ◐ | CYS-TRF-051 | IPFIX 编码器（RFC 7011） | `src/export/mod.rs`（v1 已落地）：消息头（version=10 / length / exportTime / sequenceNumber / observationDomainID）、模板集（Set ID 2）与数据集（Set ID ≥256）、IPv4/IPv6 两套模板**分族按需携带**、`FlowRecord` → 信息元素映射（8/12/27/28 地址、7/11 端口、4 协议、1/2 计数、152/153 毫秒时标、148 flowId=session_id、34 samplingInterval=1 如实声明「未采样」）。**零第三方依赖**（手写编码，与 `record/mod.rs` 手写 JSON 同一红线）。**v1 刻意不含**：RFC 5103 双方向（反转 IE = 企业位 + PEN 29305，而 `FlowRecord` 只有总量计数，硬做只能编造方向归属）与 DPI `applicationName`(96)（变长字段与「定长无歧义」目标冲突）；两者待分方向计数/变长编码落地后作增量 | tshark 独立解出导出的 IPFIX，**九类字段逐一相符**（含 IPv6 与超 32 位计数）；模板/数据集 4 字节对齐；字段号取自 IANA 注册表**而非记忆**。门禁 `scripts/verify/check-ipfix-export.sh`（tshark 逐字段 + 5 项产物级反向注入） | — | P0/M |
-| ◐ | CYS-TRF-052 | 导出通道与模板生命周期 | `src/export/sink.rs`（v1 已落地）：UDP 导出（`--ipfix-udp host:port`，std 实现，含失败计数与最近错误）+ **落盘成 pcap**（`--ipfix-pcap`，手写以太/IPv4/UDP 且校验和真算，供 tshark 独立校验与 `tcpreplay` 回放）；`--ipfix-domain` / `--ipfix-max-msg` / `--ipfix-template-refresh`。模板分族首报文携带并按报文数刷新（UDP 无连接、采集器会重启）、序列号只计数据记录（RFC 7011 §3.1）。**未完成**：导出丢包的可观测性在采集器侧（CYS-TRF-054） | 导出报文数/记录数/字节数/失败数 CLI 可见；门禁验证 UDP 收到的字节与 pcap 通道载荷**逐字节相同**；产物能被 tshark 读懂 | CYS-TRF-051 | P0/M |
+| ◐ | CYS-TRF-052 | 导出通道与模板生命周期 | `src/export/sink.rs`（v1 已落地）：UDP 导出（`--ipfix-udp host:port`，std 实现，含失败计数与最近错误）+ **落盘成 pcap**（`--ipfix-pcap`，手写以太/IPv4/UDP 且校验和真算，供 tshark 独立校验与 `tcpreplay` 回放）；`--ipfix-domain` / `--ipfix-max-msg` / `--ipfix-template-refresh`。模板分族首报文携带并按报文数刷新（UDP 无连接、采集器会重启）、序列号只计数据记录（RFC 7011 §3.1）。**已闭环**：导出丢包的可观测性已由采集器 `CYS-TRF-054` 落地（序列号缺口 → `loss_ppm`） | 导出报文数/记录数/字节数/失败数 CLI 可见；门禁验证 UDP 收到的字节与 pcap 通道载荷**逐字节相同**；产物能被 tshark 读懂 | CYS-TRF-051 | P0/M |
 | ⬜ | CYS-TRF-053 | 采样口径（声明与执行一致） | 数据面采样率可配 + 导出时按 RFC 5476 声明 `samplingInterval`(34)/`samplingAlgorithm`(35)。**不实现真采样就不许声明 <1 的采样率**：声明与执行必须一致 | 采样率 n 时：导出记录数/全量记录数落在 `[1/n ± 容差]`；IE 34 与配置**逐位一致**；`n=1` 时如实声明"未采样" | CYS-TRF-051 | P1/M |
 
 #### 3.11.2 采集侧（采集器与容量模型）
 
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ⬜ | CYS-TRF-054 | IPFIX 采集器（序列号缺口可观测） | 按 `exporter + observationDomainID` 维护模板与序列号；模板超时/换版处理；**序列号缺口 = 导出丢包计数**并入指标；重复记录去重；落地到 sink | **人为丢一个 datagram 必须报出缺口且计数正确**（可证伪）；模板换版不产生整段解析失败；重放同一段导出可复现同一结果 | CYS-TRF-052 | P0/L |
+| ◐ | CYS-TRF-054 | IPFIX 采集器（序列号缺口可观测） | `src/ipfix/collector.rs` + `src/bin/ipfix_collect.rs`（v1 已落地）：解模板集/数据集（含**缩减长度编码** RFC 7011 §6.2、未登记 IE **按长度跳过**而不是删掉）、按 `(导出进程, ODID)` 各自维护序列号基线与模板表；**序列号缺口 = 导出丢包条数**（§3.1 / §11.6），只在前进方向记账、界外一律按乱序计且**不重置基线**（防 §11.6 点名的注入蒙蔽）；模板生存期按 §8.4 取「观测到的重传间隔 × 3」（可配置），UDP 上的模板撤回按 §8.4 **忽略**；同模板号不同定义按 §8.1 保留旧模板并计数；有界窗口去重；`--pcap`（离线，时间取抓包时间戳 → 可复现）与 `--udp`（在线）。**未落地**：TCP/SCTP 语义（传输会话结束隐式撤回模板）、Options Template 解码、在线模式**无法设置 `SO_RCVBUF`**（std 无接口且仓库不引第三方依赖 → 高突发下内核丢弃会混进缺口，口径污染已在 HANDOFF §6 记明） | **人为丢一个 datagram 必须报出缺口且计数正确**（可证伪，已做：门禁删**中间**那个 datagram，要求 `gaps=1` 且 `lost_records = 完整记录数 − 实收记录数`，`loss_ppm` 独立手算一致）；**模板换版不产生整段解析失败**（已做：生存期到期后重传即恢复，单测钉住）；**重放同一段导出可复现同一结果**（已做：回路逐字段比对 9/9 相符）；无注入时必须报 0 缺口（反向断言），判定本身另有 6 项反向注入（含 1 项"必须通过"） | CYS-TRF-052 | P0/L |
 | ⬜ | CYS-TEL-015 | sFlow v5 收集（RFC 3176） | 覆盖只支持 sFlow 的交换设备：datagram 解析、样本（flow/packet/counter sample）、**datagram 序列号缺口同样计入丢包** | sFlow 样本能解析并与接口计数对齐；序列号缺口可观测 | CYS-TEL-001 | P1/L |
 | ⬜ | CYS-INF-040 | 采集集群容量模型与部署形态 | 文档 + 可复算脚本：链路带宽 × 采样率 × 平均记录大小 → 记录/秒 → 采集器台数（每台 N 记录/秒）→ 存储/天；给出核心/汇聚/接入三档采样率建议；**三个必带口径**：采样率、导出丢包率、采集覆盖率（哪些链路在观测内） | 给定「省网 20 Tbps、采样 1:1000」能算出采集器台数与 TB/天，且**算式可复跑**；模型里每个参数都有出处 | CYS-TRF-054 | P1/M |
 
@@ -798,7 +798,7 @@ CYS-POL-004（规则 IR）──► CYS-POL-007（nftables 下发）──► CY
 CYS-RTD-010（netlink）──► CYS-RTD-008（路由写 API）──► CYS-CON-010（前端路由编辑）
 
 CYS-STO-001/002（schema）──► CYS-TEL-009（指标落库）/ CYS-TIP-009（情报落库）
-CYS-TRF-051（IPFIX 编码）──► CYS-TRF-052（导出通道）──► CYS-TRF-054（采集器）──► CYS-STO-007（CH 写入器）──► CYS-CON-013（流/会话页）
+CYS-TRF-051（IPFIX 编码）──► CYS-TRF-052（导出通道）──► CYS-TRF-054（采集器 ◐）──► CYS-STO-007（CH 写入器）──► CYS-CON-013（流/会话页）
 CYS-CON-003（TanStack Query）──► 所有前端数据页
 
 CYS-PLT-005（openEuler 适配）──► CYS-DEP-007（一键部署）──► CYS-DEP-011（部署自检）
@@ -912,8 +912,8 @@ CYS-TRF-043（属性字典 owner/弃用周期）与 CYS-TIP-011（签名注册�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 317 |
-| 进行中 | 13 |
+| 未开始 | 316 |
+| 进行中 | 14 |
 | 已完成 | 45 |
 
 ### 6.6 里程碑完成度

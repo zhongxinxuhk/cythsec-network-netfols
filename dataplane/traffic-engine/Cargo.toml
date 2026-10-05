@@ -50,6 +50,12 @@ path = "src/bin/analyze.rs"
 # 自研微型基准（CYS-TRF-037）：流表插入/查询、超时扫描、特征更新、重组吞吐、
 # 会话归属，以及「每轮填满→全部到期」的 RSS 平台期（无内存增长）验证。
 # 刻意不引 Criterion：本工程零第三方依赖，基准工具不该成为例外。
+# IPFIX 采集器（CYS-TRF-054）：解模板/数据集，按序列号缺口报出导出丢包率。
+# 与 `cythsec-analyze` 的 `--ipfix-*` 构成"导出 → 采集"的完整回路。
+[[bin]]
+name = "cythsec-ipfix-collect"
+path = "src/bin/ipfix_collect.rs"
+
 [[bin]]
 name = "cythsec-bench"
 path = "src/bin/bench.rs"

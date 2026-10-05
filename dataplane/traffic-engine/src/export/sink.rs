@@ -96,7 +96,7 @@ impl PcapSink {
     }
 
     fn write_datagram(&mut self, msg: &[u8], ts_sec: u32, ts_usec: u32) -> io::Result<()> {
-        let frame = build_udp_frame(msg, SRC_PORT, crate::export::IPFIX_PORT);
+        let frame = build_udp_frame(msg, SRC_PORT, crate::ipfix::IPFIX_PORT);
         // pcap 记录头 16 字节：ts_sec / ts_usec / incl_len / orig_len
         let mut hdr = [0u8; 16];
         hdr[0..4].copy_from_slice(&ts_sec.to_le_bytes());
