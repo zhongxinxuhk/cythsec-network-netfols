@@ -52,6 +52,7 @@ using packet_engine::CaptureMode;
 using packet_engine::CaptureOptions;
 using packet_engine::capture_mode_pref_name;
 using packet_engine::create_backend;
+using packet_engine::test::check;
 
 namespace {
 
