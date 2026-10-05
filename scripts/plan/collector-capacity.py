@@ -144,6 +144,15 @@ def records_per_sec(bps, sampling, avg_packet_bytes, flow_per_packet=1.0, inject
     return pps / sampling * flow_per_packet
 
 
+def raw_capture_pb_per_day(bps):
+    """逐包全量落盘的字节量（PB/天，1 PB = 10^15 B）= 带宽 ÷ 8 × 86400 ÷ 10^15。
+
+    这是"逐包全量在省网是量级错误"这句话里那个 108 PB/天 的算式 —— 把它写进脚本
+    而不是只写在文档里，是因为这类量级结论**最容易被口口相传地记错一位数**。
+    """
+    return bps / 8.0 * 86400.0 / 1e15
+
+
 def boxes(records, per_box, headroom, inject=None):
     """采集器台数 = ceil(总记录率 ÷ (每台容量 × 余量))。
 
@@ -195,7 +204,13 @@ def model(args, inject=None):
                 ),
             }
         )
+    raw_pb = raw_capture_pb_per_day(bps)
+    flow_pb = tb_day / 1000.0  # TB → PB（1 PB = 1000 TB）
     return {
+        "raw_capture_pb_per_day": raw_pb,
+        "flow_pb_per_day": flow_pb,
+        # 逐包全量 ÷ 流级 = 倍数；文档里说"差 3~5 个数量级"，这里给出它自己的算法。
+        "raw_over_flow_ratio": (raw_pb / flow_pb) if flow_pb > 0 else None,
         "bandwidth_tbps": args.bandwidth_tbps,
         "sampling": args.sampling,
         "records_per_sec": recs,
@@ -275,6 +290,26 @@ def print_report(args, m):
         f"  {'合计':<10} {sum(t['tbps'] for t in m['tiers']):>6.1f}T {'':>15} {'':>7} "
         f"{fmt(sum(t['records_per_sec'] for t in m['tiers']) / 1e6, ' M'):>12} "
         f"{sum(t['boxes'] for t in m['tiers']):>7} {fmt(sum(t['tb_per_day'] for t in m['tiers'])):>9}"
+    )
+    print()
+    print("逐包全量 vs 流级（这就是「省网不能靠抓包」那个量级的算式）：")
+    print(
+        f"  · 逐包全量落盘    = {fmt(args.bandwidth_tbps, ' Tbps')} ÷ 8 × 86400 "
+        f"= **{fmt(m['raw_capture_pb_per_day'], ' PB/天')}**"
+        "（1 PB = 10^15 B；不含索引/检索开销，属于下限）"
+    )
+    print(
+        f"  · 流级落盘        = {fmt(m['tb_per_day'], ' TB/天')}"
+        f" = {fmt(m['flow_pb_per_day'], ' PB/天', 4)}"
+    )
+    print(
+        f"  · 倍数            = {fmt(m['raw_capture_pb_per_day'], ' PB')} ÷ "
+        f"{fmt(m['flow_pb_per_day'], ' PB', 4)} = **{fmt(m['raw_over_flow_ratio'], ' 倍', 1)}**"
+        f" ⇒ 相差 {fmt(math.log10(m['raw_over_flow_ratio']), ' 个数量级')}"
+    )
+    print(
+        "    结论：**逐包全量在省网是量级错误**，再优化也到不了；逐包只在少数关键点位"
+        "（DPI / 取证 / 单点 10~100G）保留。见 §2.11。"
     )
     print()
     print("三个必带口径（缺一个，上面这张表就是话术）：")
@@ -386,6 +421,15 @@ def self_test():
     m = model(_args_for_selftest(observed_bandwidth_tbps=8.0, export_loss_ppm=1000))
     ok &= _check("F 覆盖率", m["coverage"], 0.4)
     ok &= _check("F 丢包 1000 ppm 后实收（Mrec/s）", m["delivered_records_per_sec"] / 1e6, 5.0 * 0.999)
+
+    # 算例 G：逐包全量对照（§2.11 那张表里 108 PB/天 的复算）。
+    #   10 Tbps ÷ 8 × 86400 = 1.08e14 B = 108 PB/天；
+    #   流级 10 Tbps@1:1000 = 2.5 Mrec/s → 8.64 TB/天 = 0.00864 PB/天；
+    #   倍数 = 108 ÷ 0.00864 = 12500（≈4.1 个数量级）—— 与文档"差 3~5 个数量级"一致。
+    m = model(_args_for_selftest(bandwidth_tbps=10.0))
+    ok &= _check("G 逐包全量（PB/天）", m["raw_capture_pb_per_day"], 108.0)
+    ok &= _check("G 流级（PB/天）", m["flow_pb_per_day"], 0.00864)
+    ok &= _check("G 倍数", m["raw_over_flow_ratio"], 12500.0)
 
     # ---- 反向注入：把模型改坏，期望值必须判死 ----
     # 这三条才是这段自证的价值：如果期望值对错误模型照样通过，它就只是个装饰品。
