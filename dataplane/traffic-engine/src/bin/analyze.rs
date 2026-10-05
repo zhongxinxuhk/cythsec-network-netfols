@@ -4,7 +4,7 @@
 // 情况下也能被端到端验证。** 给定一个 pcap，它跑的是和在线路径相同的那几个模块，
 // 所以它同时也是那条链的**回归测试载体**。
 //
-// 本文件只负责三件事：解析命令行、开文件、按契约写 JSONL。真正的分析逻辑在
+// 本文件只负责三件事：解析命令行、开文件、按契约写 JSONL / 导出 IPFIX。真正的分析逻辑在
 // `traffic_engine::pipeline`（同一份代码也被 `tests/pipeline_sample.rs` 驱动，
 // 命令行与测试因此不可能漂移）。
 
@@ -30,6 +30,16 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
       --max-sessions <N>   会话表容量上限（默认 65536）
       --workers <N>        消费侧并行 worker 数（默认 1 = 就地单线程，见下）
       --strict             严格 TCP 模式：未见到握手的会话不采纳（默认容忍，见下）
+      --ipfix-udp <ADDR>  把每条 FlowRecord 按 RFC 7011 导出为 IPFIX，UDP 发往
+                          host:port（采集器地址；解析失败直接退出，不降级）
+      --ipfix-pcap <FILE>  同一批 IPFIX 报文包成 UDP 帧落盘为 pcap（供 tshark 独立
+                          校验与 tcpreplay 回放；可与 --ipfix-udp 同时使用）
+      --ipfix-domain <N>  Observation Domain ID（默认 1；采集侧按它区分模板与序列号）
+      --ipfix-max-msg <N>  单个 IPFIX 报文字节上限（默认 1400；UDP 上超 MTU 会被分片
+                          甚至丢弃，IPv6 最小 MTU 场景应调小）
+      --ipfix-template-refresh <N>
+                          每 N 条报文重发一次模板（默认 20；UDP 无连接、采集器会重启，
+                          只发一次意味着采集器一重启后面全解不开）
   -q, --quiet              不打印统计摘要
   -V, --version            打印版本信息
   -h, --help               打印本帮助
@@ -46,6 +56,9 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
 
 输出:
   每行一条 JSON 的 FlowRecord（schema 见 traffic_engine::record）。
+  --ipfix-* 打开时**同时**导出 IPFIX：这是让记录走进运营商既有流级通道（NetFlow/IPFIX
+  采集体系）的唯一出口，也是「流级 vs 逐包」这条量级问题的正面回答——逐包采集在省网
+  不存在（单条 100G 最坏帧 148.8 Mpps；骨干 10 Tbps 全量约 108 PB/天）。
   统计摘要写 stderr，因此 `-o -` 时 stdout 是**干净的 JSONL**，可直接管道给下游。
 
 退出码: 0 成功；1 参数/IO/自检失败（自检失败说明输出不可信）。
@@ -61,6 +74,16 @@ struct Args {
     workers: usize,
     strict: bool,
     quiet: bool,
+    ipfix: Option<IpfixArgs>,
+}
+
+#[derive(Debug)]
+struct IpfixArgs {
+    udp: Option<String>,
+    pcap: Option<String>,
+    domain: u32,
+    template_refresh: u32,
+    max_msg_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -79,6 +102,11 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
     let mut workers = 1usize;
     let mut strict = false;
     let mut quiet = false;
+    let mut ipfix_udp: Option<String> = None;
+    let mut ipfix_pcap: Option<String> = None;
+    let mut ipfix_domain: u32 = 1;
+    let mut ipfix_template_refresh: u32 = 20;
+    let mut ipfix_max_msg: usize = 1400;
 
     let mut i = 0;
     while i < argv.len() {
@@ -139,6 +167,31 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
                 workers = n;
             }
             "--strict" => strict = true,
+            "--ipfix-udp" => ipfix_udp = Some(take_value("--ipfix-udp")?),
+            "--ipfix-pcap" => ipfix_pcap = Some(take_value("--ipfix-pcap")?),
+            "--ipfix-domain" => {
+                let v = take_value("--ipfix-domain")?;
+                ipfix_domain = v
+                    .parse::<u32>()
+                    .map_err(|_| format!("--ipfix-domain 需要一个 32 位无符号整数，得到 `{v}`"))?;
+            }
+            "--ipfix-max-msg" => {
+                let v = take_value("--ipfix-max-msg")?;
+                ipfix_max_msg = v
+                    .parse::<usize>()
+                    .map_err(|_| format!("--ipfix-max-msg 需要一个正整数，得到 `{v}`"))?;
+            }
+            "--ipfix-template-refresh" => {
+                let v = take_value("--ipfix-template-refresh")?;
+                let n = v
+                    .parse::<u32>()
+                    .map_err(|_| format!("--ipfix-template-refresh 需要一个正整数，得到 `{v}`"))?;
+                // 0 会让"每 0 条重发"变成除零；同时它也说不清语义（从不发？）。
+                if n == 0 {
+                    return Err("--ipfix-template-refresh 必须大于 0".to_string());
+                }
+                ipfix_template_refresh = n;
+            }
             "-q" | "--quiet" => quiet = true,
             other => return Err(format!("无法识别的参数 `{other}`（用 --help 看用法）")),
         }
@@ -146,6 +199,18 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
     }
 
     let input = input.ok_or_else(|| "缺少必填参数 -r/--read（输入 pcap）".to_string())?;
+    // 两个都缺时 `ipfix` 为 None（纯离线分析，不导出）。
+    let ipfix = if ipfix_udp.is_some() || ipfix_pcap.is_some() {
+        Some(IpfixArgs {
+            udp: ipfix_udp,
+            pcap: ipfix_pcap,
+            domain: ipfix_domain,
+            template_refresh: ipfix_template_refresh,
+            max_msg_bytes: ipfix_max_msg,
+        })
+    } else {
+        None
+    };
     Ok(Parsed::Run(Box::new(Args {
         input,
         output,
@@ -155,6 +220,7 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
         workers,
         strict,
         quiet,
+        ipfix,
     })))
 }
 
@@ -255,6 +321,82 @@ fn run(args: &Args) -> Result<usize, String> {
     };
     write_jsonl(&mut out, records).map_err(|e| format!("写输出失败：{e}"))?;
     out.flush().map_err(|e| format!("刷输出失败：{e}"))?;
+
+    // ---- IPFIX 导出（可选）----
+    // 顺序说明：先落 JSONL 再导出。导出的记录集与 JSONL **同源同序**（都取自
+    // `records[..emitted]`），这样 `--ipfix-pcap` 的产物能与 JSONL 逐条对照——
+    // 校验脚本（scripts/verify/check-ipfix-export.sh）正是靠这个对应关系，让
+    // tshark 独立解出的字段与我们的记录逐项相比。
+    if let Some(ix) = &args.ipfix {
+        let cfg = traffic_engine::export::ExportConfig {
+            domain_id: ix.domain,
+            template_refresh_msgs: ix.template_refresh,
+            max_msg_bytes: ix.max_msg_bytes,
+            ..Default::default()
+        };
+        let mut enc = traffic_engine::export::Encoder::new(cfg)
+            .map_err(|e| format!("IPFIX 配置无效：{e}"))?;
+        let udp = match &ix.udp {
+            Some(addr) => Some(
+                traffic_engine::export::sink::UdpSink::connect(addr)
+                    .map_err(|e| format!("打开 IPFIX UDP 目标 `{addr}` 失败：{e}"))?,
+            ),
+            None => None,
+        };
+        let pcap = match &ix.pcap {
+            Some(path) => Some(
+                traffic_engine::export::sink::PcapSink::create(path)
+                    .map_err(|e| format!("创建 IPFIX pcap `{path}` 失败：{e}"))?,
+            ),
+            None => None,
+        };
+        let mut sinks = traffic_engine::export::sink::Sinks::new(udp, pcap);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0) as u32;
+        let msgs = enc
+            .encode_batch(&records[..emitted], now)
+            .map_err(|e| format!("IPFIX 编码失败：{e}"))?;
+        for m in &msgs {
+            // 微秒位固定 0：亚秒精度由采集侧的到达时间决定，这里不编造。
+            sinks.emit(m, now, 0);
+        }
+        sinks.finish();
+        let st = sinks.stats();
+        if !args.quiet {
+            let e = io::stderr();
+            let mut err = e.lock();
+            let _ = writeln!(
+                err,
+                // records 与 seq_next 数值相同（导出结束时序列号正好等于总记录数），
+                // 但语义不同：前者是"导出了多少条"，后者是"下一条报文的序列号"。
+                // 采集侧用后者定位丢包，所以两个名字都留着，别合并。
+                "[cythsec-analyze] ipfix domain={} messages={} records={} seq_next={} datagrams={} bytes={} errors={} udp={} pcap={}",
+                ix.domain,
+                msgs.len(),
+                enc.sequence_number(),
+                enc.sequence_number(),
+                st.datagrams,
+                st.bytes,
+                st.errors,
+                ix.udp.as_deref().unwrap_or("-"),
+                ix.pcap.as_deref().unwrap_or("-")
+            );
+            if let Some(e) = &st.last_error {
+                let _ = writeln!(err, "[cythsec-analyze] ipfix last_error: {e}");
+            }
+        }
+        // 导出一条都没出去＝分母没了却报成功，这是最坏的"看起来正常"，必须失败退出。
+        let st = sinks.stats();
+        if st.datagrams == 0 && st.errors > 0 {
+            return Err(format!(
+                "IPFIX 导出全部失败（{} 次）：{}",
+                st.errors,
+                st.last_error.as_deref().unwrap_or("未知原因")
+            ));
+        }
+    }
 
     if !args.quiet {
         report(&stats, &args.input, args.strict, emitted);

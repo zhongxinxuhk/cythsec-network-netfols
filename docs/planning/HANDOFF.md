@@ -28,6 +28,7 @@
 | 特征提取 + FlowRecord + 离线 pcap CLI | ☑ 已落地（CYS-TRF-004/005/014/027/033/035）；**2026-10-05 起支持 `--workers N`**：每 worker 私有流表/会话/特征（无锁），N>1 与 N=1 输出逐字节一致，见 §2.8 | `src/{feature,record,pipeline,bin/analyze}.rs` |
 | 真实网卡抓包（Linux AF_PACKET / macOS BPF） | **Linux 侧真抓包已验收（2026-10-05，见 §2.7）**：2 vCPU Rocky Linux 10.2 aarch64 测试机、真实网卡 `enp2s0`、13/13 断言（74 包 / tshark 74 帧一致 / 环 74=74 / 10 条 Flow）；macOS BPF 侧仍受 `/dev/bpf*` 权限阻塞（e2e 内显式 `SKIPPED`，不显绿） | `dataplane/packet-engine/src/backends/` |
 | 数据面基准（吞吐/内存 + 多实例扩展 + 反向注入门禁） | ☑ 19 项 · 回归下限全过 · 需求目标 11~14/19（差距已列明）· **多实例分核实验已定路线：4 核/10G 口** | `src/bin/bench.rs` + `scripts/verify/check-flow-bench.sh` |
+| **流级导出（IPFIX / RFC 7011）** | ◐ v1 已落地（`CYS-TRF-051/052`，2026-10-05 第五段）：`FlowRecord → IPFIX`，零第三方依赖手写编码，UDP 与 pcap 两条通道；tshark 独立解出**九类字段逐条相符** + 4 项产物级反向注入全被检出（见 §2.11）。**这是「省网量级」的入口**：逐包全量在省网差 3~5 个数量级 | `dataplane/traffic-engine/src/export/` + `scripts/verify/check-ipfix-export.sh` |
 | 跨语言共享环端到端 | ☑ 19 项断言通过 | `scripts/verify/e2e-shared-ring.sh` |
 | 控制平面（Go 四服务） | ◐ 引擎内核已落地（约 9000 行源码 / 7000 行测试），**但待办表未同步** | `services/` |
 
@@ -581,6 +582,72 @@ bash scripts/bench/live-throughput-docker.sh 8 64 1000000 # 另加 1.0 Mpps 定�
 ctest --test-dir build -R packet_engine_capture_modes --output-on-failure
 ```
 
+### 2.11 从「逐包」转到「流级」：IPFIX v1 落地（2026-10-05 第五段）
+
+**触发这场转向的是一个量级问题**，而且是必须当场算清、否则整条路线都会错的那种：
+
+| 口径 | 算式 | 结果 |
+| --- | --- | --- |
+| 单条 100G，平均 500 B | 100e9 / 8 / 500 | **25 Mpps** |
+| 单条 100G，最坏 64 B 帧 | 100e9 / 8 / 64 | **148.8 Mpps**（线速下界） |
+| 骨干 10 Tbps 全量 | 10e12 / 8 / 500 | **2.5 Gpps ≈ 1.25 TB/s ≈ 108 PB/天** |
+| 本仓实测单机能力 | 容器饱和臂 `L 11,088,260 包 / 1.46 s`；2 vCPU 虚机真实网卡 165,924 pps；离线流水线派发端封顶 **2.33 Mpps** | 2.33 Mpps ≈ **10G 最坏帧的 16%** |
+| 1:1000 采样后的 10 Tbps | 2.5 Gpps / 1000 | **2.5 Mpps → 2~10 M 条记录/s → 约 2~4 TB/天** |
+
+结论不是「我们还不够快」，而是**逐包全量在省网是量级错误（差 3~5 个数量级）**，
+再优化也到不了。运营商的做法是：**网元按采样率导出流级记录（NetFlow v9 / IPFIX / sFlow），
+采集集群消费**；逐包只在少数关键点位（DPI / 取证 / 10~100G 单点）保留。
+因此 `CYS-PKT-008` 那套采集能力的正确定位是**单点包级能力**，不是省网采集手段 ——
+这一条已登记为 `CYS-DOC-023`，后续所有「省网」叙述都要按它核对。
+
+**据此开工的第一件事**：让 `FlowRecord` 能被运营商既有的流级通道消费。
+此前整条链的出口只有自研 JSONL，`netflow|ipfix|sflow|gnmi` 在仓库里**零命中** ——
+也就是说，记录再准，也进不了任何真实采集体系。
+
+**v1 落地内容**（`dataplane/traffic-engine/src/export/`，零第三方依赖）：
+
+- `mod.rs`：IPFIX 编码器。报文头 16 B（version=10 / length / exportTime /
+  sequenceNumber / observationDomainID）、模板集（Set ID 2）、数据集（Set ID ≥ 256）。
+  IPv4 模板 id 256（11 字段：8/12 地址、7/11 端口、4 协议、1 字节数、2 包数、
+  152/153 毫秒时标、148 flowId=session_id、34 samplingInterval）、IPv6 模板 id 257
+  （27/28 各 16 B）。**模板分族按需携带**：只发 v4 的批不会把 v6 模板一起推出去，
+  也不会因「v6 从未出现」而让 v6 模板永远停在「已发过」。
+- `sink.rs`：两条通道。UDP（`--ipfix-udp host:port`，std 实现，失败计数 +
+  最近错误文本）与**落盘成 pcap**（`--ipfix-pcap`，手写以太/IPv4/UDP 且**校验和真算**，
+  产物可被 tshark 独立校验、可 `tcpreplay` 灌进真实采集器联调）。
+- CLI：`--ipfix-udp` / `--ipfix-pcap` / `--ipfix-domain` / `--ipfix-max-msg` /
+  `--ipfix-template-refresh`；统计行 `ipfix domain=… messages=… records=… seq_next=…
+  datagrams=… bytes=… errors=…`，**导出失败不会被静默**（全失败时非 0 退出）。
+
+**三条写进代码的规范细节**（写错都不会崩，只会让采集侧算错）：
+
+1. **序列号 = 本报文之前该 Observation Domain 已发送的数据记录累计数**（RFC 7011 §3.1），
+   模板记录不计入。采集器靠它发现导出丢包；写错要么误报丢包、要么把丢包读成正常。
+2. **填充只允许零字节，且填充长度必须短于该 Set 里任何一条记录**（RFC 7011 §3.3.1）。
+   本实现模板集天然 4 字节对齐，数据集补 0~3 字节；每条 Set 长度都是 4 的倍数。
+3. **信息元素编号取自 IANA 注册表**（本次实际取表核对 13 个 IE），不凭记忆写；
+   采样间隔如实填 **1（未采样）** —— 数据面还没有真采样，声明 <1 的采样率会让下游
+   把采样流量当全量算（真采样登记为 `CYS-TRF-053`）。
+
+**证据**（`bash scripts/test/test-all.sh --ipfix`，2026-10-05）：
+
+- Rust 单测 16 项（含**逐字节手写的金标准报文**、IE 编号与 IANA 对照、序列号语义、
+  模板刷新、v4/v6 分族、4 字节对齐、配置下限），`--rust` 全绿（334 lib 项）。
+- `scripts/verify/check-ipfix-export.sh`：4 个样本 × **九类字段逐条比对**（tshark 解出的
+  IPFIX 字段 vs 我们自己的 JSONL 记录），报文级不变量（version / length vs UDP 载荷 /
+  序列号累计 / 模板可见性 / 刷新间隔），**UDP 通道收到的字节与 pcap 通道载荷逐字节相同**，
+  4 项产物级反向注入（改计数值 / 改 setID / 改报文长度 / 截断 datagram）**全部被检出**。
+- tshark 侧原始证据：`Version: 10 / Length: 300 / FlowSequence: 0 / Observation Domain Id: 1`，
+  模板 11 字段（8/12/7/11/4/1/2/152/153/148/34）被逐个解出并命名，数据记录
+  `SrcAddr 10.0.0.1 … Octets 16 / Packets 1 / Flow Id 3 / Sampling interval 1` 与我们记录一致。
+
+**v1 刻意不做**（避免「看起来支持了」）：RFC 5103 双方向（反转字段 = **企业位 + PEN 29305
++ 同编号**，而 `FlowRecord` 只有总量计数，硬做只能编造方向归属）与 DPI `applicationName`(96)
+（变长字段与「定长无歧义」目标冲突）。两者待分方向计数 / 变长编码落地后作增量。
+
+**接手的第一件事**：`CYS-TRF-054`（采集器，序列号缺口 = 导出丢包率）——有了导出，
+「导出丢包率」这个 M11 必带口径才有地方算出来。
+
 ---
 
 ## 3. 代码地图
@@ -657,7 +724,7 @@ PostgreSQL 持久化、策略版本化、命中统计、审计日志、服务间
 
 ```bash
 bash scripts/test/test-all.sh            # 全部（含向量自动生成）
-bash scripts/test/test-all.sh --rust --dpi --reassembly --flows   # 日常快速回路
+bash scripts/test/test-all.sh --rust --dpi --reassembly --flows --ipfix   # 日常快速回路
 bash scripts/lint/lint-all.sh            # 八项：格式 / 生成物一致性 / 版本真源 + 检查器自证
 ```
 
@@ -671,6 +738,7 @@ bash scripts/lint/lint-all.sh            # 八项：格式 / 生成物一致性 
 | `--dpi` | **tshark 独立复核** DPI 向量 + 入库字节保真 | **92 项一致**（跳过 14 项，全部有理由） |
 | `--reassembly` | **tshark 独立复核** 重组向量 | 16 项一致（跳过 2 项已知例外） |
 | `--flows` | **tshark 独立复核 FlowRecord**（会话/计数/状态/应用）+ 反向故障注入 | 927 项一致，跳过 8 项；17 项注入全部被检出 |
+| `--ipfix` | **tshark 独立复核 IPFIX 导出**（九类字段逐条 vs JSONL、报文头/序列号/模板可见性）+ UDP 通道字节比对 + 4 项产物级反向注入（2026-10-05 新增） | 4 样本全一致；4/4 注入被检出；UDP 收到的字节与 pcap 载荷逐字节相同 |
 | `--e2e` | C++ 进程写 → 共享环 → Rust 进程读并解 Flow | 4 阶段 / 19 项通过（需配 `--cpp --rust`） |
 | `--bench` | 数据面吞吐/内存的**回归下限** + 判定自身的反向注入 | 12 项回归下限全过、注入 3/3 检出（需求目标 4/12，只报告） |
 
@@ -823,6 +891,9 @@ tshark 是唯一能发现「一致地错」的手段。
 | --- | --- | --- |
 | `CYS-PKT-007` | macOS 真抓包未验收 | `/dev/bpf*` 属 `root:wheel 600`，本机无免密 sudo。e2e 中显式标 `SKIPPED`，**不显绿** |
 | `CYS-PKT-008` | ~~「吞吐显著高于 pcap live」无实测对照数据~~ **该命题已被实测否定，验收标准已修正** | 2026-10-05 第四段补齐对照数据（§2.10）：容器内四臂同负载实测，**libpcap 1.10 的 live 路径自己就是 mmap 环**，故 L(11,088,260 包/1.46 s) ≈ V(10,126,401/0.99 s) ≈ P-v3(10,759,233/**1.27 s**)，三条路径每包 CPU 均 0.10~0.13 µs —— **「显著高于 pcap live」不成立，是设错了对照轴**。修正后的命题「mmap 环显著优于拷贝模式」已实测：零丢包同负载（1.0 Mpps）下每包 CPU **6.3× 更省**（0.13 vs 0.81 µs；独立复跑 5.9×）；饱和时同机端到端速率 **1.35×**；真实网卡上拷贝档把整机容量砍到 **1.74×** 之一（165,924 pps vs 95,450 pps，`enp2s0`）。**丢包可观测**同步做实：`stats()` 运行中现场轮询并累加（原先只在 `close()` 读一次）、`--stats-every` 周期打印、socket/设备/softnet 三类丢包分开记账；三条断言各配反向注入。**诚实边界**：Docker Desktop 是虚拟机、veth 是软件设备；真实网卡那臂是 TX→tap（非线上收包，真收包见 §2.7）；2 vCPU 绝对数不可比 |
+| `CYS-TRF-051`/`052` | **v1 不含 RFC 5103 双方向**（反转 IE = 企业位 + PEN 29305）与 **DPI `applicationName`(96)** | 前者需要分方向计数（`FlowRecord` 现在只有总量），后者需要变长字段编码；强行做只能编造归属/截断语义。二者都是**增量**，不是缺陷掩盖 |
+| `CYS-TRF-053` | **采样未实现**：导出里 `samplingInterval` 如实写 1（未采样） | 数据面还没有真采样。**声明与执行必须一致**：声明了 <1 却按全量导出，会让下游把采样流量当全量算 |
+| `CYS-TRF-054` | **采集器未落地**：导出丢包率（序列号缺口）目前无人计算，导出侧也没有「对端是否收到」的反馈 | UDP 本身不保证送达；`stats()` 只报**本机发送失败**（EMSGSIZE/ENOBUFS 等）。真丢包率必须由采集器按序列号缺口算 |
 | `CYS-TRF-019` | 「样本集准确率 ≥ 95%」无样本集 | 现有 **32 条**向量只证明**边界正确**，不构成准确率指标 |
 | `CYS-TRF-016` | 双向 `Reassembler` / 超时 / 连接表驱逐未做 | 当前只有单向 `Stream` |
 | `CYS-TRF-034` | 「真实网卡 → Flow」**Linux 侧已达成**（2026-10-05）：`enp2s0` 真抓 → pcap → 环 → Rust 解出 10 条 Flow，且 Rust `decode_fail` 与 tshark 判定一致 | **macOS 侧仍未达成**（受 `CYS-PKT-007` 的 `/dev/bpf*` 权限阻塞）；「真实 pcap → 环 → Flow」早已达成 |
@@ -1005,6 +1076,21 @@ tshark 是唯一能发现「一致地错」的手段。
    别按直觉推。同类：V3 的 `num_pkts`（不是 `num_pkts_active`）、`offset_to_first_pkt`
    （不是 `offset_to_first_hp`）—— 字段名写错在 C 里是**编译期**就能抓到的，前提是真的编译过。
 
+16. **tshark 解 IPFIX 的字段名与直觉不同，且时间藏在子节点里**（2026-10-05）
+   Wireshark 用 `cflow.*` 解析 IPFIX/NetFlow，名字不能凭 IE 名猜：
+   `flowId`(148) 是 **`cflow.flow_id`**（不是 `cflow.flowid`）；起止时间是
+   **`cflow.abstimestart` / `cflow.abstimeend`，且嵌在 `cflow.timedelta_tree` 子节点里**
+   （`-T fields` 下取不到）；只带**一个**模板的模板集，其 `cflow.template_id` 藏在
+   `Template (Id = …, Count = …)` 子节点下。结论：**按字段名递归收集**，别写死键路径 ——
+   写死的键一换样本就炸。另外 tshark 给的是**纳秒 9 位小数**，Python 3.9 的
+   `datetime.strptime(..., "%f")` 只吃 6 位，会直接抛 `ValueError`（手写解析即可）。
+
+17. **bash 3.2（macOS）：`$var` 紧跟全角字符会被当成变量名的一部分**（2026-10-05）
+   形如 `echo "…（模板刷新 $refresh）"` 报 `refresh）: unbound variable` ——
+   bash 3.2 会把紧跟 `$var` 的多字节字符吃进变量名。中文输出里**一律写 `${var}`**。
+   同源坑：`set -u` 下展开**空数组** `"${arr[@]}"` 也报 unbound variable，
+   惯用法是 `${arr[@]+"${arr[@]}"}`（本仓 `check-ipfix-export.sh` 里两处都踩过）。
+
 ---
 
 ## 8. 下一棒建议顺序（含理由，可据实际情况调整）
@@ -1019,7 +1105,8 @@ tshark 是唯一能发现「一致地错」的手段。
 在线路径按队列分环 `CYS-PKT-009` —— 离线派发端封顶 2.33 Mpps 证明"不拆派发端就到不了线速"） |
 | ~~2~~ | ~~`CYS-PKT-007/008` 收尾~~ **吞吐对照已于 2026-10-05 第四段落地（§2.10）**，且结论**否定了原验收标准**：libpcap 1.10 的 live 路径自己就走 mmap 环 ⇒ 三条路径同级（每包 0.10~0.13 µs），真正的差距在 **mmap 环 vs 拷贝模式**（零丢包下每包 CPU 5.9~6.3×（两次独立复跑）、饱和时端到端 1.35×、真实网卡 1.74×）。`CYS-PKT-008` 的丢包可观测一并做实（运行中可读+累加+三类丢包分开记账）。**仍剩下**：① macOS 侧真抓包（需一次免密 sudo 现场，`/dev/bpf*`）；② **物理网卡上的线速对照**（本轮真实网卡那臂是 TX→tap，且是 2 vCPU 虚机，绝对数不可比） |对照轴设错这件事必须记：**以为的对手（libpcap）其实和我们走同一条路**；不实跑就会写进报告当卖点 |
 | ~~3~~ | ~~`VERSION` 不一致~~ **已落地**（`64f4079` 定真源 + 2026-10-04 挂进门禁 + 自证） | 真源 `VERSION=0.1.0`，四端全部派生；`check-version.sh` 成为 `lint-all.sh` 第 6 条并带 `--self-test`（3 处注入必须判红）。教训：**检查器不挂门禁等于没有检查器** —— 它当时已存在且能跑，但没有任何脚本调用它 |
-| 4 | `CYS-TRF-020/023` 补全（HTTP 响应侧与 UA、DNS RCODE/EDNS0） | 已落地部分的自然延伸，向量体系现成，加样本成本低 |
+| **4（新，2026-10-05）** | **`CYS-TRF-054` 采集器**（序列号缺口 → 导出丢包率）**→ `CYS-TRF-053` 采样**（声明与执行一致）**→ `CYS-INF-040` 容量模型 / `CYS-DOC-023` 口径修正** | 流级导出 v1 已通（§2.11），但**三个必带口径只落地了采样率的「如实声明」**：导出丢包率要采集器算（序列号缺口），采集覆盖率要采集清单。没有这三项，「省网量级」只是说法不是能力。容量模型是把 §2.11 第一张表的算式固化成可复跑脚本 —— 它也是对外沟通时唯一能挡住「你们抓包能扛多少 G」的东西 |
+| 5 | `CYS-TRF-020/023` 补全（HTTP 响应侧与 UA、DNS RCODE/EDNS0） | 已落地部分的自然延伸，向量体系现成，加样本成本低 |
 | ~~5~~ | ~~修 `test_node()` 的 `npm ci` 拦截（见 §7.1）~~ **已落地**（2026-10-04） | 见 §7.1：改成"依赖在位就跳过 `npm ci`"，并把失败分类抽成可自证函数 + `--self-test` 4 场景（含此前从未执行过的拦截分支）。`--node` 现在全绿 |
 
 > 建议把 `clang-format` 与 `cargo fmt` 装成 pre-commit 钩子。本批已是第二次

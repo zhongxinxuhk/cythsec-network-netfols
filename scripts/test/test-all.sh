@@ -17,7 +17,7 @@ cd "$ROOT"
 usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
-              [--reassembly] [--flows] [--e2e] [--live] [--bench] [--self-test] [--help]
+              [--reassembly] [--flows] [--ipfix] [--e2e] [--live] [--bench] [--self-test] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
   --rust         只跑 Rust 测试（cargo test --offline）
@@ -27,6 +27,7 @@ usage() {
   --dpi          只跑 DPI 向量的 tshark 第三方交叉核验（需 tshark）
   --reassembly   只跑 TCP 重组向量的 tshark 第三方交叉核验（需 tshark）
   --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + 反向故障注入（需 tshark）
+  --ipfix        只跑 IPFIX 导出的 tshark 第三方交叉核验 + UDP 通道字节比对 + 反向故障注入（需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
@@ -78,10 +79,10 @@ required_tools() {
     return 0
   fi
   # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）
-  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_E2E)) -gt 0 ]]; then
+  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E)) -gt 0 ]]; then
     printf '%s\n' "${PYTHON:-python3}"
   fi
-  if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS)) -gt 0 ]]; then
+  if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS + BUILD_IPFIX)) -gt 0 ]]; then
     printf 'cargo\n'
   fi
   if [[ $((BUILD_CPP + BUILD_PARITY + BUILD_E2E)) -gt 0 ]]; then
@@ -95,7 +96,7 @@ required_tools() {
     printf 'node\n'
     printf 'npm\n'
   fi
-  if [[ $((BUILD_DPI + BUILD_FLOWS + BUILD_LIVE)) -gt 0 ]]; then
+  if [[ $((BUILD_DPI + BUILD_FLOWS + BUILD_IPFIX + BUILD_LIVE)) -gt 0 ]]; then
     printf 'tshark\n'
   fi
   return 0
@@ -267,9 +268,9 @@ STUB
   # 3. 工具链预检的**选择映射**：选了什么就只查什么（2026-10-05 在 2 核虚机上撞到的问题）
   checks=$((checks+1))
   local saved_all="${ALL}"
-  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}"
+  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}"
   ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
   got="$(required_tools | tr '\n' ' ')"
   # 注意用「空格分词的整词」匹配：直接 grep 'go' 会被 "cargo" 命中（本自证第一次跑就抓到了
   # 这个假阳性 —— 断言写松了，等于没验）。
@@ -279,6 +280,22 @@ STUB
     echo "  ✓ 预检映射：只选 --rust → 只要 cargo + ${PYTHON:-python3}（不要求 cmake/go/node）"
   else
     echo "  ✗ 预检映射：只选 --rust 却要求了「${got}」" >&2; fails=$((fails+1))
+  fi
+
+  # 3b. 新增分组的工具链映射：--ipfix 必须要求 cargo + python3 + tshark，且**不**要求 cmake。
+  #     这条断言的价值在于：新分组最容易犯的错是"忘了把它接进 required_tools"，
+  #     那样的门禁在缺 tshark 的机器上会假装跑过（tshark 缺失时脚本返回 3 = 未核验）。
+  checks=$((checks+1))
+  ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=1
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE " cargo " \
+     && printf '%s' " ${got} " | grep -qE " tshark " \
+     && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm) '; then
+    echo "  ✓ 预检映射：只选 --ipfix → 只要 cargo + tshark + ${PYTHON:-python3}"
+  else
+    echo "  ✗ 预检映射：只选 --ipfix 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
 
   # 端到端反向注入：在**只有 cargo/python3 替身**的 PATH 下
@@ -295,7 +312,7 @@ STUB
   chmod +x "${ST_TMP}/bin/cargo" "${ST_TMP}/bin/python3"
   rc=0
   out="$(ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-         BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
+         BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -eq 0 ]]; then
@@ -306,7 +323,7 @@ STUB
   fi
   rc=0
   out="$(ALL=0; BUILD_CPP=1; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-         BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
+         BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q '工具链缺失: cmake'; then
@@ -319,7 +336,7 @@ STUB
   BUILD_CPP="${saved_flags:0:1}"; BUILD_RUST="${saved_flags:1:1}"; BUILD_GO="${saved_flags:2:1}"
   BUILD_NODE="${saved_flags:3:1}"; BUILD_PARITY="${saved_flags:4:1}"; BUILD_DPI="${saved_flags:5:1}"
   BUILD_REASSEMBLY="${saved_flags:6:1}"; BUILD_FLOWS="${saved_flags:7:1}"; BUILD_E2E="${saved_flags:8:1}"
-  BUILD_LIVE="${saved_flags:9:1}"; BUILD_BENCH="${saved_flags:10:1}"
+  BUILD_LIVE="${saved_flags:9:1}"; BUILD_BENCH="${saved_flags:10:1}"; BUILD_IPFIX="${saved_flags:11:1}"
 
   # 4. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
   checks=$((checks+1))
@@ -447,6 +464,22 @@ test_flows() {
   return 1
 }
 
+test_ipfix() {
+  echo "==> [ipfix] IPFIX 导出第三方交叉核验（tshark）+ UDP 通道 + 反向故障注入"
+  local rc=0
+  bash scripts/verify/check-ipfix-export.sh || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    echo "✓ [ipfix] 交叉核验通过（含 UDP 通道字节比对与反向故障注入全部被检出）"
+    return 0
+  fi
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [ipfix] 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  echo "✗ [ipfix] 交叉核验失败" >&2
+  return 1
+}
+
 # 跨语言共享环端到端（CYS-TRF-034）。
 #
 # 与 parity 的区别：parity 比的是**契约取值**（两端对同一份 ABI 的常量理解是否一致），
@@ -489,7 +522,7 @@ test_live() {
 }
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; ALL=1
+BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_IPFIX=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; ALL=1
 SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -501,6 +534,7 @@ while [[ $# -gt 0 ]]; do
     --dpi) BUILD_DPI=1; ALL=0 ;;
     --reassembly) BUILD_REASSEMBLY=1; ALL=0 ;;
     --flows) BUILD_FLOWS=1; ALL=0 ;;
+    --ipfix) BUILD_IPFIX=1; ALL=0 ;;
     --e2e) BUILD_E2E=1; ALL=0 ;;
     --live) BUILD_LIVE=1; ALL=0 ;;
     --bench) BUILD_BENCH=1; ALL=0 ;;
@@ -517,7 +551,7 @@ if [[ ${SELF_TEST} -eq 1 ]]; then
 fi
 if [[ $ALL -eq 1 ]]; then
   BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_DPI=1
-  BUILD_REASSEMBLY=1; BUILD_FLOWS=1; BUILD_E2E=1; BUILD_LIVE=1
+  BUILD_REASSEMBLY=1; BUILD_FLOWS=1; BUILD_IPFIX=1; BUILD_E2E=1; BUILD_LIVE=1
   # BUILD_BENCH 不进这里：机器相关，见 usage 末尾的说明。
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
@@ -533,7 +567,7 @@ done
 check_toolchain
 
 # Rust / C++ / 两道 tshark 核验都要消费向量；Go 与前端不消费。
-if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_E2E)) -gt 0 ]]; then
+if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E)) -gt 0 ]]; then
   gen_datasets || { echo "✗ [vectors] 向量生成失败，后续测试不再执行" >&2; exit 1; }
 fi
 
@@ -547,6 +581,7 @@ failed=0
 [[ $BUILD_DPI -eq 1 ]]    && { test_dpi    || failed=$((failed+1)); }
 [[ $BUILD_REASSEMBLY -eq 1 ]] && { test_reassembly || failed=$((failed+1)); }
 [[ $BUILD_FLOWS -eq 1 ]]  && { test_flows   || failed=$((failed+1)); }
+[[ $BUILD_IPFIX -eq 1 ]]  && { test_ipfix   || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 [[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
 [[ $BUILD_BENCH -eq 1 ]] && { test_bench || failed=$((failed+1)); }

@@ -1,6 +1,6 @@
 # CythSec 项目长期记忆
 
-> 最近更新：2026-10-05（状态点 `4bf17ac` 之后：采集侧收口 —— mmap 环 vs 拷贝模式对照实测，`CYS-PKT-008`/`CYS-CAP-002` → ✅）
+> 最近更新：2026-10-05 第五段（采集侧收口之后：**逐包 → 流级**转向落地 —— `FlowRecord → IPFIX` v1，`CYS-TRF-051/052` → ◐，`CYS-PKT-008`/`CYS-CAP-002` → ✅）
 > 接力文档：`docs/planning/HANDOFF.md` ｜ 主待办表：`docs/planning/BACKLOG.md`
 
 ## 核心体系（不可违反）
@@ -12,7 +12,12 @@
 ## 门禁与跑法
 
 - `bash scripts/test/test-all.sh`（全部，会先自动生成测试向量）
-- 日常快速回路：`--rust --dpi --reassembly`
+- 日常快速回路：`--rust --dpi --reassembly --flows --ipfix`
+- `--ipfix`（2026-10-05 新增）：IPFIX 导出的第三方交叉核验 —— tshark 解 `--ipfix-pcap` 产物，
+  九类字段与 JSONL 逐条比对 + 报文级不变量（version / length vs UDP 载荷 / 序列号累计 /
+  模板可见性 / 刷新间隔）+ 本机 UDP 通道字节与 pcap 载荷逐字节比对 + 4 项产物级反向注入
+  （改计数值 / 改 setID / 改报文长度 / 截断 datagram）。**流级口粮**：`--ipfix-udp`/`--ipfix-pcap`/
+  `--ipfix-domain`/`--ipfix-max-msg`/`--ipfix-template-refresh`
 - `--parity` 与 `--e2e` **必须与 `--cpp --rust` 同时选**（否则脚本 `exit 2` 拒绝）
 - `bash scripts/lint/lint-all.sh`（9 项：cpp / rust / go / codegen×2 / version（含自证）/ repo / node 类型检查 / node eslint）
 - **测量脚本（不是门禁，不会自动跑）**：`bash scripts/verify/bench-pipeline.sh [包数] [轮数]`
@@ -60,6 +65,24 @@
   不支持的后端点名拒绝并让 CLI `exit 2` —— 否则对照实验两臂可能跑同一条路径却看不出来。
 - 测量顺序会影响残差：**先起抓包臂、再起打流**（反过来打流的头 0.5 s 落在无监听窗口，
   凭空 5%「未交代」）。对照脚本：`bash scripts/bench/live-throughput-docker.sh [时长] [帧长] [速率]`。
+
+## 流级遥测（IPFIX）关键事实（2026-10-05 实测确立）
+
+- **逐包全量在省网是量级错误**：单条 100G 平均 500 B = 25 Mpps、最坏 64 B 帧 = 148.8 Mpps；
+  骨干 10 Tbps 全量 = 2.5 Gpps ≈ 1.25 TB/s ≈ **108 PB/天**；本仓单机最强是离线派发端
+  **2.33 Mpps ≈ 10G 最坏帧的 16%**。正确形态是**网元采样导出 + 采集集群**，逐包只在单点用
+  （`CYS-DOC-023`）。1:1000 采样后 10 Tbps → 2.5 Mpps → 约 2~4 TB/天。
+- `FlowRecord → IPFIX` 编码在 `dataplane/traffic-engine/src/export/{mod,sink}.rs`，**零第三方依赖**。
+  v4 模板 256 / v6 模板 257，**模板分族按需携带**；IE 编号一律取自 IANA 注册表
+  （1/2/4/7/8/11/12/27/28/34/148/152/153），**不许凭记忆写**。
+- **序列号 = 本报文之前该 Observation Domain 已发送的数据记录累计数**（RFC 7011 §3.1），
+  模板记录不计入 —— 采集器就是靠它算导出丢包率。填充只允许零字节且必须短于 Set 内任何记录。
+- **tshark 侧字段名**：`flowId`(148) 是 `cflow.flow_id`；起止时间在
+  `cflow.timedelta_tree.cflow.abstimestart/abstimeend`；单模板集的 `cflow.template_id`
+  在 `Template (Id = …, Count = …)` 子节点下；时间是**纳秒 9 位**（Python 3.9 的 `%f` 只吃 6 位）。
+  → 校验脚本按**字段名递归收集**，不写死键路径。
+- **v1 刻意不含**：RFC 5103 双方向（反转字段 = 企业位 + PEN 29305 + 同编号；`FlowRecord`
+  只有总量计数）与 DPI `applicationName`(96)（变长）。采样未实现 → `samplingInterval` 如实写 1。
 
 ## 测试环境
 

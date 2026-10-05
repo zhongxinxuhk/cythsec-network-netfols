@@ -16,6 +16,9 @@
 pub mod attributes_gen;
 pub mod channel;
 pub mod dpi;
+// export 是数据链的**对外出口**（M11）：FlowRecord → IPFIX（RFC 7011）。
+// 它只依赖 record 的类型，不反向依赖 pipeline/channel —— 离线 CLI 与在线路径共用同一份编码器。
+pub mod export;
 pub mod feature;
 pub mod flow;
 pub mod pcapfile;
