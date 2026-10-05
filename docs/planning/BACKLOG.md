@@ -753,7 +753,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | ◐ | CYS-TRF-051 | IPFIX 编码器（RFC 7011） | `src/export/mod.rs`（v1 已落地）：消息头（version=10 / length / exportTime / sequenceNumber / observationDomainID）、模板集（Set ID 2）与数据集（Set ID ≥256）、IPv4/IPv6 两套模板**分族按需携带**、`FlowRecord` → 信息元素映射（8/12/27/28 地址、7/11 端口、4 协议、1/2 计数、152/153 毫秒时标、148 flowId=session_id、34 samplingInterval=1 如实声明「未采样」）。**零第三方依赖**（手写编码，与 `record/mod.rs` 手写 JSON 同一红线）。**v1 刻意不含**：RFC 5103 双方向（反转 IE = 企业位 + PEN 29305，而 `FlowRecord` 只有总量计数，硬做只能编造方向归属）与 DPI `applicationName`(96)（变长字段与「定长无歧义」目标冲突）；两者待分方向计数/变长编码落地后作增量 | tshark 独立解出导出的 IPFIX，**九类字段逐一相符**（含 IPv6 与超 32 位计数）；模板/数据集 4 字节对齐；字段号取自 IANA 注册表**而非记忆**。门禁 `scripts/verify/check-ipfix-export.sh`（tshark 逐字段 + 5 项产物级反向注入） | — | P0/M |
 | ◐ | CYS-TRF-052 | 导出通道与模板生命周期 | `src/export/sink.rs`（v1 已落地）：UDP 导出（`--ipfix-udp host:port`，std 实现，含失败计数与最近错误）+ **落盘成 pcap**（`--ipfix-pcap`，手写以太/IPv4/UDP 且校验和真算，供 tshark 独立校验与 `tcpreplay` 回放）；`--ipfix-domain` / `--ipfix-max-msg` / `--ipfix-template-refresh`。模板分族首报文携带并按报文数刷新（UDP 无连接、采集器会重启）、序列号只计数据记录（RFC 7011 §3.1）。**已闭环**：导出丢包的可观测性已由采集器 `CYS-TRF-054` 落地（序列号缺口 → `loss_ppm`） | 导出报文数/记录数/字节数/失败数 CLI 可见；门禁验证 UDP 收到的字节与 pcap 通道载荷**逐字节相同**；产物能被 tshark 读懂 | CYS-TRF-051 | P0/M |
-| ⬜ | CYS-TRF-053 | 采样口径（声明与执行一致） | 数据面采样率可配 + 导出时按 RFC 5476 声明 `samplingInterval`(34)/`samplingAlgorithm`(35)。**不实现真采样就不许声明 <1 的采样率**：声明与执行必须一致 | 采样率 n 时：导出记录数/全量记录数落在 `[1/n ± 容差]`；IE 34 与配置**逐位一致**；`n=1` 时如实声明"未采样" | CYS-TRF-051 | P1/M |
+| ◐ | CYS-TRF-053 | 采样口径（声明与执行一致） | **流级采样落地**：`--sample 1:N` + `--sampling-mode flow\|packet` + `--sampling-seed`；`flow`（默认）按**流键哈希**决定（同一条流全采或全不采、与包序无关），`packet` 按包计数；采样决定在**派发端**做（放 worker 会让实际采样率放大 N×）；IE 34 取自**同一份 `SamplingConfig`**（没有单独的 `--ipfix-sampling` 开关，于是"只声明不执行"在 CLI 上无法表达）；CLI 自报 `sampling_observed/kept/dropped/kept_ppm/declared_matches_kept`；**导出计数不放大**（×N 还原量级是采集侧的事）。顺手修掉一个真实缺陷：`ExportConfig.sampling_interval` 此前被硬编码为 1（配置项只被校验、从不生效）。**未达成**：① 采样点在流键上，在线"收包环上采"需 `CYS-PKT-032`（AF_PACKET/XDP）；② 分层采样率取值仍是规划；③ 采样后的量级还原/置信区间未做；④ `samplingAlgorithm`(35) 未声明 | ① 自造 400 条流语料：1:4 → 留存 107 条（手算 100±12）且 CLI 自报 `declared_matches_kept=true`；② **流完整**：被采到的流除 `session_id` 外与不采样**逐字段相同**；③ **线路校验**（tshark）：不采样 IE 34 全 1、1:4 全 4，且记录条数 == 实际留存流数；④ `--workers 4` 与 `--workers 1` 结果逐字段相同；⑤ `packet` 模式 800 包留 200 包（手算）；⑥ 3 项**真实故障注入**（`keep-all` 采样器没接上 / `torn-flows` 逐包却自称 flow / `no-ipfix` 声明未落线）全部判红；⑦ Rust 单测钉住 IE 34 来自配置（1000 与默认 1 两个方向） | CYS-TRF-051 | P1/M |
 
 #### 3.11.2 采集侧（采集器与容量模型）
 
@@ -913,8 +913,8 @@ CYS-TRF-043（属性字典 owner/弃用周期）与 CYS-TIP-011（签名注册�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 314 |
-| 进行中 | 16 |
+| 未开始 | 313 |
+| 进行中 | 17 |
 | 已完成 | 46 |
 
 ### 6.6 里程碑完成度

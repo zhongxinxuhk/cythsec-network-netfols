@@ -54,9 +54,11 @@ pub struct ExportConfig {
     /// 每多少条报文重发一次模板。UDP 无连接、采集器会重启，模板只发一次
     /// 意味着"采集器一重启，之后所有数据记录都解不开"。
     pub template_refresh_msgs: u32,
-    /// 采样间隔（1 = 未采样）。**声明与执行必须一致**：v1 只支持 1，
-    /// 因为数据面还没有真采样（见 `CYS-TRF-053`）；声明 <1 的采样率却按全量导出，
-    /// 会让下游把采样流量当全量算，是最容易被忽略的错。
+    /// 采样间隔（1 = 未采样），写进 IE 34。**声明与执行必须一致**：
+    /// 这个值必须来自真正做丢弃决定的那份 `sampling::SamplingConfig`（`CYS-TRF-053`），
+    /// 而不是另设一个开关。声明 1:N 却按全量导出，会让下游把采样流量当全量算 ——
+    /// 这是本仓最容易被忽略、后果又最大的一类错（容量/丢包率全跟着错）。
+    /// 原来这里写的是"v1 只支持 1"，而字段实际被忽略（硬编码），现已接线 + 单测守着。
     pub sampling_interval: u32,
 }
 
@@ -246,7 +248,13 @@ impl Encoder {
                 } else {
                     (self.v6.id, &self.v6)
                 };
-                push_data_set(&mut msg, tid, tmpl, &chosen[i..j]);
+                push_data_set(
+                    &mut msg,
+                    tid,
+                    tmpl,
+                    &chosen[i..j],
+                    self.cfg.sampling_interval,
+                );
                 i = j;
             }
 
@@ -282,12 +290,18 @@ fn push_template_set(out: &mut Vec<u8>, t: &Template) {
 }
 
 /// 追加一个数据集（setID = 模板 id）。末尾补 0 到 4 字节对齐。
-fn push_data_set(out: &mut Vec<u8>, template_id: u16, t: &Template, records: &[&FlowRecord]) {
+fn push_data_set(
+    out: &mut Vec<u8>,
+    template_id: u16,
+    t: &Template,
+    records: &[&FlowRecord],
+    sampling_interval: u32,
+) {
     let start = out.len();
     out.extend_from_slice(&template_id.to_be_bytes());
     out.extend_from_slice(&[0u8; 2]); // 长度占位
     for r in records {
-        write_record(out, t, r);
+        write_record(out, t, r, sampling_interval);
     }
     // 填充只允许零字节，且填充长度（≤3）必须短于记录长度（本版 ≥ 57）。
     while (out.len() - start) % 4 != 0 {
@@ -298,7 +312,12 @@ fn push_data_set(out: &mut Vec<u8>, template_id: u16, t: &Template, records: &[&
 }
 
 /// 按模板字段顺序写一条数据记录。
-fn write_record(out: &mut Vec<u8>, t: &Template, r: &FlowRecord) {
+///
+/// `sampling_interval` 由调用方从 `ExportConfig` 传进来：**这个参数必须真的来自
+/// 「执行侧的采样配置」**，否则 IE 34 就成了一句没人校验的声明。
+/// （写这一笔之前这里硬编码 `&1u32`，于是 `ExportConfig.sampling_interval` 只被
+/// 校验、从不生效 —— 配置项看起来在做事，实际什么也没做。）
+fn write_record(out: &mut Vec<u8>, t: &Template, r: &FlowRecord, sampling_interval: u32) {
     for f in &t.fields {
         match f.ie {
             Ie::SourceIPv4Address => write_ipv4(out, &r.key.src_ip),
@@ -317,7 +336,7 @@ fn write_record(out: &mut Vec<u8>, t: &Template, r: &FlowRecord) {
                 out.extend_from_slice(&(r.last_seen_us / 1000).to_be_bytes())
             }
             Ie::FlowId => out.extend_from_slice(&r.session_id.to_be_bytes()),
-            Ie::SamplingInterval => out.extend_from_slice(&1u32.to_be_bytes()),
+            Ie::SamplingInterval => out.extend_from_slice(&sampling_interval.to_be_bytes()),
         }
     }
 }
@@ -397,6 +416,44 @@ mod tests {
         assert_eq!(Ie::FlowId.code(), 148);
         assert_eq!(Ie::FlowStartMilliseconds.code(), 152);
         assert_eq!(Ie::FlowEndMilliseconds.code(), 153);
+    }
+
+    /// IE 34 必须**来自配置**，不是硬编码值。
+    ///
+    /// 这条单测的存在理由：写它之前，`write_record` 里是 `&1u32` 硬编码 ——
+    /// `ExportConfig.sampling_interval` 只被校验、从不生效。表现是"配置项看起来在
+    /// 做事，导出的 IE 34 永远是 1"：如果采样器真的按 1:1000 丢了包而在线上声明
+    /// 1:1，采集侧会把采样流量当全量，量级直接错 1000 倍。
+    /// 手算期望：记录长度 57，IE 34 是最后一个字段（后 4 字节，填充 3 字节在 set 尾部），
+    /// 所以数据集里 `[54..58]` 就是采样间隔的 4 字节大端。
+    #[test]
+    fn sampling_interval_is_written_into_records() {
+        let mut e = Encoder::new(ExportConfig {
+            domain_id: 1,
+            max_msg_bytes: 1400,
+            template_refresh_msgs: 20,
+            sampling_interval: 1000,
+        })
+        .unwrap();
+        let msgs = e.encode_batch(&[rec_v4()], 1_700_000_000).unwrap();
+        // 报文 = 16 字节头 + 模板集 52 字节（数据集的偏移 = 16 + 52 = 68），
+        // 数据集 = 4 字节 set 头 + 57 字节记录 ⇒ IE 34 落在 68+4+53 = 125。
+        let m = &msgs[0];
+        let off = 16 + 52 + 4 + 53;
+        assert_eq!(m.len(), 16 + 52 + 4 + 57 + 3, "报文总长");
+        assert_eq!(
+            u32::from_be_bytes([m[off], m[off + 1], m[off + 2], m[off + 3]]),
+            1000,
+            "IE 34 必须是配置里的 1000，不是硬编码的 1"
+        );
+        // 反向注入（同一测试内）：默认配置必须写 1 —— 声明"未采样"时不许出现别的数。
+        let mut d = Encoder::new(ExportConfig::default()).unwrap();
+        let dm = d.encode_batch(&[rec_v4()], 1_700_000_000).unwrap();
+        assert_eq!(
+            u32::from_be_bytes([dm[0][off], dm[0][off + 1], dm[0][off + 2], dm[0][off + 3]]),
+            1,
+            "默认（未采样）必须声明 1"
+        );
     }
 
     #[test]

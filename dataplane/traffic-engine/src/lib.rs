@@ -21,6 +21,9 @@ pub mod dpi;
 pub mod export;
 pub mod feature;
 pub mod flow;
+// hash 是流键的稳定哈希：分片（pipeline）与采样（sampling）共用一份实现，
+// 免得两处各写一份 FNV/splitmix 后各自漂移。见 HANDOFF §2.10 那次"低位恒定"事故。
+pub mod hash;
 // ipfix 是 IPFIX 线路格式与采集侧（M11 / CYS-TRF-051/054）：**编码器与采集器共用同一份
 // IE 编号与模板定义**，免得"两侧各自定义一次、一起写错还互相验证通过"。
 // 它只依赖 flow/record/feature 的类型，不依赖 pipeline/channel。
@@ -29,6 +32,9 @@ pub mod pcapfile;
 pub mod pipeline;
 pub mod reassembly;
 pub mod record;
+// sampling 是流级采样（CYS-TRF-053）：**声明（IE 34）与执行必须一致**，
+// 两者共用同一份 SamplingConfig —— 单一来源，别留"能声明却不执行"的入口。
+pub mod sampling;
 pub mod session;
 pub mod tcp;
 

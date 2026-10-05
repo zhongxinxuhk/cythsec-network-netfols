@@ -53,6 +53,7 @@
 | `check-ipfix-export.sh` | **tshark 独立复核** IPFIX 导出（九类字段逐条 vs JSONL、IE 152/153 原始字节、报文头/序列号/模板可见性）+ UDP 通道字节比对 + 5 项产物级注入（挂 `--ipfix`） |
 | `check-ipfix-collect.sh` | **采集回路**（导出→采集逐字段 9/9 相符）+ **导出丢包率可证伪**（删中间 datagram → `gaps=1 lost_records=2`，`loss_ppm` 独立手算一致）+ 无注入必须报 0 + 判定自身 6 项注入（挂 `--ipfix`） |
 | `check-ipfix-interop.sh` + `interop-ipfix.py` | **异厂导出器互操作**（`CYS-TRF-054` ④ 的离线替代）：一个**只读 RFC 写出来的独立实现**（模板 ID 4001~4004、字段序相反、观测域 `0x1234ABCD`、计数器缩减长度编码、夹带未登记 IE、发模板撤回/重定义/options、先数据后模板、零填充）→ 我们的采集器逐条对手写常量；**tshark 再确认这份报文本身合法**（防"两个实现一起读错同一个非标格式"）；5 场景 + 判定自身 6 项反向注入（挂 `--ipfix`） |
+| `check-sampling.sh` + `check-sampling.py` | **流级采样关口**（`CYS-TRF-053`）：`--sample 1:N` 是否**真的丢包**、`flow` 模式留下的流是否**完整**、IPFIX 的 `samplingInterval`(IE 34) 是否等于配置值（tshark 读线路）、`--workers` 是否一致、逐包模式包级是否精确；3 项**真实故障注入**（采样器没接上 / 逐包却自称 flow / 声明未落线）必须判红。挂 `test-all.sh --sampling` |
 | `check-ignored-sources.sh` | 抓「被 `.gitignore` 静默吃掉、因而不在版本控制里」的源码/脚本（挂 `lint-all.sh`；本仓库靠它抓出了 `scripts/release/`、`scripts/build/`、`services/telemetryd/internal/target/` 三处） |
 | `check-flow-bench.sh` | 数据面基准（CYS-TRF-037）的**回归下限**门禁（**20 项**用例，含 `ipfix-collect-decode` —— 容量模型的"每台 N 记录/秒"出处）+ 4 项反向注入（阈值放大 / 报告模式不判定 / 参数校验 / **串行化扩展性**）；需求目标只报告（挂 `--bench`，**默认不在 ALL 里**：阈值带机器属性） |
 | `e2e-control-plane.sh` | 四服务端到端验收：启动 routerd/policyd/dnsd/telemetryd → 探测端点 → 校验 metrics → jq 验证结构化日志 → 优雅关闭 |

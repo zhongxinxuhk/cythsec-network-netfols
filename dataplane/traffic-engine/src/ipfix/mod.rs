@@ -50,7 +50,8 @@ pub const TEMPLATE_ID_V6: u16 = 257;
 /// 148 flowId / 152 flowStartMilliseconds / 153 flowEndMilliseconds。
 ///
 /// 单位与语义按注册表：`*Milliseconds` 是毫秒（不是微秒），`samplingInterval = 1`
-/// 的含义是「未采样」（RFC 5476：间隔 1 即每个包都观察）。
+/// 的含义是「未采样」（RFC 5476：间隔 1 即每个包都观察）。**值不再硬编码**：
+/// 由导出侧从真正执行采样的那份配置传入（`CYS-TRF-053`），否则 IE 34 只是句声明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Ie {

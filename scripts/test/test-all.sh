@@ -32,6 +32,7 @@ usage() {
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
   --plan         只跑采集容量模型的算术自证 + 反向注入（CYS-INF-040，纯 python3，秒级）
+  --sampling     只跑流级采样的「声明与执行一致」关口（CYS-TRF-053，需 cargo 与 tshark）
   --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
   --help         显示本帮助
 
@@ -81,10 +82,10 @@ required_tools() {
   fi
   # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）。
   # --plan 不进这条：容量模型不消费向量（纯算术），要求它下载/生成样本是多余的耦合。
-  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E + BUILD_PLAN)) -gt 0 ]]; then
+  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E + BUILD_PLAN + BUILD_SAMPLING)) -gt 0 ]]; then
     printf '%s\n' "${PYTHON:-python3}"
   fi
-  if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS + BUILD_IPFIX)) -gt 0 ]]; then
+  if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS + BUILD_IPFIX + BUILD_SAMPLING)) -gt 0 ]]; then
     printf 'cargo\n'
   fi
   if [[ $((BUILD_CPP + BUILD_PARITY + BUILD_E2E)) -gt 0 ]]; then
@@ -98,7 +99,7 @@ required_tools() {
     printf 'node\n'
     printf 'npm\n'
   fi
-  if [[ $((BUILD_DPI + BUILD_FLOWS + BUILD_IPFIX + BUILD_LIVE)) -gt 0 ]]; then
+  if [[ $((BUILD_DPI + BUILD_FLOWS + BUILD_IPFIX + BUILD_LIVE + BUILD_SAMPLING)) -gt 0 ]]; then
     printf 'tshark\n'
   fi
   return 0
@@ -270,10 +271,10 @@ STUB
   # 3. 工具链预检的**选择映射**：选了什么就只查什么（2026-10-05 在 2 核虚机上撞到的问题）
   checks=$((checks+1))
   local saved_all="${ALL}"
-  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}${BUILD_PLAN}"
+  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}${BUILD_PLAN}${BUILD_SAMPLING}"
   ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-  BUILD_PLAN=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0
   got="$(required_tools | tr '\n' ' ')"
   # 注意用「空格分词的整词」匹配：直接 grep 'go' 会被 "cargo" 命中（本自证第一次跑就抓到了
   # 这个假阳性 —— 断言写松了，等于没验）。
@@ -291,7 +292,7 @@ STUB
   checks=$((checks+1))
   ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=1
-  BUILD_PLAN=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0
   got="$(required_tools | tr '\n' ' ')"
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " tshark " \
@@ -317,6 +318,23 @@ STUB
     echo "  ✗ 预检映射：只选 --plan 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
 
+  # 3d. --sampling（流级采样关口）必须要求 cargo + tshark + python3，且**不**要求 cmake/go/node。
+  #     这条断言的价值与 3b 相同：新分组最容易犯的错是"忘了接 required_tools"——那样它会在
+  #     缺 tshark 的机器上返回 3（未核验）却被当成"跑过了"。
+  checks=$((checks+1))
+  ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+  BUILD_PLAN=0; BUILD_SAMPLING=1
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE " cargo " \
+     && printf '%s' " ${got} " | grep -qE " tshark " \
+     && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm) '; then
+    echo "  ✓ 预检映射：只选 --sampling → 只要 cargo + tshark + ${PYTHON:-python3}"
+  else
+    echo "  ✗ 预检映射：只选 --sampling 却要求了「${got}」" >&2; fails=$((fails+1))
+  fi
+
   # 端到端反向注入：在**只有 cargo/python3 替身**的 PATH 下
   #   (a) rust-only 必须通过（缺 cmake 不该挡住它）—— 这条就是本次修复要守的行为；
   #   (b) cpp-only 必须红，且报"工具链缺失: cmake"（改成"全都不查"也会被这条抓住）。
@@ -332,7 +350,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-         BUILD_PLAN=0
+         BUILD_PLAN=0; BUILD_SAMPLING=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -eq 0 ]]; then
@@ -344,7 +362,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=1; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-         BUILD_PLAN=0
+         BUILD_PLAN=0; BUILD_SAMPLING=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q '工具链缺失: cmake'; then
@@ -358,7 +376,7 @@ STUB
   BUILD_NODE="${saved_flags:3:1}"; BUILD_PARITY="${saved_flags:4:1}"; BUILD_DPI="${saved_flags:5:1}"
   BUILD_REASSEMBLY="${saved_flags:6:1}"; BUILD_FLOWS="${saved_flags:7:1}"; BUILD_E2E="${saved_flags:8:1}"
   BUILD_LIVE="${saved_flags:9:1}"; BUILD_BENCH="${saved_flags:10:1}"; BUILD_IPFIX="${saved_flags:11:1}"
-  BUILD_PLAN="${saved_flags:12:1}"
+  BUILD_PLAN="${saved_flags:12:1}"; BUILD_SAMPLING="${saved_flags:13:1}"
 
   # 4. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
   checks=$((checks+1))
@@ -560,6 +578,22 @@ test_plan() {
   echo "✓ [plan] 容量模型 + 落盘实测自证通过（含默认值↔产物一致性核对）"
 }
 
+# 流级采样（CYS-TRF-053）：**声明（IE 34）与执行必须一致**。
+#
+# 为什么单独成一组而不是塞进 --flows：它验的不是"报文能不能被第三方解开"，
+# 而是"我们声称的采样率是不是真的执行了"。这两件事的失败方式完全不同，
+# 混在一起时"tshark 能解"会掩盖"采样的声明是假话"。
+test_sampling() {
+  echo "==> [sampling] 流级采样关口（CYS-TRF-053）"
+  local rc=0
+  bash scripts/verify/check-sampling.sh || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [sampling] 未核验：环境缺少 cargo/tshark（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  return $rc
+}
+
 # 跨语言共享环端到端（CYS-TRF-034）。
 #
 # 与 parity 的区别：parity 比的是**契约取值**（两端对同一份 ABI 的常量理解是否一致），
@@ -603,7 +637,7 @@ test_live() {
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
 BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_IPFIX=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
-BUILD_PLAN=0; ALL=1
+BUILD_PLAN=0; BUILD_SAMPLING=0; ALL=1
 SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -620,6 +654,7 @@ while [[ $# -gt 0 ]]; do
     --live) BUILD_LIVE=1; ALL=0 ;;
     --bench) BUILD_BENCH=1; ALL=0 ;;
     --plan)  BUILD_PLAN=1; ALL=0 ;;
+    --sampling) BUILD_SAMPLING=1; ALL=0 ;;
     --self-test) SELF_TEST=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -636,6 +671,9 @@ if [[ $ALL -eq 1 ]]; then
   BUILD_REASSEMBLY=1; BUILD_FLOWS=1; BUILD_IPFIX=1; BUILD_E2E=1; BUILD_LIVE=1
   # CYS-INF-040 容量模型的算术自证：纯 python3、秒级、无外部工具 ⇒ 没有"随机红"的理由，进默认集合。
   BUILD_PLAN=1
+  # CYS-TRF-053 采样关口：需要 cargo + tshark；缺任何一个都会显式「未核验」（退出 3），
+  # 所以进默认集合不会造成"随机红"。
+  BUILD_SAMPLING=1
   # BUILD_BENCH 不进这里：机器相关，见 usage 末尾的说明。
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
@@ -667,6 +705,7 @@ failed=0
 [[ $BUILD_FLOWS -eq 1 ]]  && { test_flows   || failed=$((failed+1)); }
 [[ $BUILD_IPFIX -eq 1 ]]  && { test_ipfix   || failed=$((failed+1)); }
 [[ $BUILD_PLAN -eq 1 ]]   && { test_plan    || failed=$((failed+1)); }
+[[ $BUILD_SAMPLING -eq 1 ]] && { test_sampling || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 [[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
 [[ $BUILD_BENCH -eq 1 ]] && { test_bench || failed=$((failed+1)); }

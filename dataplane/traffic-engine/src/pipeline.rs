@@ -42,6 +42,11 @@ pub struct AnalyzeOptions {
     pub session: SessionConfig,
     /// 喂给 DPI 的首包字节数上限。
     pub inspect_bytes: usize,
+    /// 流级采样（`CYS-TRF-053`）。`None` 或 `interval == 1` ⇒ **一个包都不丢**。
+    ///
+    /// 采样器只在这里配置一次，导出侧的 IE 34 也从这份配置取（单一来源）：
+    /// 分成"一个开关声明、另一个开关执行"就是把撒谎的入口留在代码里。
+    pub sampling: Option<crate::sampling::SamplingConfig>,
 }
 
 impl Default for AnalyzeOptions {
@@ -51,6 +56,7 @@ impl Default for AnalyzeOptions {
         Self {
             session,
             inspect_bytes: dpi::DEFAULT_INSPECT_BYTES,
+            sampling: None,
         }
     }
 }
@@ -94,6 +100,9 @@ pub struct AnalyzeStats {
     pub session: ManagerStats,
     pub linktype: u32,
     pub linktype_name: &'static str,
+    /// 采样统计（未启用时为 `None`）。**"声明与执行一致"唯一可被外部检查的地方**：
+    /// `observed`/`kept` 由采样器自己记，导出侧的 IE 34 由同一份配置给。
+    pub sampling: Option<crate::sampling::SamplingStats>,
 }
 
 impl AnalyzeStats {
@@ -240,59 +249,12 @@ impl PipelineState {
     }
 }
 
-/// FNV-1a 的一步。自实现而不用 `DefaultHasher`：后者的输出不保证跨版本稳定，
-/// 而分片结果一旦随时间漂移，「这条流当时落在哪个 worker」就对不上号了。
-fn fnv1a_step(h: u64, b: u8) -> u64 {
-    (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-}
-
-/// splitmix64 的收尾混合。
-///
-/// 为什么必须有这一步（这不是"更保险一点"）：**FNV-1a 的低位只取决于最后几个字节**
-/// —— 乘法不会把高位信息带进低位。而真实流量的流键尾部（目的端口、协议号）在同一批
-/// 流量里往往完全相同，于是 `h % workers` 取到的低位恒定，全部流挤到一个 worker 上。
-/// 实测：20000 条流、8 个 worker 时只用到了 0 号和 4 号（`h % 4` 恒为 0），
-/// 2/4 个 worker 时**全部**落在 0 号 —— 并行度是零，而输出仍然"正确"。
-/// 这个 bug 是吞吐测量（每个 worker 承担多少条流）暴露的，当时的分布测试是绿的。
-fn mix64(mut z: u64) -> u64 {
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
 /// 流键 → 分片号。**必须传 `canonical()` 过的键**：按原始五元组算，会把一条会话的
 /// 两个方向分到不同 worker，于是各自只看到半条会话 —— 记录数翻倍而没有任何报错。
 fn shard_of(key: &FlowKey, workers: usize) -> usize {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut feed = |bytes: &[u8]| {
-        for b in bytes {
-            h = fnv1a_step(h, *b);
-        }
-    };
-    match key.src_ip {
-        std::net::IpAddr::V4(a) => {
-            feed(&[4]);
-            feed(&a.octets());
-        }
-        std::net::IpAddr::V6(a) => {
-            feed(&[6]);
-            feed(&a.octets());
-        }
-    }
-    feed(&key.src_port.to_be_bytes());
-    match key.dst_ip {
-        std::net::IpAddr::V4(a) => {
-            feed(&[4]);
-            feed(&a.octets());
-        }
-        std::net::IpAddr::V6(a) => {
-            feed(&[6]);
-            feed(&a.octets());
-        }
-    }
-    feed(&key.dst_port.to_be_bytes());
-    feed(&[key.proto.number()]);
-    (mix64(h) % workers as u64) as usize
+    // 哈希构造在 `hash` 模块（采样也用它）：两处各写一份必然漂移，
+    // 而漂移的表现是"采样采到的流集合与分片结果对不上号"。
+    (crate::hash::key_hash_mixed(key) % workers as u64) as usize
 }
 
 /// 会话统计逐项相加。**必须逐项**：漏一项的表现是那项指标悄悄比单线程运行小
@@ -364,6 +326,11 @@ fn drive_inline<R: Read>(
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
     let mut stats = new_stats(&reader, 1);
     let mut state = PipelineState::new(opts);
+    // 采样器在**每包路径之前**、且只有这一个实例：放进 worker 会让 N 个 worker 各采一遍。
+    let mut sampler = match opts.sampling {
+        Some(cfg) => Some(crate::sampling::Sampler::new(cfg)?),
+        None => None,
+    };
     loop {
         let rec = match reader.next_record() {
             Ok(Some(r)) => r,
@@ -383,6 +350,12 @@ fn drive_inline<R: Read>(
             }
         };
         stats.packets_decoded += 1;
+        if let Some(sp) = sampler.as_mut() {
+            // 传 `canonical()` 键：TCP 两个方向必须得到同一个决定，否则进表的是半条会话。
+            if !sp.keep(&decoded.key.canonical()) {
+                continue;
+            }
+        }
         state.observe(
             &DecodedPacket {
                 data: rec.data,
@@ -393,6 +366,7 @@ fn drive_inline<R: Read>(
         );
     }
     let records = state.finish(&mut stats);
+    stats.sampling = sampler.map(|s| s.stats());
     stats.worker_flows = vec![records.len()];
     finalize(records, stats)
 }
@@ -428,6 +402,14 @@ fn drive_sharded<R: Read>(
     // 同一个包流，所以它分出来的 id 与 worker 数无关。
     let mut ids: HashMap<FlowKey, u64> = HashMap::new();
     let mut next_id: u64 = 1;
+    // 采样决定**必须在派发端做**：放进 worker 就是每个 worker 各采一遍（实际采样率
+    // 被放大 N×），而且各 worker 只看到自己那部分包序，`PerPacket` 模式还会不一致。
+    // 又因为 `FlowConsistent` 的决定只依赖流键（与包序无关），所以"多线程采到的流集合"
+    // 与"单线程采到的"逐字节相同 —— 这是 `--workers` 一致性不变量的前提。
+    let mut sampler = match opts.sampling {
+        Some(cfg) => Some(crate::sampling::Sampler::new(cfg)?),
+        None => None,
+    };
     loop {
         let rec = match reader.next_record() {
             Ok(Some(r)) => r,
@@ -447,6 +429,11 @@ fn drive_sharded<R: Read>(
         };
         stats.packets_decoded += 1;
         let key = decoded.key.canonical();
+        if let Some(sp) = sampler.as_mut() {
+            if !sp.keep(&key) {
+                continue; // 未采到的包**不登记会话 id、不入分片**：id 顺序只看采样后的流集合
+            }
+        }
         if !ids.contains_key(&key) {
             ids.insert(key, next_id);
             next_id += 1;
@@ -472,6 +459,7 @@ fn drive_sharded<R: Read>(
         merge_worker_stats(&mut stats, &wstats);
         records.append(&mut rs);
     }
+    stats.sampling = sampler.map(|s| s.stats());
     // 与单线程同一个排序口径：按规范键升序（`sessions_sorted` 用的也是它）。
     records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
     for r in records.iter_mut() {

@@ -56,6 +56,15 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
 
 输出:
   每行一条 JSON 的 FlowRecord（schema 见 traffic_engine::record）。
+  --sample 1:N          流级采样（CYS-TRF-053）：每 N 个包采 1 个（默认 N=1 = 不采样）。
+                        采样率同时写进 IPFIX 的 IE 34（samplingInterval）—— **声明与执行
+                        来自同一份配置**，不存在「声明了 1000 倍却没丢包」的入口。
+                        导出的计数是**实测计数**（不乘 N）；量级还原是采集侧的事。
+  --sampling-mode <flow|packet>
+                        flow（默认）= 按流键哈希决定，同一条流全采或全不采，与包序无关
+                        （流表/会话/TCP 状态机需要完整包序；逐包随机采会把一条会话撕成
+                        半条，结论是错的而不是「少一点的」）；packet = 每 N 个包留 1 个。
+  --sampling-seed <N>   哈希种子（默认 0）：换种子 = 换一批被采到的流。
   --ipfix-* 打开时**同时**导出 IPFIX：这是让记录走进运营商既有流级通道（NetFlow/IPFIX
   采集体系）的唯一出口，也是「流级 vs 逐包」这条量级问题的正面回答——逐包采集在省网
   不存在（单条 100G 最坏帧 148.8 Mpps；骨干 10 Tbps 全量约 108 PB/天）。
@@ -74,7 +83,15 @@ struct Args {
     workers: usize,
     strict: bool,
     quiet: bool,
+    sampling: SamplingArgs,
     ipfix: Option<IpfixArgs>,
+}
+
+#[derive(Debug)]
+struct SamplingArgs {
+    interval: u32,
+    mode: traffic_engine::sampling::SamplingMode,
+    seed: u64,
 }
 
 #[derive(Debug)]
@@ -102,6 +119,9 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
     let mut workers = 1usize;
     let mut strict = false;
     let mut quiet = false;
+    let mut sampling_interval: u32 = 1;
+    let mut sampling_mode = traffic_engine::sampling::SamplingMode::FlowConsistent;
+    let mut sampling_seed: u64 = 0;
     let mut ipfix_udp: Option<String> = None;
     let mut ipfix_pcap: Option<String> = None;
     let mut ipfix_domain: u32 = 1;
@@ -167,6 +187,35 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
                 workers = n;
             }
             "--strict" => strict = true,
+            "--sample" => {
+                let v = take_value("--sample")?;
+                // 接受 `1:N` 与裸 `N` 两种写法：文档里到处写的是"1:1000"。
+                let n = v.split_once(':').map(|(_, b)| b).unwrap_or(&v);
+                sampling_interval = n
+                    .parse::<u32>()
+                    .map_err(|_| format!("--sample 需要 `1:N` 或正整数，得到 `{v}`"))?;
+                if sampling_interval == 0 {
+                    return Err("--sample 的间隔必须 ≥ 1（1 = 不采样）".to_string());
+                }
+            }
+            "--sampling-mode" => {
+                let v = take_value("--sampling-mode")?;
+                sampling_mode = match v.as_str() {
+                    "flow" => traffic_engine::sampling::SamplingMode::FlowConsistent,
+                    "packet" => traffic_engine::sampling::SamplingMode::PerPacket,
+                    other => {
+                        return Err(format!(
+                            "--sampling-mode 只能是 flow（按流键、流完整）或 packet（每 N 包），得到 `{other}`"
+                        ))
+                    }
+                };
+            }
+            "--sampling-seed" => {
+                let v = take_value("--sampling-seed")?;
+                sampling_seed = v
+                    .parse::<u64>()
+                    .map_err(|_| format!("--sampling-seed 需要一个 64 位无符号整数，得到 `{v}`"))?;
+            }
             "--ipfix-udp" => ipfix_udp = Some(take_value("--ipfix-udp")?),
             "--ipfix-pcap" => ipfix_pcap = Some(take_value("--ipfix-pcap")?),
             "--ipfix-domain" => {
@@ -220,6 +269,11 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
         workers,
         strict,
         quiet,
+        sampling: SamplingArgs {
+            interval: sampling_interval,
+            mode: sampling_mode,
+            seed: sampling_seed,
+        },
         ipfix,
     })))
 }
@@ -270,6 +324,22 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
         shards.join(","),
         stats.session.sessions_evicted
     );
+    if let Some(sp) = &stats.sampling {
+        // 采样这一行必须带 `declared_matches_kept=`：只报 "sampling=1:1000" 而不报
+        // 实际丢了多少，就是"声明与执行一致"无法被外部检查 —— 那正是本项要做掉的事。
+        let _ = writeln!(
+            err,
+            "[cythsec-analyze] sampling_interval={} sampling_mode={} sampling_observed={} \
+             sampling_kept={} sampling_dropped={} sampling_kept_ppm={} declared_matches_kept={}",
+            sp.interval,
+            sp.mode.name(),
+            sp.observed,
+            sp.kept,
+            sp.dropped(),
+            sp.kept_ppm(),
+            sp.matches_declaration()
+        );
+    }
     if stats.workers > 1 {
         // 这句必须打印：不打印的话，下游无法判断"这份输出与单线程是否可比"。
         let _ = writeln!(
@@ -295,8 +365,21 @@ fn run(args: &Args) -> Result<usize, String> {
     } else {
         AnalyzeOptions::default()
     };
+    let sampling = if args.sampling.interval > 1 {
+        Some(
+            traffic_engine::sampling::SamplingConfig::new(
+                args.sampling.interval,
+                args.sampling.mode,
+                args.sampling.seed,
+            )
+            .map_err(|e| format!("采样配置无效：{e}"))?,
+        )
+    } else {
+        None
+    };
     let opts = AnalyzeOptions {
         inspect_bytes: args.inspect_bytes,
+        sampling,
         session: traffic_engine::session::SessionConfig {
             max_sessions: args.max_sessions,
             ..base.session
@@ -328,10 +411,23 @@ fn run(args: &Args) -> Result<usize, String> {
     // 校验脚本（scripts/verify/check-ipfix-export.sh）正是靠这个对应关系，让
     // tshark 独立解出的字段与我们的记录逐项相比。
     if let Some(ix) = &args.ipfix {
+        // IE 34 来自**采样器同一份配置**（单一来源）：没有单独的 `--ipfix-sampling`
+        // 开关，于是"声明了 N 倍却没执行"在 CLI 上无法表达。
+        let declared_interval = stats.sampling.map(|s| s.interval).unwrap_or(1);
+        if let Some(sp) = &stats.sampling {
+            if !sp.matches_declaration() {
+                return Err(format!(
+                    "拒绝导出：声明采样 1:{} 但实际 observed={} kept={} —— 声明与执行不一致时\
+                     写进 IE 34 就是假话（这是 CYS-TRF-053 明确要挡的情况）",
+                    sp.interval, sp.observed, sp.kept
+                ));
+            }
+        }
         let cfg = traffic_engine::export::ExportConfig {
             domain_id: ix.domain,
             template_refresh_msgs: ix.template_refresh,
             max_msg_bytes: ix.max_msg_bytes,
+            sampling_interval: declared_interval,
             ..Default::default()
         };
         let mut enc = traffic_engine::export::Encoder::new(cfg)
