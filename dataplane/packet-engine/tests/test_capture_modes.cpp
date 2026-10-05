@@ -229,7 +229,7 @@ void test_forced_modes_on_veth() {
       check(be.mode_fallback_reason().empty(), "指定 v3 成功时不应有降级原因");
       be.close();
     } else {
-      skip("指定 v3 的建立", be.error_reason().c_str());
+      skip("指定 v3 的建立", be.error_reason());
     }
   }
 
@@ -245,7 +245,7 @@ void test_forced_modes_on_veth() {
             "指定 recvfrom：实际生效档位必须是 recvfrom");
       be.close();
     } else {
-      skip("指定 recvfrom 的建立", be.error_reason().c_str());
+      skip("指定 recvfrom 的建立", be.error_reason());
     }
   }
 
@@ -258,7 +258,7 @@ void test_forced_modes_on_veth() {
     be.configure(co);
     const int rc = be.open(a.c_str());
     if (rc != 0) {
-      skip("丢包在 close 前可读", be.error_reason().c_str());
+      skip("丢包在 close 前可读", be.error_reason());
     } else {
       Flooder fl;
       if (!fl.start(b)) {

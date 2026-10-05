@@ -419,8 +419,22 @@ bool AfPacketBackend::apply_common_socket_opts() {
 
   if (mode_ == RingMode::kRecvfrom) {
     // 无 mmap 时收包走内核 socket 缓冲，调大以减少丢包。
-    const int rcvbuf = 4 * 1024 * 1024;
-    ::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    //
+    // **必须回读**：SO_RCVBUF 会被内核按 net.core.rmem_max 静默削顶（容器/默认
+    // 发行版常见 212992），若只写不回读，就会得到一个「我给了 4MiB」的错觉 ——
+    // 而拷贝模式与 mmap 环做对照时，缓冲规模不同会让结论失真 40% 以上（实测）。
+    const int want = 4 * 1024 * 1024;
+    if (::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &want, sizeof(want)) != 0) {
+      fallback_reason_ += std::string("recvfrom: 设置 SO_RCVBUF(4MiB) 失败（") +
+                          std::strerror(errno) + "）；";
+    } else {
+      int got = 0;
+      socklen_t glen = sizeof(got);
+      if (::getsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &got, &glen) == 0 && got < want) {
+        fallback_reason_ += "recvfrom: SO_RCVBUF 请求 4MiB，内核只给 " +
+                            std::to_string(got / 1024) + "KiB（net.core.rmem_max 限制）；";
+      }
+    }
   }
 
 #ifdef SO_TIMESTAMPNS

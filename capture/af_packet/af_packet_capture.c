@@ -16,6 +16,7 @@
  * 验收：产物为经典 pcap（纳秒魔数 0xa1b23c4d），Wireshark/tshark 可直接打开。
  * 退出码：0 成功 / 2 用法错误 / 3 socket 或环建立失败（含 EINVAL 的排障提示）
  */
+#include <arpa/inet.h> /* htons：缺了它在 aarch64 上是隐式声明，返回值未必是我们要的 */
 #include <errno.h>
 #include <getopt.h>
 #include <net/if.h>
@@ -43,11 +44,20 @@ static int64_t now_ms(void) {
 
 /* 经典 pcap 写盘：全局头 + 每包记录头（与本仓库 pcap_writer 同口径）。 */
 static void pcap_write_global(FILE* f, uint32_t snaplen) {
+  /*
+   * 经典 pcap 全局头共 24 字节，字段宽度**不是**一律 4 字节：
+   *   magic(4) ver_major(2) ver_minor(2) thiszone(4) sigfigs(4) snaplen(4) network(4)
+   * 这里曾把 ver_major/ver_minor 各写成 4 字节，于是整块后移 4 字节：
+   * network 字段读出来正好是 snaplen（实测 -s 2112 时 tshark 报
+   * "network type 2112 unknown"），任何第三方工具都打不开这个文件。
+   * 教训：写盘格式必须用**独立**工具验，自己读自己的产物永远发现不了字段错位。
+   */
   uint32_t magic = 0xa1b23c4du; /* 纳秒精度，本机小端序 */
-  uint32_t ver_maj = 2, ver_min = 4, thiszone = 0, sigfigs = 0, network = 1;
+  uint16_t ver_maj = 2, ver_min = 4;
+  uint32_t thiszone = 0, sigfigs = 0, network = 1;
   fwrite(&magic, 4, 1, f);
-  fwrite(&ver_maj, 4, 1, f);
-  fwrite(&ver_min, 4, 1, f);
+  fwrite(&ver_maj, 2, 1, f);
+  fwrite(&ver_min, 2, 1, f);
   fwrite(&thiszone, 4, 1, f);
   fwrite(&sigfigs, 4, 1, f);
   fwrite(&snaplen, 4, 1, f);
@@ -207,26 +217,39 @@ int main(int argc, char** argv) {
       break;
     }
     /*
-     * V3 的交付单位是**块**：轮询所有处于 TP_STATUS_KERNEL（可写）的块。
-     * 已退休的 USER 块整块遍历后归还。一次 poll 唤醒可以处理多个块。
+     * V3 的交付单位是**块**：内核把整块交给用户态时置 TP_STATUS_USER，
+     * 用户态遍历完把 block_status 写回 TP_STATUS_KERNEL 归还。一次 poll
+     * 唤醒可以处理多个块（下面用 for(;;) 连续收）。
      */
     for (;;) {
       struct tpacket_block_desc* bd =
           (struct tpacket_block_desc*)(ring + (size_t)current_block * block_size);
       if (bd->hdr.bh1.block_status & TP_STATUS_USER) {
+        // 字段名以 <linux/if_packet.h> 的 struct tpacket_hdr_v1 为准：
+        // num_pkts / offset_to_first_pkt。这里曾写成 num_pkts_active /
+        // offset_to_first_hp —— 那是**不存在的成员**，于是本示例在任何现代内核上
+        // 都编译不过，「机制参照」也就一直没有数据（见 HANDOFF §2.9）。
         struct tpacket_hdr_v1* h1 = &bd->hdr.bh1;
-        uint32_t n = h1->num_pkts_active;
-        struct tpacket3_hdr* fh = (struct tpacket3_hdr*)((uint8_t*)bd + h1->offset_to_first_hp);
+        uint32_t n = h1->num_pkts;
+        struct tpacket3_hdr* fh = (struct tpacket3_hdr*)((uint8_t*)bd + h1->offset_to_first_pkt);
         for (uint32_t i = 0; i < n; ++i) {
           uint32_t caplen = fh->tp_snaplen;
           uint32_t origlen = fh->tp_len;
           uint32_t tl = fh->tp_net;
-          /* SOCK_RAW：tp_mac 即以太网帧起点。caplen 越界防护是示例也必须守的线。 */
-          uint8_t* frame = (uint8_t*)bd + fh->tp_mac;
+          /* SOCK_RAW：tp_mac 是**相对本帧头**的偏移，不是相对块首 —— 这里曾写成
+           * (uint8_t*)bd + tp_mac（相对块首），于是数据指针落在块内随机位置：
+           * 包数看着正常、字节数是天文数字（实测 packets=8 bytes=6.28e9）。
+           * 示例照样要守越界这条线：帧必须整段落在块内。 */
+          uint8_t* frame = (uint8_t*)fh + fh->tp_mac;
+          size_t hdr_off = (size_t)((uint8_t*)fh - (uint8_t*)bd);
           size_t block_avail = (size_t)block_size;
-          if ((size_t)fh->tp_mac + caplen > block_avail || caplen > origlen) {
+          if (hdr_off > block_avail || fh->tp_mac > block_avail || caplen > block_avail ||
+              hdr_off + fh->tp_mac + caplen > block_avail || caplen > origlen) {
             fh->tp_status = TP_STATUS_KERNEL;
-            fh = (struct tpacket3_hdr*)((uint8_t*)bd + fh->tp_next_offset);
+            if (fh->tp_next_offset == 0) {
+              break; /* 异常：非末包却给出 0 偏移，防死循环 */
+            }
+            fh = (struct tpacket3_hdr*)((uint8_t*)fh + fh->tp_next_offset);
             continue;
           }
           ++packets;
@@ -236,7 +259,15 @@ int main(int argc, char** argv) {
           (void)tl;
           fh->tp_status = TP_STATUS_KERNEL;
           if (i + 1 < n) {
-            fh = (struct tpacket3_hdr*)((uint8_t*)bd + fh->tp_next_offset);
+            /* tp_next_offset 是**相对当前帧头**的偏移（不是相对块首）。
+             * 这里曾写成 (uint8_t*)bd + tp_next_offset —— 于是第二帧起就跳到块内
+             * 随机位置：读到的 tp_len/tp_snaplen 是垃圾（实测 packets=8 却
+             * bytes=6.28e9），带负载时直接崩。生产实现 af_packet.cpp 用
+             * `cur_off_ += next`，口径一致。 */
+            if (fh->tp_next_offset == 0) {
+              break; /* 非末包却给出 0 偏移：防死循环，宁可少算不多算 */
+            }
+            fh = (struct tpacket3_hdr*)((uint8_t*)fh + fh->tp_next_offset);
           }
         }
         bd->hdr.bh1.block_status = TP_STATUS_KERNEL;
