@@ -678,7 +678,7 @@
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
 | ⬜ | CYS-INF-037 | 架构依赖方向门禁 | `scripts/lint/check-architecture.sh`：核心库不得 `use` 具体插件（白名单制）、L2 插件之间不得互调、新增 L0 真源必须同时有 `--check` 门禁；挂 `lint-all.sh` | 注入「核心 use 某插件」与「插件调插件」两例**均判红并点名文件行**；正向全绿 | — | P0/M |
-| ⬜ | CYS-INF-038 | 契约门禁的自证与 CI 接入补齐 | 给 `check-attributes.sh` / `check-channel-abi.sh` / `check-channel-parity.sh` 补反向注入（改真源不重跑 / 改生成物 / ABI 字段增减）；新门禁挂 `.github/workflows/ci.yml` | 三道注入各自判红且退出非零；`ci.yml` 上可见新门禁 job | — | P0/M |
+| ⬜ | CYS-INF-038 | 契约门禁的自证与 CI 接入补齐 | 给 `check-attributes.sh` / `check-channel-abi.sh` / `check-channel-parity.sh` 补反向注入（改真源不重跑 / 改生成物 / ABI 字段增减）；新门禁挂 `.github/workflows/ci.yml`。**并清理「有检查器但无人调用」的既有孤例**：`scripts/verify/bench-pipeline.sh` 与 `docs/planning/scripts/check-deps.py` 都已入库却**不在任何门禁或 CI 上** —— 二者要么挂入门禁，要么显式标注为「手动工具」并写进文档，**不允许留在「看起来有把关、实际从不运行」的状态** | 三道注入各自判红且退出非零；`ci.yml` 上可见新门禁 job；两个孤例各有明确归属（挂上或标注），无「未接线的检查器」 | — | P0/M |
 | ⬜ | CYS-TRF-040 | 插件清单真源、静态注册表与装配调度 | 新真源 `configs/registry/plugins.json`（`name`/`kind`/`form`/`version`/`requires_host_abi`/`capabilities`/`priority`/`enabled`/`source`/`license`）+ `tools/codegen/gen-plugins.py` 出宿主绑定 + 清单驱动装配；**刻意不用 `dlopen`** | 清单非法（缺字段 / 重名 / 未知 kind / ABI 不兼容）→ **启动即失败并点名条目**；`--check` 守门 | CYS-TRF-001 | P0/L |
 | ⬜ | CYS-TRF-048 | 核心库与宿主切分 | 把 `pipeline.rs` 的编排、默认策略、统计汇总上移到宿主（`bin/*`），库只暴露稳定 API；重新划分 `AnalyzeOptions` 默认值的归属 | 核心库不再出现「读环境变量 / 配置文件挑实现」；`--workers N` 与单表行为**逐字节一致不回归** | CYS-TRF-040 | P0/M |
 | ☑ | CYS-DOC-021 | 上游技术移植方案（TSG）文档 | `docs/architecture/tsg-tech-transfer.md`：A1~A6 架构级引入清单、落地记录与引用索引 | 已落地（见该文档 §9） | — | P1/M |
