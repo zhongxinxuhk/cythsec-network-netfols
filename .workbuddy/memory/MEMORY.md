@@ -1,6 +1,6 @@
 # CythSec 项目长期记忆
 
-> 最近更新：2026-10-05（状态点 `2ca80b6` 之后：离线流水线已接线 `--workers N`）
+> 最近更新：2026-10-05（状态点 `4bf17ac` 之后：采集侧收口 —— mmap 环 vs 拷贝模式对照实测，`CYS-PKT-008`/`CYS-CAP-002` → ✅）
 > 接力文档：`docs/planning/HANDOFF.md` ｜ 主待办表：`docs/planning/BACKLOG.md`
 
 ## 核心体系（不可违反）
@@ -39,6 +39,27 @@
    完全相同 → `fnv(...) % workers` 的低位恒定，全部流挤到少数 worker 上，
    **输出完全正确、单测全绿、并行度为零**。测均衡要用**真实流量的字节布局**
    （变化在前部）并断言均衡度**上下界**，只断言"每个分片都用到过"会漏掉它（2026-10-05 实测踩到）
+
+## 采集侧（AF_PACKET / BPF）关键事实（2026-10-05 实测确立）
+
+- **对照轴必须是「mmap 环 vs 拷贝模式」，不是「vs pcap live」**：libpcap 1.10 的 live 路径
+  自己就走 `TPACKET_V3` + `PACKET_MMAP`，实测三条路径同级（每包 CPU 0.10~0.13 µs）。
+  真正的差距：零丢包同负载下 mmap 环每包 CPU **6.3× 更省**；饱和时同机端到端速率 **1.35×**；
+  真实网卡上拷贝档把整机容量砍到 **1.74×** 之一（165,924 vs 95,450 pps）。
+- **`PACKET_STATISTICS` 是读即清零**：`stats()` 必须现场轮询并**累加**（`+=`），
+  只在 `close()` 读一次会让长跑期间的丢包不可见、被信号杀掉就永远丢。macOS BPF 的
+  `stats()`（`BIOCGSTATS.bs_drop`）本来就是现场读 —— 两边语义现已对齐。
+- **三类丢包要分开记账**：socket 丢（`tp_drops`）、设备丢（`rx_dropped`）、
+  softnet backlog 丢（`/proc/net/softnet_stat` 第 2 列）。只看 `tp_drops` 会把「丢在别处」
+  读成「零丢包」（实测拷贝臂少抓 40% 却报 0）。
+- **`SO_RCVBUF` 会被 `net.core.rmem_max` 静默削顶**（Rocky 10.2 默认 212992 → 请求 4 MiB 只给 416 KiB），
+  而 `PACKET_RX_RING` 不受该限制。凡请求内核资源上限，**设置后必须 `getsockopt` 回读**并如实报出。
+- **`tp_mac` / `tp_next_offset` 都相对「本帧头」**，不是相对块首；字段名以
+  `<linux/if_packet.h>` 与本仓 `af_packet.cpp` 为准（`num_pkts`、`offset_to_first_pkt`）。
+- 采集档位 `--capture-mode <auto|v3|v2|recvfrom>` **指定即严格**：失败报错、**绝不降级**，
+  不支持的后端点名拒绝并让 CLI `exit 2` —— 否则对照实验两臂可能跑同一条路径却看不出来。
+- 测量顺序会影响残差：**先起抓包臂、再起打流**（反过来打流的头 0.5 s 落在无监听窗口，
+  凭空 5%「未交代」）。对照脚本：`bash scripts/bench/live-throughput-docker.sh [时长] [帧长] [速率]`。
 
 ## 测试环境
 
