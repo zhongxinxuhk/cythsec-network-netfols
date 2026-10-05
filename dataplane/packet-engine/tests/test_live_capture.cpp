@@ -47,6 +47,8 @@
 #include <string>
 #include <vector>
 
+using packet_engine::CaptureMode;
+using packet_engine::CaptureOptions;
 using packet_engine::available_backends;
 using packet_engine::available_backends_joined;
 using packet_engine::create_backend;
@@ -438,6 +440,43 @@ void test_backend_factory() {
       check(err.find(other) != std::string::npos, "平台错配的诊断回显被请求的后端名");
     }
     delete be;
+  }
+
+  // 强不变量（CYS-PKT-008）：**没有任何后端可以静默接受采集档位**。
+  //
+  // 为什么这条要跨平台跑：`--capture-mode` 只对 Linux AF_PACKET 有意义。别的后端
+  // （macOS 的 BPF、全平台的 pcap-file）若不把它列进「不支持」，用户就会以为
+  // 「我指定了 recvfrom，所以这个数字是拷贝模式的」—— 而实际上跑的是另一条路径，
+  // 对照实验的关键前提被悄悄破坏。故：要么后端真的支持它（AF_PACKET），要么必须
+  // 在 configure() 的返回值里点名 capture_mode。
+  {
+    bool any_silently_accepted = false;
+    std::string offender;
+    for (const std::string& n : available_backends()) {
+      PacketBackend* be = create_backend(n.c_str());
+      if (be == nullptr) {
+        continue;
+      }
+      CaptureOptions co;
+      co.mode = CaptureMode::kRecvfrom;
+      const std::string rejected = be->configure(co);
+      // AF_PACKET 真的支持；其余后端必须点名拒绝。判据是「拒绝清单里有没有它」，
+      // 而不是「字符串是否为空」—— 空串在 AF_PACKET 上是对的，在别的后端上是漏洞。
+      const bool named = rejected.find("capture_mode") != std::string::npos;
+      const bool is_af_packet = std::strcmp(be->capture_mode_name(), "recvfrom") == 0 ||
+                                std::strcmp(be->capture_mode_name(), "TPACKET_V3") == 0 ||
+                                std::strcmp(be->capture_mode_name(), "TPACKET_V2") == 0;
+      if (!named && !is_af_packet) {
+        any_silently_accepted = true;
+        offender = n + "（rejected=\"" + rejected + "\"）";
+      }
+      delete be;
+    }
+    std::string msg = "没有后端会静默接受 --capture-mode（要么支持，要么点名拒绝）";
+    if (any_silently_accepted) {
+      msg = "有后端静默接受了采集档位: " + offender;
+    }
+    check(!any_silently_accepted, msg.c_str());
   }
 
   // 「已规划未实现」与「名字拼错」必须可区分：前者该等，后者该改。

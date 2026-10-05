@@ -162,6 +162,15 @@ target_link_libraries(cythsec-ring-feed PRIVATE packet_engine)
 add_executable(cythsec-capture cli/capture_main.cpp)
 target_link_libraries(cythsec-capture PRIVATE packet_engine)
 
+# ---- 确定性打流工具：cythsec-inject（仅 Linux）------------------------------
+# 为什么与 af-packet 后端同条件编译：它只用 AF_PACKET SOCK_RAW 发送，别的平台
+# 编出来也跑不了。放在条件里而不是加平台分支，是为了让「不支持」在构建期就可见。
+# 用途见文件头：抓包吞吐对照需要一个可复现、能自证「实际发了多少」的流量源。
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(cythsec-inject cli/inject_main.cpp)
+  target_link_libraries(cythsec-inject PRIVATE packet_engine)
+endif()
+
 # ---- 单元测试（CTest，零第三方依赖）---------------------------------------
 if(BUILD_TESTING)
   add_executable(test_packet tests/test_packet.cpp)
@@ -194,4 +203,13 @@ if(BUILD_TESTING)
   add_executable(test_live_capture tests/test_live_capture.cpp)
   target_link_libraries(test_live_capture PRIVATE packet_engine)
   add_test(NAME packet_engine_live_capture COMMAND test_live_capture)
+
+  # 采集档位强制与「丢包运行中可查」（CYS-PKT-008）。
+  # 只有 Linux 能编：它要用 AF_PACKET 与 veth 验证「小环 + 洪泛 ⇒ 丢包必须在
+  # close() **之前**就可读到」。非 root 时用例显式标记为未核验（而不是判为通过）。
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(test_capture_modes tests/test_capture_modes.cpp)
+    target_link_libraries(test_capture_modes PRIVATE packet_engine)
+    add_test(NAME packet_engine_capture_modes COMMAND test_capture_modes)
+  endif()
 endif()

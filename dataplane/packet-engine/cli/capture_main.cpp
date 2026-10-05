@@ -74,6 +74,8 @@ struct Options {
   bool ignore_outgoing = false;
   bool no_fallback = false;
   uint32_t retire_ms = 0; // 0 = 后端默认
+  packet_engine::CaptureMode capture_mode = packet_engine::CaptureMode::kAuto; // 采集模式偏好
+  uint32_t stats_every_ms = 0;                   // >0 = 运行中每隔这么多毫秒报一次计数
   bool quiet = false;
   bool verbose = false;
 };
@@ -97,6 +99,11 @@ void usage() {
                "      --ignore-outgoing          不看本机发出的包（仅 af-packet，需 Linux>=4.20）\n"
                "      --retire-ms <N>            V3 块退休超时毫秒（仅 af-packet）\n"
                "      --no-fallback              禁止降级（仅 af-packet：要求必须跑在 V3）\n"
+               "      --capture-mode <档位>      指定采集档位：auto(默认) | v3 | v2 | recvfrom\n"
+               "                                 **指定即严格**：只试该档，失败就报错，不降级。\n"
+               "                                 用于「mmap 环 vs 拷贝模式」这类对照（仅 af-packet）。\n"
+               "      --stats-every <毫秒>       运行中每隔这么久输出一行实时计数（含内核丢包）\n"
+               "                                 （与 -q 并用时仍然输出：那是显式要求）\n"
                "  -q, --quiet                    只输出机器可读汇总行\n"
                "  -v, --verbose                  逐包输出一行\n"
                "  -h, --help                     显示本帮助\n"
@@ -201,6 +208,34 @@ bool parse_args(int argc, char** argv, Options* o) {
       o->promisc = true;
     } else if (std::strcmp(a, "--ignore-outgoing") == 0) {
       o->ignore_outgoing = true;
+    } else if (std::strcmp(a, "--capture-mode") == 0) {
+      const char* v = nullptr;
+      if (!need_value(&v)) {
+        return false;
+      }
+      if (std::strcmp(v, "auto") == 0) {
+        o->capture_mode = packet_engine::CaptureMode::kAuto;
+      } else if (std::strcmp(v, "v3") == 0) {
+        o->capture_mode = packet_engine::CaptureMode::kTpacketV3;
+      } else if (std::strcmp(v, "v2") == 0) {
+        o->capture_mode = packet_engine::CaptureMode::kTpacketV2;
+      } else if (std::strcmp(v, "recvfrom") == 0) {
+        o->capture_mode = packet_engine::CaptureMode::kRecvfrom;
+      } else {
+        std::fprintf(stderr, "错误: --capture-mode 取值非法: \"%s\"（可选 auto/v3/v2/recvfrom）\n", v);
+        return false;
+      }
+    } else if (std::strcmp(a, "--stats-every") == 0) {
+      const char* v = nullptr;
+      if (!need_value(&v)) {
+        return false;
+      }
+      uint64_t ms = 0;
+      if (!parse_u64(v, &ms) || ms == 0 || ms > 3600000u) {
+        std::fprintf(stderr, "错误: --stats-every 需要 1..3600000 毫秒，得到 \"%s\"\n", v);
+        return false;
+      }
+      o->stats_every_ms = static_cast<uint32_t>(ms);
     } else if (std::strcmp(a, "--no-fallback") == 0) {
       o->no_fallback = true;
     } else if (std::strcmp(a, "-q") == 0 || std::strcmp(a, "--quiet") == 0) {
@@ -341,8 +376,22 @@ int main(int argc, char** argv) {
     co.buffer_bytes = opt.buffer_bytes;
     co.retire_ms = opt.retire_ms;
     co.snap_len = opt.snaplen;
+    co.mode = opt.capture_mode;
     const std::string rejected = be->configure(co);
     if (!rejected.empty()) {
+      // 显式指定了采集档位却不被支持时**必须失败**，不能只警告。
+      //
+      // 理由：--capture-mode 的唯一用途是「确证跑在某条路径上」。若本后端不支持它
+      // 却继续跑，用户会拿着另一个后端的数字当成 mmap 环的数字 —— 对照实验的关键
+      // 前提（两档真的是两条路径）被悄悄破坏，而屏幕上只有一行容易被忽略的警告。
+      if (opt.capture_mode != packet_engine::CaptureMode::kAuto &&
+          rejected.find("capture_mode") != std::string::npos) {
+        std::fprintf(stderr, "错误: 后端 \"%s\" 不支持 --capture-mode %s：%s\n", opt.backend.c_str(),
+                     packet_engine::capture_mode_pref_name(opt.capture_mode), rejected.c_str());
+        print_result("failed", "capture_mode 不被所选后端支持");
+        delete be;
+        return 2;
+      }
       std::fprintf(stderr, "警告: %s\n", rejected.c_str());
       if (!opt.quiet) {
         std::printf("参数警告     : %s\n", rejected.c_str());
@@ -412,10 +461,28 @@ int main(int argc, char** argv) {
   bool write_failed = false;
   bool rx_failed = false;
 
+  auto last_stats = t0;
   while (true) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) {
       break;
+    }
+    // 运行中实时计数（显式要求才开）。丢包在**抓包进行中**往往才是关键信息：
+    // 等到进程结束才报，长跑的场景里已经来不及了。
+    if (opt.stats_every_ms > 0) {
+      const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_stats).count();
+      if (since >= static_cast<long long>(opt.stats_every_ms)) {
+        last_stats = now;
+        const auto el = std::chrono::duration_cast<std::chrono::milliseconds>(now - t0).count();
+        const BackendStats cur = be->stats(); // 现场向内核要一份（PACKET_STATISTICS）
+        std::printf("capture stats-now packets=%llu bytes=%llu dropped=%llu kernel=%llu "
+                    "errors=%llu duration_ms=%lld\n",
+                    (unsigned long long)packets, (unsigned long long)bytes,
+                    (unsigned long long)cur.rx_dropped,
+                    (unsigned long long)cur.rx_kernel_packets,
+                    (unsigned long long)cur.rx_errors, (long long)el);
+        std::fflush(stdout);
+      }
     }
     if (opt.count != 0 && packets >= opt.count) {
       break;
@@ -466,11 +533,14 @@ int main(int argc, char** argv) {
   const auto t1 = std::chrono::steady_clock::now();
   const auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
+  // 注意：这里必须在 close() **之前**取，否则 last poll 之后的计数拿不到；
+  // close() 内部还会再 poll 一次并累加，所以两条路的合计都不丢。
   const BackendStats st = be->stats();
-  std::printf("capture stats packets=%llu bytes=%llu dropped=%llu errors=%llu duration_ms=%lld\n",
+  std::printf("capture stats packets=%llu bytes=%llu dropped=%llu kernel=%llu errors=%llu "
+              "duration_ms=%lld\n",
               (unsigned long long)packets, (unsigned long long)bytes,
-              (unsigned long long)st.rx_dropped, (unsigned long long)st.rx_errors,
-              (long long)dur_ms);
+              (unsigned long long)st.rx_dropped, (unsigned long long)st.rx_kernel_packets,
+              (unsigned long long)st.rx_errors, (long long)dur_ms);
 
   if (writer.is_open()) {
     const bool closed_ok = writer.close();

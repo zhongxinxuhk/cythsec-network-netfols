@@ -145,6 +145,13 @@ public:
   // 关闭后若 V3 不可用则 open 直接失败 —— 用于「必须确证跑在 V3 上」的场景。
   void set_allow_fallback(bool v) { allow_fallback_ = v; }
 
+  // 采集模式偏好。默认 kAuto = 走 V3→V2→recvfrom 降级链（受 allow_fallback 约束）。
+  // 非 auto 时为**严格指定**：只试该模式，失败即 open 失败（不降级）。
+  // 与 set_allow_fallback(false) 的区别：后者是「第一档必须成立」，前者是
+  // 「**指定**哪一档成立」—— 对照基准（v3 vs recvfrom）需要的是后者。
+  void set_capture_mode(CaptureMode m) { want_mode_ = m; }
+  CaptureMode capture_mode_pref() const { return want_mode_; }
+
   // 是否忽略本机发出的包（默认 false，即与 tcpdump 默认行为一致：收发都看）。
   // 对应 PACKET_IGNORE_OUTGOING，该常量自 Linux 4.20 起才有，故在老内核上
   // 本开关会被静默忽略 —— 调用方可经 stats() 与 mode() 之外单独确认，
@@ -167,6 +174,7 @@ private:
   std::string iface_;  // 解析后的接口名（按索引指定时回填名字）
 
   RingMode mode_ = RingMode::kRecvfrom;
+  CaptureMode want_mode_ = CaptureMode::kAuto; // 用户指定的模式偏好
   std::string fallback_reason_;
 
   // 环形缓冲（mmap）
@@ -216,6 +224,11 @@ private:
   bool setup_recvfrom();
   bool apply_common_socket_opts(); // 权限/缓冲区/超时等与版本无关的设置
   bool configure_interface();      // 解析 source、校验接口存在且 UP、bind
+  // 把内核侧的 PACKET_STATISTICS 读一次并累加进 stats_。
+  //
+  // **读即清零**语义：内核在每次读取后把两个计数器归零，所以想「运行中可查」
+  // 就必须自己累加 —— 否则第二次调用读回来的是 0，看起来像「这一段时间没丢包」。
+  void poll_kernel_stats();
 
   // V3/V2 的单块处理。返回写入 pkts 的个数（0 表示当前无可读块）。
   uint32_t drain_v3_block(PacketBuffer** pkts, uint32_t max);

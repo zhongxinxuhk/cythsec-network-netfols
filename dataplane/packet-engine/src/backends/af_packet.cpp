@@ -157,6 +157,8 @@ std::string AfPacketBackend::configure(const CaptureOptions& options) {
   // 会看到本机发出的包却以为是重复帧。宁可明确告知不支持。
   promisc_ = options.promisc;
   allow_fallback_ = options.allow_fallback;
+  // 模式偏好本后端**支持**（v3/v2/recvfrom 都能指定），故不进 rejected 列表。
+  want_mode_ = options.mode;
   if (options.buffer_bytes != 0) {
     want_buffer_ = options.buffer_bytes;
   }
@@ -246,17 +248,9 @@ void AfPacketBackend::close() {
   ring_ = nullptr;
   ring_bytes_ = 0;
 
-  if (fd_ >= 0 && mode_ != RingMode::kRecvfrom) {
-    // 尽量把内核侧丢包数取回来。PACKET_STATISTICS 是**读即清零**语义，故只在此处
-    // 读一次（关闭时）。内核丢包数是排障时最常被忽略的一项：用户态看到「收到 N 个」
-    // 却对不上线上数量时，缺的那部分就在这里。
-    struct tpacket_stats st;
-    socklen_t len = sizeof(st);
-    std::memset(&st, 0, sizeof(st));
-    if (::getsockopt(fd_, SOL_PACKET, PACKET_STATISTICS, &st, &len) == 0) {
-      stats_.rx_dropped += st.tp_drops;
-    }
-  }
+  // 关闭前把内核侧最后一段计数取回来（读即清零，所以必须是「累加」而不是「覆盖」）。
+  // 单测/CLI 常在 close() 之后才读 stats()，这一步保证那一次读到的是完整值。
+  poll_kernel_stats();
   if (fd_ >= 0) {
     ::close(fd_);
     fd_ = -1;
@@ -637,13 +631,43 @@ int AfPacketBackend::open(const char* source) {
     return -1;
   }
 
-  // 降级链：V3 → V2 → recvfrom。
-  bool ok = setup_v3();
-  if (!ok && allow_fallback_) {
-    ok = setup_v2();
-  }
-  if (!ok && allow_fallback_) {
-    ok = setup_recvfrom();
+  bool ok = false;
+  if (want_mode_ == CaptureMode::kAuto) {
+    // 降级链：V3 → V2 → recvfrom。
+    ok = setup_v3();
+    if (!ok && allow_fallback_) {
+      ok = setup_v2();
+    }
+    if (!ok && allow_fallback_) {
+      ok = setup_recvfrom();
+    }
+  } else {
+    // 指定模式：**只**试这一档，失败就失败。
+    //
+    // 为什么指定模式不参与降级：对照实验的全部意义在于「两个档位的差别就是这两条
+    // 路径的差别」。若指定 recvfrom 时内核/环境让它悄悄跑成了 V3（或反过来），
+    // 两个档位会得到同一个数字，而使用者无法分辨这是「性能相同」还是「模式没生效」。
+    // 需要「能降级」的语义请用 auto（默认）。
+    switch (want_mode_) {
+    case CaptureMode::kTpacketV3:
+      ok = setup_v3();
+      break;
+    case CaptureMode::kTpacketV2:
+      ok = setup_v2();
+      break;
+    case CaptureMode::kRecvfrom:
+      ok = setup_recvfrom();
+      break;
+    case CaptureMode::kAuto:
+      break; // 上面已处理
+    }
+    if (!ok && err_ == AfPacketStatus::kOk) {
+      // 保留更具体的错误（权限/接口类），它们可操作性最强。
+      set_error(AfPacketStatus::kRingFailed,
+                std::string("指定采集模式 ") + capture_mode_pref_name(want_mode_) +
+                    " 建立失败（已指定模式，不会降级）：" +
+                    (fallback_reason_.empty() ? std::string("（无明细）") : fallback_reason_));
+    }
   }
   if (!ok) {
     // 全部失败：优先保留权限/接口类错误的原始诊断（它们可操作性最强），
@@ -996,11 +1020,31 @@ int AfPacketBackend::rx_burst(PacketBuffer** pkts, uint32_t max) {
   return 1;
 }
 
+void AfPacketBackend::poll_kernel_stats() {
+  if (fd_ < 0) {
+    return;
+  }
+  struct tpacket_stats st;
+  socklen_t len = sizeof(st);
+  std::memset(&st, 0, sizeof(st));
+  if (::getsockopt(fd_, SOL_PACKET, PACKET_STATISTICS, &st, &len) != 0) {
+    return; // 老内核/非 Linux 语义差异：取不到就保持已累积值，不编数字
+  }
+  // **累加**而不是赋值：内核读一次就清零，赋值会把「本次轮询之前丢的包」抹掉。
+  stats_.rx_dropped += st.tp_drops;
+  stats_.rx_kernel_packets += st.tp_packets;
+}
+
 BackendStats AfPacketBackend::stats() {
-  BackendStats s = stats_;
-  // 内核侧未交付的丢包（环未及时归还 / 无空闲块）只能在关闭时从 PACKET_STATISTICS
-  // 读到（该接口读即清零），故此处只返回已累积值。
-  return s;
+  // 运行中也要能看到内核侧计数（PACKET_STATISTICS）。
+  //
+  // 为什么要在这里轮询：原先只在 close() 读一次，于是**长跑抓包期间丢包是不可见的**
+  // —— 排障时最常见的场景恰恰是「抓包工具还在跑，线上已经在丢包」。而且一旦进程被
+  // 信号杀掉（close 没执行），这段时间的丢包数就永远丢了。
+  // 与 macOS BPF 后端同构：那边的 stats() 也会现场去要一份内核计数
+  // （BIOCGSTATS 的 bs_drop），不这么做两个平台的可观测性就不一致。
+  poll_kernel_stats();
+  return stats_;
 }
 
 void* AfPacketBackend::native_handle() {

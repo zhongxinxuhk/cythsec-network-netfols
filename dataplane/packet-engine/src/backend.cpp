@@ -191,6 +191,11 @@ std::string PacketBackend::configure(const CaptureOptions& options) {
     note("read_timeout_ms");
   if (options.snap_len != 0)
     note("snap_len");
+  // 采集模式偏好同理必须报出来：在 macOS（BPF 后端）上 `--capture-mode v3`
+  // 若被静默忽略，用户会以为「我指定了环模式，所以这个数字是 mmap 环的」，
+  // 而实际跑的是另一条完全不同的路径 —— 对照实验就此失真。
+  if (options.mode != CaptureMode::kAuto)
+    note("capture_mode(仅 af-packet 后端支持)");
   if (rejected.empty()) {
     return ""; // 用户什么都没要求，不存在「不支持」的问题
   }

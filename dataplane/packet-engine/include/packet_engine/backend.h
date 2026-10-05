@@ -25,7 +25,44 @@ struct BackendStats {
   uint64_t tx_bytes = 0;
   uint64_t rx_dropped = 0;
   uint64_t rx_errors = 0;
+  // 内核侧**交付**计数（AF_PACKET 的 PACKET_STATISTICS.tp_packets）。
+  //
+  // 为什么它与 rx_packets 是两个数：rx_packets 是「本进程取走的」，tp_packets 是
+  // 「内核放进环/队列的」。关闭时两者之差仍不为 0，说明**有包进了环却没被取走**
+  // （留在环里那些既不算丢包、也没进应用）—— 只报 rx_packets 的抓包工具无法区分
+  // 「线上没流量」和「流量被丢了」，排障时会一路查错方向。
+  //
+  // 0 的含义：**该后端不提供**这一计数（BPF / pcap 文件后端不填）。不能用它断言
+  // 「内核一个包都没交付」—— 那种判断要结合 rx_packets 与 rx_dropped 一起看。
+  uint64_t rx_kernel_packets = 0;
 };
+
+// 采集模式偏好。默认 kAuto = 由后端自选（AF_PACKET 侧即 V3→V2→recvfrom 降级链）。
+//
+// 为什么需要它：① 对照基准（「mmap 环」vs「拷贝模式」）必须能**指定**模式 ——
+// 否则两档跑出来都是同一条降级链的同一个结果，「对照」就成了自己跟自己比；
+// ② 需要「确证跑在某模式上」的场景（如 V3 专属的块退休语义）不能让内核悄悄换掉实现。
+// 指定模式 = **严格指定**：建立失败即报错，不降级到别的模式。
+enum class CaptureMode {
+  kAuto = 0,
+  kTpacketV3,
+  kTpacketV2,
+  kRecvfrom,
+};
+
+inline const char* capture_mode_pref_name(CaptureMode m) {
+  switch (m) {
+  case CaptureMode::kAuto:
+    return "auto";
+  case CaptureMode::kTpacketV3:
+    return "v3";
+  case CaptureMode::kTpacketV2:
+    return "v2";
+  case CaptureMode::kRecvfrom:
+    return "recvfrom";
+  }
+  return "unknown";
+}
 
 // 打开前的采集参数。集中成一个结构体而非一堆散落的 setter：
 // 各后端的可调项不同（AF_PACKET 有块退休超时，BPF 有 see-sent），
@@ -39,6 +76,7 @@ struct CaptureOptions {
   uint32_t retire_ms = 0;       // 块退休超时毫秒（仅 AF_PACKET V3），0 = 后端默认
   uint32_t read_timeout_ms = 0; // 单次读超时毫秒，0 = 后端默认
   uint32_t snap_len = 0;        // 截取长度上限，0 = 后端默认
+  CaptureMode mode = CaptureMode::kAuto; // 采集模式偏好（见 CaptureMode 注释）
 };
 
 // 收发包后端纯虚接口。

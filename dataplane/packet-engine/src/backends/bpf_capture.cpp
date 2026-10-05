@@ -131,6 +131,13 @@ std::string BpfCaptureBackend::configure(const CaptureOptions& options) {
   // allow_fallback 在 BPF 上恒为已满足：本后端只有 read() 一条路径，不存在可降级
   // 的更低版本。因此**不**报为不支持 —— 报了会让每个 macOS 用户都看到一条
   // 无意义的警告，而真正的「不支持」信号会被这类噪声淹没。
+  //
+  // 采集模式偏好则必须报：它指的是 TPACKET 的三个档位（v3/v2/recvfrom），
+  // BPF 上都不存在。不报的话，`--capture-mode recvfrom` 在 macOS 上会「成功」，
+  // 而用户拿到的数字其实来自 BPF 的 read() 路径 —— 对照实验直接失真。
+  if (options.mode != CaptureMode::kAuto) {
+    note("capture_mode(是 Linux AF_PACKET 的档位选择，BPF 无对应物)");
+  }
 
   return rejected.empty() ? std::string() : "本后端不支持这些采集参数: " + rejected;
 }
