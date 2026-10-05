@@ -38,11 +38,11 @@ constexpr uint32_t kBatch = 64;      // 一批发送多少个，之后才检查�
 
 struct Options {
   std::string iface;
-  uint64_t count = 0;       // 0 = 不限（此时必须给 --duration）
-  double duration_sec = 0;  // 0 = 不限（此时必须给 --count）
-  uint64_t rate = 0;        // 每秒包数，0 = 全速
+  uint64_t count = 0;      // 0 = 不限（此时必须给 --duration）
+  double duration_sec = 0; // 0 = 不限（此时必须给 --count）
+  uint64_t rate = 0;       // 每秒包数，0 = 全速
   uint32_t frame_size = 64;
-  std::string dst_mac;      // 空 = 广播
+  std::string dst_mac; // 空 = 广播
   uint32_t src_port = 40000;
   bool vary_port = false; // 逐包变化源端口（模拟多流）
   bool quiet = false;
@@ -110,8 +110,7 @@ std::string mac_to_string(const uint8_t m[6]) {
 }
 
 void print_result(const char* status, const std::string& reason) {
-  std::printf("inject result status=%s reason=%s\n", status,
-              reason.empty() ? "-" : reason.c_str());
+  std::printf("inject result status=%s reason=%s\n", status, reason.empty() ? "-" : reason.c_str());
 }
 
 // 取接口 MAC 与索引。与抓包侧一样：**先解析接口，再动权限** —— 否则接口名写错
@@ -161,9 +160,9 @@ void build_frame(std::vector<uint8_t>* f, const uint8_t src_mac[6], const uint8_
   p[13] = 0x00; // IPv4
   uint8_t* ip = p + 14;
   const uint32_t total_len = static_cast<uint32_t>(f->size()) - 14;
-  ip[0] = 0x45;                                    // version 4, IHL 5
-  ip[1] = 0x00;                                    // DSCP/ECN
-  ip[2] = static_cast<uint8_t>(total_len >> 8);    // total length
+  ip[0] = 0x45;                                 // version 4, IHL 5
+  ip[1] = 0x00;                                 // DSCP/ECN
+  ip[2] = static_cast<uint8_t>(total_len >> 8); // total length
   ip[3] = static_cast<uint8_t>(total_len & 0xff);
   ip[4] = static_cast<uint8_t>(seq >> 8); // ID：逐包变化，便于识别乱序/丢失
   ip[5] = static_cast<uint8_t>(seq & 0xff);
@@ -313,7 +312,8 @@ int run(const Options& o) {
     const bool perm = (errno == EPERM || errno == EACCES);
     std::string msg = std::string("socket(AF_PACKET, SOCK_RAW) 失败: ") + std::strerror(errno);
     if (perm) {
-      msg += "（需要 CAP_NET_RAW：sudo setcap cap_net_raw+ep $(readlink -f /proc/self/exe) 或以 root 运行）";
+      msg += "（需要 CAP_NET_RAW：sudo setcap cap_net_raw+ep $(readlink -f /proc/self/exe) 或以 "
+             "root 运行）";
     }
     std::fprintf(stderr, "打开失败: %s\n", msg.c_str());
     print_result(perm ? "skipped" : "failed", msg);
@@ -342,7 +342,8 @@ int run(const Options& o) {
       break;
     }
 
-    const uint64_t left = o.count == 0 ? kBatch : (o.count - sent < kBatch ? o.count - sent : kBatch);
+    const uint64_t left =
+        o.count == 0 ? kBatch : (o.count - sent < kBatch ? o.count - sent : kBatch);
     for (uint64_t i = 0; i < left; ++i) {
       build_frame(&frame, src_mac, dst_mac, port, 53, static_cast<uint32_t>(sent + i));
       if (o.vary_port) {
@@ -378,7 +379,8 @@ int run(const Options& o) {
     if (o.rate > 0) {
       // 限速：按「已发数 / 目标速率」推算应该用的时间，落后就不睡（不追赶历史欠账）。
       const double target = static_cast<double>(sent) / static_cast<double>(o.rate);
-      const double cur = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      const double cur =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       const double sleep_s = target - cur;
       if (sleep_s > 0) {
         struct timespec ts;

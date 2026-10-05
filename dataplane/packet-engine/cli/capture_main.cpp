@@ -73,44 +73,45 @@ struct Options {
   bool promisc = false;
   bool ignore_outgoing = false;
   bool no_fallback = false;
-  uint32_t retire_ms = 0; // 0 = 后端默认
+  uint32_t retire_ms = 0;                                                      // 0 = 后端默认
   packet_engine::CaptureMode capture_mode = packet_engine::CaptureMode::kAuto; // 采集模式偏好
-  uint32_t stats_every_ms = 0;                   // >0 = 运行中每隔这么多毫秒报一次计数
+  uint32_t stats_every_ms = 0; // >0 = 运行中每隔这么多毫秒报一次计数
   bool quiet = false;
   bool verbose = false;
 };
 
 void usage() {
-  std::fprintf(stderr,
-               "用法:\n"
-               "  cythsec-capture --list-ifaces             列出本机网络接口（无需特权）\n"
-               "  cythsec-capture --list-backends            列出本平台可用的后端\n"
-               "  cythsec-capture -i <接口> [选项]           从接口实时抓包\n"
-               "\n"
-               "选项:\n"
-               "  -i, --iface <名字|ifindex:N>  接口名（如 en0 / ens33 / eth0）或索引\n"
-               "  -b, --backend <名字>          后端，默认 live（按平台自动路由）\n"
-               "  -n, --count <N>               收到 N 个包后退出（0=不限，默认 %u）\n"
-               "  -t, --timeout <秒>            总时限（默认 %u）\n"
-               "  -w, --write <file.pcap>       落盘为经典 pcap（纳秒精度，Wireshark 可直接打开）\n"
-               "  -s, --snaplen <N>             截取长度（默认 %u）\n"
-               "      --buffer <字节>            环/读缓冲大小（0=后端默认）\n"
-               "      --promisc                  混杂模式\n"
-               "      --ignore-outgoing          不看本机发出的包（仅 af-packet，需 Linux>=4.20）\n"
-               "      --retire-ms <N>            V3 块退休超时毫秒（仅 af-packet）\n"
-               "      --no-fallback              禁止降级（仅 af-packet：要求必须跑在 V3）\n"
-               "      --capture-mode <档位>      指定采集档位：auto(默认) | v3 | v2 | recvfrom\n"
-               "                                 **指定即严格**：只试该档，失败就报错，不降级。\n"
-               "                                 用于「mmap 环 vs 拷贝模式」这类对照（仅 af-packet）。\n"
-               "      --stats-every <毫秒>       运行中每隔这么久输出一行实时计数（含内核丢包）\n"
-               "                                 （与 -q 并用时仍然输出：那是显式要求）\n"
-               "  -q, --quiet                    只输出机器可读汇总行\n"
-               "  -v, --verbose                  逐包输出一行\n"
-               "  -h, --help                     显示本帮助\n"
-               "\n"
-               "退出码: 0 成功 / 2 用法 / 3 后端创建失败 / 4 打开失败 / 5 运行期错误\n"
-               "        6 落盘失败 / 7 时限内未收到任何包\n",
-               kDefaultCount, kDefaultTimeoutSec, kDefaultSnaplen);
+  std::fprintf(
+      stderr,
+      "用法:\n"
+      "  cythsec-capture --list-ifaces             列出本机网络接口（无需特权）\n"
+      "  cythsec-capture --list-backends            列出本平台可用的后端\n"
+      "  cythsec-capture -i <接口> [选项]           从接口实时抓包\n"
+      "\n"
+      "选项:\n"
+      "  -i, --iface <名字|ifindex:N>  接口名（如 en0 / ens33 / eth0）或索引\n"
+      "  -b, --backend <名字>          后端，默认 live（按平台自动路由）\n"
+      "  -n, --count <N>               收到 N 个包后退出（0=不限，默认 %u）\n"
+      "  -t, --timeout <秒>            总时限（默认 %u）\n"
+      "  -w, --write <file.pcap>       落盘为经典 pcap（纳秒精度，Wireshark 可直接打开）\n"
+      "  -s, --snaplen <N>             截取长度（默认 %u）\n"
+      "      --buffer <字节>            环/读缓冲大小（0=后端默认）\n"
+      "      --promisc                  混杂模式\n"
+      "      --ignore-outgoing          不看本机发出的包（仅 af-packet，需 Linux>=4.20）\n"
+      "      --retire-ms <N>            V3 块退休超时毫秒（仅 af-packet）\n"
+      "      --no-fallback              禁止降级（仅 af-packet：要求必须跑在 V3）\n"
+      "      --capture-mode <档位>      指定采集档位：auto(默认) | v3 | v2 | recvfrom\n"
+      "                                 **指定即严格**：只试该档，失败就报错，不降级。\n"
+      "                                 用于「mmap 环 vs 拷贝模式」这类对照（仅 af-packet）。\n"
+      "      --stats-every <毫秒>       运行中每隔这么久输出一行实时计数（含内核丢包）\n"
+      "                                 （与 -q 并用时仍然输出：那是显式要求）\n"
+      "  -q, --quiet                    只输出机器可读汇总行\n"
+      "  -v, --verbose                  逐包输出一行\n"
+      "  -h, --help                     显示本帮助\n"
+      "\n"
+      "退出码: 0 成功 / 2 用法 / 3 后端创建失败 / 4 打开失败 / 5 运行期错误\n"
+      "        6 落盘失败 / 7 时限内未收到任何包\n",
+      kDefaultCount, kDefaultTimeoutSec, kDefaultSnaplen);
 }
 
 bool parse_u64(const char* s, uint64_t* out) {
@@ -222,7 +223,8 @@ bool parse_args(int argc, char** argv, Options* o) {
       } else if (std::strcmp(v, "recvfrom") == 0) {
         o->capture_mode = packet_engine::CaptureMode::kRecvfrom;
       } else {
-        std::fprintf(stderr, "错误: --capture-mode 取值非法: \"%s\"（可选 auto/v3/v2/recvfrom）\n", v);
+        std::fprintf(stderr, "错误: --capture-mode 取值非法: \"%s\"（可选 auto/v3/v2/recvfrom）\n",
+                     v);
         return false;
       }
     } else if (std::strcmp(a, "--stats-every") == 0) {
@@ -386,8 +388,9 @@ int main(int argc, char** argv) {
       // 前提（两档真的是两条路径）被悄悄破坏，而屏幕上只有一行容易被忽略的警告。
       if (opt.capture_mode != packet_engine::CaptureMode::kAuto &&
           rejected.find("capture_mode") != std::string::npos) {
-        std::fprintf(stderr, "错误: 后端 \"%s\" 不支持 --capture-mode %s：%s\n", opt.backend.c_str(),
-                     packet_engine::capture_mode_pref_name(opt.capture_mode), rejected.c_str());
+        std::fprintf(stderr, "错误: 后端 \"%s\" 不支持 --capture-mode %s：%s\n",
+                     opt.backend.c_str(), packet_engine::capture_mode_pref_name(opt.capture_mode),
+                     rejected.c_str());
         print_result("failed", "capture_mode 不被所选后端支持");
         delete be;
         return 2;
@@ -470,7 +473,8 @@ int main(int argc, char** argv) {
     // 运行中实时计数（显式要求才开）。丢包在**抓包进行中**往往才是关键信息：
     // 等到进程结束才报，长跑的场景里已经来不及了。
     if (opt.stats_every_ms > 0) {
-      const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_stats).count();
+      const auto since =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - last_stats).count();
       if (since >= static_cast<long long>(opt.stats_every_ms)) {
         last_stats = now;
         const auto el = std::chrono::duration_cast<std::chrono::milliseconds>(now - t0).count();
@@ -478,8 +482,7 @@ int main(int argc, char** argv) {
         std::printf("capture stats-now packets=%llu bytes=%llu dropped=%llu kernel=%llu "
                     "errors=%llu duration_ms=%lld\n",
                     (unsigned long long)packets, (unsigned long long)bytes,
-                    (unsigned long long)cur.rx_dropped,
-                    (unsigned long long)cur.rx_kernel_packets,
+                    (unsigned long long)cur.rx_dropped, (unsigned long long)cur.rx_kernel_packets,
                     (unsigned long long)cur.rx_errors, (long long)el);
         std::fflush(stdout);
       }

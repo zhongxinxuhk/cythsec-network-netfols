@@ -48,9 +48,9 @@
 #include <vector>
 
 using packet_engine::AfPacketBackend;
+using packet_engine::capture_mode_pref_name;
 using packet_engine::CaptureMode;
 using packet_engine::CaptureOptions;
-using packet_engine::capture_mode_pref_name;
 using packet_engine::create_backend;
 using packet_engine::test::check;
 
@@ -63,9 +63,13 @@ void skip(const char* what, const char* why) {
   ++g_skipped;
 }
 
-bool is_root() { return ::geteuid() == 0; }
+bool is_root() {
+  return ::geteuid() == 0;
+}
 
-bool sh(const std::string& cmd) { return std::system(cmd.c_str()) == 0; }
+bool sh(const std::string& cmd) {
+  return std::system(cmd.c_str()) == 0;
+}
 
 bool read_mac(const std::string& iface, uint8_t mac[6]) {
   const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
@@ -135,8 +139,8 @@ private:
     std::memset(sll.sll_addr, 0xff, 6);
     while (running_) {
       for (int i = 0; i < 256 && running_; ++i) {
-        if (::sendto(fd_, frame_.data(), frame_.size(), 0,
-                     reinterpret_cast<struct sockaddr*>(&sll), sizeof(sll)) > 0) {
+        if (::sendto(fd_, frame_.data(), frame_.size(), 0, reinterpret_cast<struct sockaddr*>(&sll),
+                     sizeof(sll)) > 0) {
           ++sent_;
         }
       }
@@ -190,7 +194,8 @@ void test_forced_mode_keeps_error_attribution() {
   const std::string reason = be.error_reason();
   check(reason.find("cythsec-no-such-iface0") != std::string::npos,
         "指定档位时，接口不存在仍必须报接口问题（归因不能被档位覆盖）");
-  check(be.capture_mode_pref() == CaptureMode::kTpacketV3, "档位偏好可回读（configure 真的落定了它）");
+  check(be.capture_mode_pref() == CaptureMode::kTpacketV3,
+        "档位偏好可回读（configure 真的落定了它）");
 }
 
 // ---- 3. 真开两个档位（需 root + veth）----
@@ -274,10 +279,11 @@ void test_forced_modes_on_veth() {
         char msg[256];
         std::snprintf(msg, sizeof(msg),
                       "close() 之前就能读到内核丢包（dropped=%llu kernel=%llu sent=%llu）",
-                      (unsigned long long)pre.rx_dropped,
-                      (unsigned long long)pre.rx_kernel_packets, (unsigned long long)fl.sent());
+                      (unsigned long long)pre.rx_dropped, (unsigned long long)pre.rx_kernel_packets,
+                      (unsigned long long)fl.sent());
         check(pre.rx_dropped > 0, msg);
-        std::snprintf(msg, sizeof(msg), "内核侧交付计数 > 0（证明洪泛确实到达本 socket，kernel=%llu）",
+        std::snprintf(msg, sizeof(msg),
+                      "内核侧交付计数 > 0（证明洪泛确实到达本 socket，kernel=%llu）",
                       (unsigned long long)pre.rx_kernel_packets);
         check(pre.rx_kernel_packets > 0, msg);
 

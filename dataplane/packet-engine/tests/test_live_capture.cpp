@@ -47,10 +47,10 @@
 #include <string>
 #include <vector>
 
-using packet_engine::CaptureMode;
-using packet_engine::CaptureOptions;
 using packet_engine::available_backends;
 using packet_engine::available_backends_joined;
+using packet_engine::CaptureMode;
+using packet_engine::CaptureOptions;
 using packet_engine::create_backend;
 using packet_engine::create_backend_error;
 using packet_engine::find_interface_by_index;

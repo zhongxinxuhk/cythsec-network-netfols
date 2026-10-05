@@ -425,8 +425,8 @@ bool AfPacketBackend::apply_common_socket_opts() {
     // 而拷贝模式与 mmap 环做对照时，缓冲规模不同会让结论失真 40% 以上（实测）。
     const int want = 4 * 1024 * 1024;
     if (::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &want, sizeof(want)) != 0) {
-      fallback_reason_ += std::string("recvfrom: 设置 SO_RCVBUF(4MiB) 失败（") +
-                          std::strerror(errno) + "）；";
+      fallback_reason_ +=
+          std::string("recvfrom: 设置 SO_RCVBUF(4MiB) 失败（") + std::strerror(errno) + "）；";
     } else {
       int got = 0;
       socklen_t glen = sizeof(got);
