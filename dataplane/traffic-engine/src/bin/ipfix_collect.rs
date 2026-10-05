@@ -59,6 +59,13 @@ cythsec-ipfix-collect —— IPFIX 采集器（RFC 7011）：解模板/数据集
   [cythsec-ipfix-collect] datagrams=… bytes=… exporters=… records=… delivered=… duplicates=…
                           gaps=… lost_records=… loss_ppm=… out_of_order=… templates=… expired=…
                           no_template_sets=… malformed=… version_mismatch=… unknown_ies=…
+                          templates_refreshed=… template_conflicts=… withdrawals_ignored=…
+                          options_template_sets=… nonzero_padding=… records_missing_key=…
+
+  后 6 项是**联调时最先要看的东西**：`template_conflicts`（同号不同定义：异厂导出器改过模板
+  而我们保留了旧的）、`withdrawals_ignored`（对端在 UDP 上发模板撤回，按 §8.4 必须忽略）、
+  `nonzero_padding`（非零填充 ≈ 记录长度算错的强信号）、`records_missing_key`（解出了记录但
+  没有五元组 —— 会把「没采到」伪装成「这条流没有关键字段」）。
 
 退出码:
   0  正常
@@ -191,7 +198,9 @@ fn main() -> ExitCode {
         eprintln!(
             "[cythsec-ipfix-collect] datagrams={} bytes={} exporters={} records={} delivered={} \
              duplicates={} gaps={} lost_records={} loss_ppm={} out_of_order={} templates={} \
-             expired={} no_template_sets={} malformed={} version_mismatch={} unknown_ies={}",
+             expired={} no_template_sets={} malformed={} version_mismatch={} unknown_ies={} \
+             templates_refreshed={} template_conflicts={} withdrawals_ignored={} \
+             options_template_sets={} nonzero_padding={} records_missing_key={}",
             st.datagrams,
             st.bytes,
             st.exporters,
@@ -212,6 +221,16 @@ fn main() -> ExitCode {
             } else {
                 ies.join(",")
             },
+            // 这 6 项是联调/运维真正会用来定位的东西（异厂导出器改模板、发撤回、填充不合法…），
+            // 之前没打印：统计结构里有、命令行里看不到 —— 于是"能不能采"只能靠猜。
+            // 追加在**末尾**且不动前面字段的顺序：既有门禁里有 `gaps=0 lost_records=0 loss_ppm=0`
+            // 这类相邻断言，改顺序会让它们误红。
+            st.template_refresh,
+            st.template_conflicts,
+            st.withdrawals_ignored,
+            st.options_template_sets,
+            st.nonzero_padding,
+            st.records_missing_key,
         );
     }
     // 收到了报文却一条都没解出来 = 采集**实际没在工作**。静默退出 0 会让

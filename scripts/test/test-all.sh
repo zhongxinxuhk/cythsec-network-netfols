@@ -513,7 +513,21 @@ test_ipfix() {
     echo "✗ [ipfix] 采集回路核验失败" >&2
     return 1
   fi
-  echo "✓ [ipfix] 交叉核验通过（导出：UDP 通道字节比对；采集：丢包率可复算；两处注入全部被检出）"
+  # 异厂导出器互操作（CYS-TRF-054 未达成项 ④ 的离线替代）：前两个关口里，
+  # 编码器与采集器**共用同一份模板定义**，定义读错 RFC 时两边会一起错且互相验证通过。
+  # 这一道用只读 RFC 写出来的独立实现（模板 ID/字段序/长度/观测域全不同）补上第三方视角。
+  echo "==> [ipfix] 异厂导出器互操作（独立实现 → 我们的采集器 + tshark 确认报文合法）"
+  rc=0
+  bash scripts/verify/check-ipfix-interop.sh || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [ipfix] 异厂互操作未核验：环境缺少 tshark/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "✗ [ipfix] 异厂互操作失败（独立实现的报文没被正确还原）" >&2
+    return 1
+  fi
+  echo "✓ [ipfix] 交叉核验通过（导出：UDP 通道字节比对；采集：丢包率可复算；异厂：5 场景逐条相符；三处注入全部被检出）"
   return 0
 }
 
