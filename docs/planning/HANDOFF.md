@@ -28,7 +28,7 @@
 | 特征提取 + FlowRecord + 离线 pcap CLI | ☑ 已落地（CYS-TRF-004/005/014/027/033/035）；**2026-10-05 起支持 `--workers N`**：每 worker 私有流表/会话/特征（无锁），N>1 与 N=1 输出逐字节一致，见 §2.8 | `src/{feature,record,pipeline,bin/analyze}.rs` |
 | 真实网卡抓包（Linux AF_PACKET / macOS BPF） | **Linux 侧真抓包已验收（2026-10-05，见 §2.7）**：2 vCPU Rocky Linux 10.2 aarch64 测试机、真实网卡 `enp2s0`、13/13 断言（74 包 / tshark 74 帧一致 / 环 74=74 / 10 条 Flow）；macOS BPF 侧仍受 `/dev/bpf*` 权限阻塞（e2e 内显式 `SKIPPED`，不显绿） | `dataplane/packet-engine/src/backends/` |
 | 数据面基准（吞吐/内存 + 多实例扩展 + 反向注入门禁） | ☑ 19 项 · 回归下限全过 · 需求目标 11~14/19（差距已列明）· **多实例分核实验已定路线：4 核/10G 口** | `src/bin/bench.rs` + `scripts/verify/check-flow-bench.sh` |
-| **流级导出（IPFIX / RFC 7011）** | ◐ v1 已落地（`CYS-TRF-051/052`，2026-10-05 第五段）：`FlowRecord → IPFIX`，零第三方依赖手写编码，UDP 与 pcap 两条通道；tshark 独立解出**九类字段逐条相符** + 4 项产物级反向注入全被检出（见 §2.11）。**这是「省网量级」的入口**：逐包全量在省网差 3~5 个数量级 | `dataplane/traffic-engine/src/export/` + `scripts/verify/check-ipfix-export.sh` |
+| **流级导出（IPFIX / RFC 7011）** | ◐ v1 已落地（`CYS-TRF-051/052`，2026-10-05 第五段）：`FlowRecord → IPFIX`，零第三方依赖手写编码，UDP 与 pcap 两条通道；tshark 独立解出**九类字段逐条相符** + 5 项产物级反向注入全被检出（见 §2.11）。**这是「省网量级」的入口**：逐包全量在省网差 3~5 个数量级 | `dataplane/traffic-engine/src/export/` + `scripts/verify/check-ipfix-export.sh` |
 | 跨语言共享环端到端 | ☑ 19 项断言通过 | `scripts/verify/e2e-shared-ring.sh` |
 | 控制平面（Go 四服务） | ◐ 引擎内核已落地（约 9000 行源码 / 7000 行测试），**但待办表未同步** | `services/` |
 
@@ -635,8 +635,10 @@ ctest --test-dir build -R packet_engine_capture_modes --output-on-failure
   模板刷新、v4/v6 分族、4 字节对齐、配置下限），`--rust` 全绿（334 lib 项）。
 - `scripts/verify/check-ipfix-export.sh`：4 个样本 × **九类字段逐条比对**（tshark 解出的
   IPFIX 字段 vs 我们自己的 JSONL 记录），报文级不变量（version / length vs UDP 载荷 /
-  序列号累计 / 模板可见性 / 刷新间隔），**UDP 通道收到的字节与 pcap 通道载荷逐字节相同**，
-  4 项产物级反向注入（改计数值 / 改 setID / 改报文长度 / 截断 datagram）**全部被检出**。
+  序列号累计 / 模板可见性 / 刷新间隔），**IE 152/153 用 PDML 的线上原始 8 字节比对**
+  （不经渲染串 —— 两个 tshark 版本渲染不同，见 §7 第 16 条），
+  **UDP 通道收到的字节与 pcap 通道载荷逐字节相同**，
+  5 项产物级反向注入（改计数值 / 改 setID / 改报文长度 / 截断 datagram / 改时标）**全部被检出**。
 - tshark 侧原始证据：`Version: 10 / Length: 300 / FlowSequence: 0 / Observation Domain Id: 1`，
   模板 11 字段（8/12/7/11/4/1/2/152/153/148/34）被逐个解出并命名，数据记录
   `SrcAddr 10.0.0.1 … Octets 16 / Packets 1 / Flow Id 3 / Sampling interval 1` 与我们记录一致。
@@ -738,7 +740,7 @@ bash scripts/lint/lint-all.sh            # 八项：格式 / 生成物一致性 
 | `--dpi` | **tshark 独立复核** DPI 向量 + 入库字节保真 | **92 项一致**（跳过 14 项，全部有理由） |
 | `--reassembly` | **tshark 独立复核** 重组向量 | 16 项一致（跳过 2 项已知例外） |
 | `--flows` | **tshark 独立复核 FlowRecord**（会话/计数/状态/应用）+ 反向故障注入 | 927 项一致，跳过 8 项；17 项注入全部被检出 |
-| `--ipfix` | **tshark 独立复核 IPFIX 导出**（九类字段逐条 vs JSONL、报文头/序列号/模板可见性）+ UDP 通道字节比对 + 4 项产物级反向注入（2026-10-05 新增） | 4 样本全一致；4/4 注入被检出；UDP 收到的字节与 pcap 载荷逐字节相同 |
+| `--ipfix` | **tshark 独立复核 IPFIX 导出**（九类字段逐条 vs JSONL、IE 152/153 原始 8 字节、报文头/序列号/模板可见性）+ UDP 通道字节比对 + 5 项产物级反向注入（2026-10-05 新增） | macOS 与 Rocky 测试机均全一致；5/5 注入被检出；UDP 收到的字节与 pcap 载荷逐字节相同 |
 | `--e2e` | C++ 进程写 → 共享环 → Rust 进程读并解 Flow | 4 阶段 / 19 项通过（需配 `--cpp --rust`） |
 | `--bench` | 数据面吞吐/内存的**回归下限** + 判定自身的反向注入 | 12 项回归下限全过、注入 3/3 检出（需求目标 4/12，只报告） |
 
@@ -1082,8 +1084,12 @@ tshark 是唯一能发现「一致地错」的手段。
    **`cflow.abstimestart` / `cflow.abstimeend`，且嵌在 `cflow.timedelta_tree` 子节点里**
    （`-T fields` 下取不到）；只带**一个**模板的模板集，其 `cflow.template_id` 藏在
    `Template (Id = …, Count = …)` 子节点下。结论：**按字段名递归收集**，别写死键路径 ——
-   写死的键一换样本就炸。另外 tshark 给的是**纳秒 9 位小数**，Python 3.9 的
-   `datetime.strptime(..., "%f")` 只吃 6 位，会直接抛 `ValueError`（手写解析即可）。
+   写死的键一换样本就炸。
+   **更要紧的一条：JSON 里渲染好的时间是"显示偏好"，不是协议事实** —— 同一份产物，
+   macOS tshark 4.6.9 给 `2023-11-14T22:13:30.016000000Z`，Rocky 4.4.2 给
+   `Nov 15, 2023 06:13:30`（本地化），解析渲染串会在换机器时直接崩。
+   改用 `-T pdml` 的 `value=`：那是该 IE 的**线上原始字节**（`0000018bcfe58f20`），
+   与 locale / 版本 / 显示偏好全无关。**第三方核验要取原始值，不要取它给你看的字符串。**
 
 17. **bash 3.2（macOS）：`$var` 紧跟全角字符会被当成变量名的一部分**（2026-10-05）
    形如 `echo "…（模板刷新 $refresh）"` 报 `refresh）: unbound variable` ——

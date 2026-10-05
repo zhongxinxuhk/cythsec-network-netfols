@@ -15,8 +15,9 @@
 - 日常快速回路：`--rust --dpi --reassembly --flows --ipfix`
 - `--ipfix`（2026-10-05 新增）：IPFIX 导出的第三方交叉核验 —— tshark 解 `--ipfix-pcap` 产物，
   九类字段与 JSONL 逐条比对 + 报文级不变量（version / length vs UDP 载荷 / 序列号累计 /
-  模板可见性 / 刷新间隔）+ 本机 UDP 通道字节与 pcap 载荷逐字节比对 + 4 项产物级反向注入
-  （改计数值 / 改 setID / 改报文长度 / 截断 datagram）。**流级口粮**：`--ipfix-udp`/`--ipfix-pcap`/
+  模板可见性 / 刷新间隔）+ IE 152/153 用 **PDML 原始 8 字节**比对 + 本机 UDP 通道字节与
+  pcap 载荷逐字节比对 + 5 项产物级反向注入（改计数值 / 改 setID / 改报文长度 / 截断 /
+  改时标）。**流级口粮**：`--ipfix-udp`/`--ipfix-pcap`/
   `--ipfix-domain`/`--ipfix-max-msg`/`--ipfix-template-refresh`
 - `--parity` 与 `--e2e` **必须与 `--cpp --rust` 同时选**（否则脚本 `exit 2` 拒绝）
 - `bash scripts/lint/lint-all.sh`（9 项：cpp / rust / go / codegen×2 / version（含自证）/ repo / node 类型检查 / node eslint）
@@ -79,8 +80,10 @@
   模板记录不计入 —— 采集器就是靠它算导出丢包率。填充只允许零字节且必须短于 Set 内任何记录。
 - **tshark 侧字段名**：`flowId`(148) 是 `cflow.flow_id`；起止时间在
   `cflow.timedelta_tree.cflow.abstimestart/abstimeend`；单模板集的 `cflow.template_id`
-  在 `Template (Id = …, Count = …)` 子节点下；时间是**纳秒 9 位**（Python 3.9 的 `%f` 只吃 6 位）。
-  → 校验脚本按**字段名递归收集**，不写死键路径。
+  在 `Template (Id = …, Count = …)` 子节点下 → 校验脚本按**字段名递归收集**，不写死键路径。
+- **核验取原始值，不取渲染串**：同一份产物，macOS tshark 4.6.9 把绝对时间渲染成
+  `2023-11-14T22:13:30.016000000Z`，Rocky 4.4.2 渲染成 `Nov 15, 2023 06:13:30`（本地化）
+  → 解析渲染串换机器就崩。时标一律取 `-T pdml` 的 `value=`（该 IE 的线上原始字节）。
 - **v1 刻意不含**：RFC 5103 双方向（反转字段 = 企业位 + PEN 29305 + 同编号；`FlowRecord`
   只有总量计数）与 DPI `applicationName`(96)（变长）。采样未实现 → `samplingInterval` 如实写 1。
 
@@ -110,7 +113,7 @@
   （早前记的"64 KiB 页路径"有误）。它对 `af_packet.h` 的 PAGE_SIZE 运行时假设仍有价值（提供了一个与
   macOS 16 KiB 不同的页大小），但 **64 KiB 页路径至今没有覆盖环境**。
   **2026-10-05 首轮验收结果**：`--rust` **337 项全过**（与本机计数一致）、`--cpp` 6/6、
-  `--live` **13/13 真实网卡断言**（`enp2s0`，74 包 / tshark 74 帧 / 环 74=74 / 10 条 Flow；该关口加了裁判口径自证后为 14 项）。
+  `--live` **14/14 真实网卡断言**（`enp2s0`，74 包 / tshark 74 帧 / 环 74=74 / 10 条 Flow；该关口加了裁判口径自证后为 14 项）。
   同一批还修掉 3 处"把本机/平台假设当普遍事实"的假红（预检不分组、串行档效率断言、
   C++ 测试里的 `0xFFFF`/超长接口名常量）—— 详见 `docs/planning/HANDOFF.md` §2.7 与 BACKLOG 变更记录。
 - **干净克隆里直接 `cargo test` 会失败**（2026-10-05 在虚拟机上撞到）：`datasets/**/*.pcap|json`

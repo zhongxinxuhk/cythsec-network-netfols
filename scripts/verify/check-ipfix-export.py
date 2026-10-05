@@ -9,11 +9,19 @@
 比对口径（两侧同源、路径完全不同）：
   - 左：`cythsec-analyze` 自己写的 JSONL（记录内容）
   - 右：tshark 解 `--ipfix-pcap` 产物得到的 IPFIX 字段（编码正确性 + 协议合法性）
-  逐条比对九类字段，并核对报文级不变量（版本/长度/序列号/模板可见性/刷新节奏）。
+  逐条比对九类字段（JSON 输出），时标另走 PDML 的**原始字段字节**（见下），
+  并核对报文级不变量（版本/长度/序列号/模板可见性/刷新节奏）。
+
+为什么时标不用 JSON 里渲染好的字符串：**同一份产物在不同 tshark 版本上渲染不同**
+（macOS 4.6.9 给 `2023-11-14T22:13:30.016000000Z`，Rocky 4.4.2 给本地化的
+`Nov 15, 2023 06:13:30`）。解析渲染串等于把第三方工具的时间显示偏好当成协议事实。
+PDML 的 `value=` 是该 IE 的**线上原始字节**（IE 152/153 是 8 字节毫秒），
+与显示偏好、locale、版本都无关 —— 拿它与 JSONL 的毫秒值比才是"逐字节"的核验。
 
 反向故障注入（--self-test，全部注入在**产物字节**上，不需要重新编译）：
   ① 改掉一条数据记录的计数值      ② 把数据集 setID 改成未定义值
   ③ 改掉报文头 length              ④ 截掉最后一个 datagram
+  ⑤ 改掉 IE 152 的原始 8 字节（专门守"时标比对"这条断言）
   注入未被检出 = 比对器失效（"绿色的通过"和"绿色的没跑"长得一样），判失败。
 
 用法：check-ipfix-export.py --pair <label>:<jsonl>:<ipfix.pcap>[:<模板刷新周期>] [...]
@@ -23,7 +31,6 @@
 """
 
 import argparse
-import datetime
 import json
 import os
 import shutil
@@ -31,6 +38,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree
 
 TSHARK = os.environ.get("TSHARK", "tshark")
 
@@ -151,12 +159,29 @@ def extract(tshark_json):
     return msgs
 
 
-def iso_to_ms(iso):
-    """tshark 给的是纳秒精度（9 位小数），而 Python 3.9 的 %f 只吃 6 位，故手写解析。"""
-    base, _, frac = iso.rstrip("Z").partition(".")
-    dt = datetime.datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
-    ms = int((frac + "000")[:3])
-    return int(dt.replace(tzinfo=datetime.timezone.utc).timestamp() * 1000) + ms
+def pdml_time_values(pcap):
+    """从 PDML 里取每个数据记录的 IE 152/153 原始 8 字节（按文档顺序）。
+
+    返回 (starts, ends)，元素是整数（该 IE 的线上字节按大端解释）。
+    """
+    proc = subprocess.run([TSHARK, "-r", pcap, "-T", "pdml"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise Fail(f"tshark -T pdml 打不开产物：{proc.stderr.strip()[:200]}")
+    try:
+        root = xml.etree.ElementTree.fromstring(proc.stdout)
+    except xml.etree.ElementTree.ParseError as e:
+        raise Fail(f"tshark -T pdml 输出不是合法 XML：{e}")
+    starts, ends = [], []
+    for field in root.iter("field"):
+        name = field.get("name")
+        raw = field.get("value")
+        if raw is None:
+            continue
+        if name == "cflow.abstimestart":
+            starts.append(int(raw, 16))
+        elif name == "cflow.abstimeend":
+            ends.append(int(raw, 16))
+    return starts, ends
 
 
 def check_pair(label, jsonl_path, pcap_path, expect_refresh):
@@ -263,21 +288,34 @@ def check_pair(label, jsonl_path, pcap_path, expect_refresh):
     else:
         ok(f"{label}: {len(expected)} 条 × {len(FIELD_SPECS)} 类字段逐条相符（地址/端口/协议/字节/包数/流 id/采样间隔）")
 
-    # --- 时间戳（毫秒时标）逐条比对 ---
+    # --- 时标：PDML 里的原始 8 字节 vs JSONL 的毫秒值 ---
+    try:
+        starts, ends = pdml_time_values(pcap_path)
+    except Fail as e:
+        bad(f"{label}: {e}")
+        return checks, fails
+    if len(starts) != len(expected) or len(ends) != len(expected):
+        bad(
+            f"{label}: PDML 里 IE 152/153 的条数与记录数不符"
+            f"（{len(starts)}/{len(ends)} vs {len(expected)}）"
+        )
+        return checks, fails
     tmism = []
-    for i, (exp, rec) in enumerate(zip(expected, got)):
+    for i, (exp, got_s, got_e) in enumerate(zip(expected, starts, ends)):
         want_s = exp["time"]["first_seen_us"] // 1000
         want_e = exp["time"]["last_seen_us"] // 1000
-        for nm, iso, want in (("起始", rec["start_ms"], want_s), ("结束", rec["end_ms"], want_e)):
-            if iso is None:
-                tmism.append(f"第 {i + 1} 条 {nm}时间未解出")
-            elif iso_to_ms(iso) != want:
-                tmism.append(f"第 {i + 1} 条 {nm}时间：tshark={iso_to_ms(iso)} JSONL={want}")
+        if got_s != want_s:
+            tmism.append(f"第 {i + 1} 条 起始时标：tshark 解出 {got_s}，JSONL {want_s} 毫秒")
+        if got_e != want_e:
+            tmism.append(f"第 {i + 1} 条 结束时标：tshark 解出 {got_e}，JSONL {want_e} 毫秒")
     if tmism:
         for t in tmism[:6]:
             bad(f"{label}: {t}")
     else:
-        ok(f"{label}: {len(expected)} 条记录的起止毫秒时标逐条相符")
+        ok(
+            f"{label}: {len(expected)} 条记录的 IE 152/153 线上原始 8 字节逐条相符"
+            "（不经渲染串，跨 tshark 版本稳定）"
+        )
     return checks, fails
 
 
@@ -329,6 +367,23 @@ def inject_msg_length(src, dst, expected, msgs):
     return "把首报文头 length 改小 4 字节"
 
 
+def inject_start_time(src, dst, expected, msgs):
+    """⑤ 改掉一条记录的 IE 152 原始 8 字节（时标比对必须红）。
+
+    没有这条注入，"时标逐条相符"就是一条从未被检验过的断言：
+    它照样会打印 ✓（比如字段名写错时全取不到、或两边都取错时一致）。
+    """
+    data = bytearray(open(src, "rb").read())
+    want = expected[0]["time"]["first_seen_us"] // 1000
+    pat = struct.pack(">Q", want)
+    idx = data.rfind(pat)
+    if idx < 0:
+        return None
+    data[idx : idx + 8] = struct.pack(">Q", want + 1000)
+    open(dst, "wb").write(data)
+    return f"把一条记录的起始时标 {want} 改成 {want + 1000} 毫秒"
+
+
 def inject_truncate(src, dst, expected, msgs):
     """④ 截掉最后一个 datagram。"""
     data = open(src, "rb").read()
@@ -344,6 +399,7 @@ INJECTIONS = [
     ("改 setID", inject_set_id),
     ("改报文长度", inject_msg_length),
     ("截断报文", inject_truncate),
+    ("改时标", inject_start_time),
 ]
 
 
