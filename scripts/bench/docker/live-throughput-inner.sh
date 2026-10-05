@@ -66,23 +66,29 @@ run_arm() { # $1=臂名 $2=命令行（数组用 eval 展开）
   a_rxp=$(dev_stat va rx_packets); a_drp=$(dev_stat va rx_dropped); a_mis=$(dev_stat va rx_missed_errors)
   local a_sn a_txd
   a_sn=$(softnet_drop); a_txd=$(tx_stat tx_dropped)
-  # 打流进程：全速或指定速率。**不要 kill 它** —— 它的 sent/pps 只在正常退出时打印，
-  # kill 掉就永远拿不到分母（旧版 ping 洪泛就是这么把 offered 变成 0 的）。
-  # 所以让它跑到点自己退出，只需 wait。
+  # 顺序很关键：**先起抓包臂，等它把 socket/环开好，再起打流**。
+  # 反过来（先打流、0.4s 后起抓包）会让打流的头 0.4s 落在没有任何监听者的窗口里：
+  # 那部分包既不在 captured 也不在 socket 丢包里，全部落进「未交代」，凭空多出
+  # 0.4/8 ≈ 5% 的残差（实测 5.1%~5.9%）——报告里的残差就会被自己的测量顺序污染。
+  # 打流时长取 DUR-1，保证它**在抓包臂的 deadline 之前**结束，环里余量还能被取走。
+  # 打流进程不 kill：它的 sent/pps 只在正常退出时打印，kill 掉就永远没有分母
+  # （旧版 ping 洪泛就是这么把 offered 变成 0 的）。
+  local inj_dur=$(( DUR > 1 ? DUR - 1 : 1 ))
+  /usr/bin/time -f "bench time arm=${arm} user=%U sys=%S wall=%e" \
+    "$@" >/work/arm-${arm}.txt 2>>/work/arm-${arm}.txt &
+  local cap_pid=$!
+  sleep 0.5
   if [[ "${RATE}" == "0" ]]; then
-    "${INJ}" -i vb --duration "${DUR}" --size "${FRAME}" > /work/inject-${arm}.txt 2>&1 &
+    "${INJ}" -i vb --duration "${inj_dur}" --size "${FRAME}" > /work/inject-${arm}.txt 2>&1 &
   else
-    "${INJ}" -i vb --duration "${DUR}" --size "${FRAME}" --rate "${RATE}" \
+    "${INJ}" -i vb --duration "${inj_dur}" --size "${FRAME}" --rate "${RATE}" \
       > /work/inject-${arm}.txt 2>&1 &
   fi
   local inj_pid=$!
-  sleep 0.4
-  # CPU 用 /usr/bin/time 取（user+sys），这是「同吞吐下谁更省 CPU」的唯一硬指标。
-  # 每臂输出独立成文件：混在一个 results.txt 里会让「哪个数字属于哪一臂」靠行序猜。
-  /usr/bin/time -f "bench time arm=${arm} user=%U sys=%S wall=%e" \
-    "$@" >/work/arm-${arm}.txt 2>>/work/arm-${arm}.txt || \
-    echo "WARN arm=${arm} 采集中途非 0 退出（原始输出见 /work/arm-${arm}.txt）" | tee -a /work/results.txt
   wait "${inj_pid}" 2>/dev/null || true
+  wait "${cap_pid}" 2>/dev/null || {
+    echo "WARN arm=${arm} 采集中途非 0 退出（原始输出见 /work/arm-${arm}.txt）" | tee -a /work/results.txt
+  }
   cat /work/arm-${arm}.txt >> /work/results.txt
   cat /work/inject-${arm}.txt >> /work/results.txt
   b_rxp=$(dev_stat va rx_packets); b_drp=$(dev_stat va rx_dropped); b_mis=$(dev_stat va rx_missed_errors)
