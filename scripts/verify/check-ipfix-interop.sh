@@ -50,8 +50,19 @@ if ! command -v tshark >/dev/null 2>&1; then
   exit 3
 fi
 
+# **必须自己构建被测二进制**：本关口断言的是"当前源码的行为"，拿一个上次遗留的
+# target/debug 产物去跑，红绿都可能与 HEAD 无关（在 Rocky 测试机上就踩过一次：
+# 采集器是加统计字段之前的版本，5 个场景全红，而红的是"我忘了 rebuild"）。
+# cargo 缺失时按"未核验"退出（3），不静默退回旧产物。
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "⚠ [ipfix-interop] 缺 cargo：无法保证被测二进制与源码一致——**未核验**" >&2
+  exit 3
+fi
+cargo build --offline --quiet --manifest-path "${ROOT}/dataplane/traffic-engine/Cargo.toml" \
+  --bin cythsec-ipfix-collect >/dev/null 2>&1 || {
+  echo "✗ [ipfix-interop] 构建 cythsec-ipfix-collect 失败" >&2; exit 2; }
 COLLECT="${ROOT}/target/debug/cythsec-ipfix-collect"
-[[ -x "${COLLECT}" ]] || { echo "✗ [ipfix-interop] 找不到 ${COLLECT}（先 cargo build）" >&2; exit 2; }
+[[ -x "${COLLECT}" ]] || { echo "✗ [ipfix-interop] 构建后仍找不到 ${COLLECT}" >&2; exit 2; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
