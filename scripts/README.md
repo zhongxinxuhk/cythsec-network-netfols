@@ -65,7 +65,8 @@
 
 | 脚本 | 用途 |
 | --- | --- |
-| `collector-capacity.py` | 采集集群容量模型（`CYS-INF-040`）：带宽 × 采样率 × 平均包长 → 记录/秒 → 采集器台数（每台容量取 `cythsec-bench ipfix-collect-decode` 实测值）→ 存储/天；三档分解；**三个必带口径**（采样率 / 导出丢包率 / 采集覆盖率）；`--self-test` 手算期望值 + 3 项反向注入 |
+| `collector-capacity.py` | 采集集群容量模型（`CYS-INF-040`）：带宽 × 采样率 × 平均包长 → 记录/秒 → 采集器台数（每台容量取 `cythsec-bench ipfix-collect-decode` 实测值）→ 存储/天（**落盘字节/记录默认读实测产物**）；三档分解；**三个必带口径**（采样率 / 导出丢包率 / 采集覆盖率）；`--self-test` 手算期望值 + 3 项反向注入 + 算例 H（测量产物接线 + `trust-planning` 注入）；`--verify-defaults` 核对「内置默认值 ↔ 测量产物」是否一致（只改一处时"实测"就成了假话） |
+| `measure-storage.py` | **落盘字节/记录实测**（`CYS-INF-041`）：吃 `cythsec-analyze` 产出的真实 `FlowRecord` JSONL，给未压缩/gzip 两档字节数 + 字节去向诊断；`--combine` 把多次测量合成规划值（**两档各取较差端**，规则可被判死）；`--self-test` 手算字节数 + gzip 往返校验 + 5 项反向注入。产物见 `docs/planning/measurements/`（含样本量、gzip 工具版本与方法） |
 
 ## dev/
 

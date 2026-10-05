@@ -40,12 +40,18 @@
 import argparse
 import json
 import math
+import os
 import sys
 
 # ---------------------------------------------------------------------------
 # 缺省参数与出处。**每个数都要有出处**：没有出处的数不许写进模型。
 # ---------------------------------------------------------------------------
 TB = 1_000_000_000_000  # 本脚本一律用十进制 TB（10^12 B），与磁盘厂商标称一致
+
+# **已被实测否掉的旧规划假设**（列式压缩后 40 B/记录）。保留它只有一个用途：
+# 反向注入 —— 让"假装读了测量产物、实际用回这个假设"的实现被自证判死。
+# 不要在报告或文档里再引用这个数当规划值（实测是 79.4 B/记录 gzip / 1066 B 未压缩）。
+PLANNING_ASSUMPTION_BYTES = 40.0
 
 DEFAULTS = {
     # 省网量级（需求推导：一省出口 + 汇聚 + 接入的合计口径，见 HANDOFF §2.11）。
@@ -57,8 +63,13 @@ DEFAULTS = {
     # IPFIX v4 数据记录 = 57 B（本仓模板实测，见 src/ipfix/mod.rs）；
     # 报文/集合头按"一条报文装多条记录"摊薄，此处已含摊薄后的 1~2 B。
     "record_wire_bytes": 58.0,
-    # 落盘每条记录字节数：列式压缩后的**规划假设**（待实测，见 HANDOFF §6）。
-    "storage_bytes_per_record": 40.0,
+    # 落盘每条记录字节数：**已实测**（CYS-INF-041，见 docs/planning/measurements/storage-ratio.json）。
+    # 实测规划值 79.4 B/记录 = gzip(JSONL) 两档测量取**较差端**（真实向量语料 79.4 / 同质压测语料 21.0）；
+    # 未压缩 JSONL 的实测上界是 1066 B/记录。旧的"40 B/记录列式压缩假设"实测不成立（低估约 2~27×）。
+    # 该值可被 --storage-measured 覆盖（默认就指向上面那份产物），也可用
+    # --storage-bytes-per-record 直接给数。
+    "storage_bytes_per_record": 79.4,
+    "storage_measured": "docs/planning/measurements/storage-ratio.json",
     # 单台采集器解码能力：本机实测（cythsec-bench 用例 ipfix-collect-decode，
     # Apple M1 Pro / macOS 26 / release，2026-10-05 实测 4.62~4.69 Mrec/s）。
     # **机器相关**，换机器请用 --from-bench 传入实测值。
@@ -82,7 +93,8 @@ PROVENANCE = [
     ("平均包长 500 B", "IMIX 经典规划值；本仓样本实测 400~750 B", "经验"),
     ("IPFIX 记录 57 B", "本仓 v4 模板逐字段求和（src/ipfix/mod.rs）", "实测"),
     ("每台 4.7 Mrec/s", "cythsec-bench `ipfix-collect-decode`（M1 Pro release，2026-10-05）", "实测(机器相关)"),
-    ("落盘 40 B/记录", "列式压缩规划假设，**尚未实测**", "待实测"),
+    ("落盘 79.4 B/记录", "实测（CYS-INF-041）：gzip(JSONL) 多次测量取**较差端**；产物见 measurements/", "实测"),
+    ("落盘 1066 B/记录（上界）", "实测：未压缩 JSONL（JSONL 就是当前真实落盘格式）", "实测"),
     ("余量系数 0.6", "纯内存解码上界折到端到端（收包/写盘/指标）", "规划"),
     ("导出丢包率 loss_ppm", "采集器序列号缺口（CYS-TRF-054，已落地）", "实测(可算)"),
     ("采集覆盖率", "**只能由部署清单填**；缺省 100% 是规划口径，不是事实", "待填"),
@@ -167,6 +179,38 @@ def boxes(records, per_box, headroom, inject=None):
     return int(math.ceil(records / eff)) if records > 0 else 0
 
 
+def storage_provenance(args):
+    """落盘参数的口径说明 —— 每个数都要带着"从哪来"出现在报告里。"""
+    if getattr(args, "storage_measured_used", None):
+        return (f"实测（{args.storage_measured_used}，样本 "
+                f"{getattr(args, 'storage_measured_records', '?')} 条，gzip(JSONL) 多次测量取较差端）")
+    if args.storage_bytes_per_record == DEFAULTS["storage_bytes_per_record"]:
+        return "内置实测默认值（本次**未复核**测量产物）"
+    return "**命令行指定**（无出处 —— 引用这个数的人必须自己说明依据）"
+
+
+def load_storage_measurement(path, fmt="gzip", inject=None):
+    """读 `measure-storage.py` 的测量产物，返回 (字节/记录, 样本量)。
+
+    **不许**在字段缺失/样本为 0 时"退回默认值继续算"：那会把一个没核验过的数
+    伪装成实测值。宁可直接失败（调用方转成非零退出）。
+    """
+    with open(path, encoding="utf-8") as fh:
+        m = json.load(fh)
+    if inject == "trust-planning":
+        # 注入：假装读了产物，实际用回**旧的 40 B/记录规划假设** —— 自证必须判死这种情况
+        # （算例 H 的期望是 33.5664 TB/天，注入后会变成 17.28，于是主断言变红）
+        return PLANNING_ASSUMPTION_BYTES, m.get("records", 0) or m.get("total_records", 0)
+    key = "gzip_bytes_per_record" if fmt == "gzip" else "raw_bytes_per_record"
+    if key not in m or m[key] is None:
+        raise ValueError(f"{path} 里没有 {key}（用 measure-storage.py 产出？）")
+    # 单次测量写 `records`，多次合并的规划产物写 `total_records`（两者都必须是正数）
+    records = m.get("records", m.get("total_records"))
+    if not records or int(records) <= 0:
+        raise ValueError(f"{path} 的样本量为 0 —— 空语料上的平均数不能用")
+    return float(m[key]), int(records)
+
+
 def storage_tb_per_day(records, bytes_per_record, retention_days=1.0):
     """落盘量（TB/天，10^12 B）= 记录率 × 86400 × 每条字节 ÷ 10^12 ÷ 保留天数系数。"""
     if bytes_per_record <= 0:
@@ -180,6 +224,7 @@ def model(args, inject=None):
     recs = records_per_sec(bps, args.sampling, args.avg_packet_bytes, args.flow_per_packet, inject)
     nbox = boxes(recs, args.per_box_records_per_sec, args.headroom, inject)
     tb_day = storage_tb_per_day(recs, args.storage_bytes_per_record, args.retention_days)
+    storage_prov = storage_provenance(args)
     wire_bps = recs * args.record_wire_bytes * 8.0  # 记录流占用的带宽（含 IPFIX 头摊薄）
     coverage = (
         None
@@ -221,6 +266,8 @@ def model(args, inject=None):
         "headroom": args.headroom,
         "boxes": nbox,
         "tb_per_day": tb_day,
+        "storage_bytes_per_record": args.storage_bytes_per_record,
+        "storage_provenance": storage_prov,
         "record_wire_gbps": wire_bps / 1e9,
         "export_loss_ppm": args.export_loss_ppm,
         "delivered_records_per_sec": recs * (1.0 - (args.export_loss_ppm or 0) / 1e6),
@@ -269,6 +316,7 @@ def print_report(args, m):
         f"{args.storage_bytes_per_record:g} B = **{fmt(m['tb_per_day'], ' TB/天')}**"
         f"（保留 {args.retention_days:g} 天）"
     )
+    print(f"       口径：{m['storage_provenance']}")
     print(
         f"  7) 记录流带宽      = {fmt(m['records_per_sec'] / 1e6, ' Mrec/s')} × "
         f"{args.record_wire_bytes:g} B/条 = {fmt(m['record_wire_gbps'] / 1000.0, ' Gbps', 3)}"
@@ -385,24 +433,26 @@ def self_test():
     #   采样后 2.5 Mpps；记录率上界 2.5 Mrec/s；
     #   每台有效 = 4.7e6 × 0.6 = 2.82e6 → 台数 ceil(2.5/2.82) = 1；
     #   落盘 = 2.5e6 × 86400 × 40 B = 8.64e12 B = 8.64 TB/天。
-    m = model(_args_for_selftest(bandwidth_tbps=10.0))
+    m = model(_args_for_selftest(bandwidth_tbps=10.0, storage_bytes_per_record=40.0))
     ok &= _check("A 记录率上界（Mrec/s）", m["records_per_sec"] / 1e6, 2.5)
     ok &= _check("A 台数", m["boxes"], 1)
-    ok &= _check("A 落盘（TB/天）", m["tb_per_day"], 8.64)
+    # 落盘期望**显式钉住 40 B/记录**（不是为了沿用旧假设，而是为了让"算法"与"落盘参数"
+    # 两件事分开验：这里验的是乘法，落盘参数本身由算例 H 用实测产物验）。
+    ok &= _check("A 落盘（TB/天，@40 B）", m["tb_per_day"], 8.64)
 
     # 算例 B：采样 1:100（密 10 倍）→ 25 Mrec/s → 台数 ceil(25/2.82) = 9；
     #   落盘 2.5e6 × 10 × 86400 × 40 = 8.64e13 B = 86.4 TB/天。
-    m = model(_args_for_selftest(bandwidth_tbps=10.0, sampling=100))
+    m = model(_args_for_selftest(bandwidth_tbps=10.0, sampling=100, storage_bytes_per_record=40.0))
     ok &= _check("B 记录率（Mrec/s）", m["records_per_sec"] / 1e6, 25.0)
     ok &= _check("B 台数", m["boxes"], 9)
-    ok &= _check("B 落盘（TB/天）", m["tb_per_day"], 86.4)
+    ok &= _check("B 落盘（TB/天，@40 B）", m["tb_per_day"], 86.4)
 
     # 算例 C：省网 20 Tbps / 1:1000（验收标准点名的那个）→ 5 Mrec/s；
     #   台数 ceil(5/2.82) = 2；落盘 5e6 × 86400 × 40 = 1.728e13 = 17.28 TB/天。
-    m = model(_args_for_selftest())
+    m = model(_args_for_selftest(storage_bytes_per_record=40.0))
     ok &= _check("C 记录率（Mrec/s）", m["records_per_sec"] / 1e6, 5.0)
     ok &= _check("C 台数", m["boxes"], 2)
-    ok &= _check("C 落盘（TB/天）", m["tb_per_day"], 17.28)
+    ok &= _check("C 落盘（TB/天，@40 B）", m["tb_per_day"], 17.28)
 
     # 算例 D：边界（整数除法的经典错处）。每台有效容量 2.82e6 恰好用满 → 1 台；
     #   多一条记录（11.281 Tbps）→ 必须变 2 台（ceil 而不是 round/截断）。
@@ -422,14 +472,51 @@ def self_test():
     ok &= _check("F 覆盖率", m["coverage"], 0.4)
     ok &= _check("F 丢包 1000 ppm 后实收（Mrec/s）", m["delivered_records_per_sec"] / 1e6, 5.0 * 0.999)
 
-    # 算例 G：逐包全量对照（§2.11 那张表里 108 PB/天 的复算）。
+    # 算例 G：逐包全量对照（§2.11 那张表里 108 PB/天 的复算），落盘取**实测规划值 79.4 B**。
     #   10 Tbps ÷ 8 × 86400 = 1.08e14 B = 108 PB/天；
-    #   流级 10 Tbps@1:1000 = 2.5 Mrec/s → 8.64 TB/天 = 0.00864 PB/天；
-    #   倍数 = 108 ÷ 0.00864 = 12500（≈4.1 个数量级）—— 与文档"差 3~5 个数量级"一致。
-    m = model(_args_for_selftest(bandwidth_tbps=10.0))
+    #   流级 10 Tbps@1:1000 = 2.5 Mrec/s → 2.5e6 × 86400 × 79.4 = 1.71504e13 B
+    #     = 0.0171504 PB/天；
+    #   倍数 = 108 ÷ 0.0171504 = 6297.2（≈3.8 个数量级）—— 用它替代原来 40 B 假设下的
+    #   12500（4.1 个数量级）：**假设被实测替换后，宣传口径要跟着改小**。
+    m = model(_args_for_selftest(bandwidth_tbps=10.0, storage_bytes_per_record=79.4))
     ok &= _check("G 逐包全量（PB/天）", m["raw_capture_pb_per_day"], 108.0)
-    ok &= _check("G 流级（PB/天）", m["flow_pb_per_day"], 0.00864)
-    ok &= _check("G 倍数", m["raw_over_flow_ratio"], 12500.0)
+    ok &= _check("G 流级（PB/天，@79.4 B）", m["flow_pb_per_day"], 0.0171504)
+    ok &= _check("G 倍数（@79.4 B）", m["raw_over_flow_ratio"], 6297.23, tol=0.01)
+
+    # 算例 H：读测量产物接线（CYS-INF-041）。**自造**一份测量产物，不依赖仓库文件，
+    #   于是这一条在任何 cwd 下都能跑；期望值仍然是手算：
+    #   77.7 B/记录 × 5e6 记录/s × 86400 ÷ 1e12 = 33.5664 TB/天。
+    import tempfile as _tf
+
+    with _tf.TemporaryDirectory() as _d:
+        art = os.path.join(_d, "measure.json")
+        with open(art, "w", encoding="utf-8") as fh:
+            json.dump({"label": "自造", "records": 1234,
+                       "raw_bytes_per_record": 1000.0,
+                       "gzip_bytes_per_record": 77.7}, fh)
+        val, n = load_storage_measurement(art, "gzip")
+        ok &= _check("H 读数（B/记录）", val, 77.7)
+        ok &= _check("H 样本量", n, 1234)
+        val_raw, _n = load_storage_measurement(art, "raw")
+        ok &= _check("H raw 档（B/记录）", val_raw, 1000.0)
+        args_h = _args_for_selftest(storage_bytes_per_record=val)
+        m = model(args_h)
+        ok &= _check("H 落盘（TB/天，@77.7 B）", m["tb_per_day"], 33.5664)
+        # 注入「假装读了产物、实际用回旧的 40 B 假设」→ 必须判死
+        bad, _n = load_storage_measurement(art, "gzip", inject="trust-planning")
+        m_bad = model(_args_for_selftest(storage_bytes_per_record=bad))
+        ok &= _check("H 注入 trust-planning 后落盘（TB/天）", m_bad["tb_per_day"], 17.28)
+        # 字段缺失 / 样本为 0 的产物必须抛错（不许"退回默认值继续算"）
+        for _name, _body in (("缺字段", {"records": 5}), ("零样本", {"records": 0,
+                                                              "gzip_bytes_per_record": 10.0})):
+            bad_art = os.path.join(_d, f"{_name}.json")
+            with open(bad_art, "w", encoding="utf-8") as fh:
+                json.dump(_body, fh)
+            try:
+                load_storage_measurement(bad_art, "gzip")
+                ok &= _check(f"H {_name} 必须抛错", False, True)
+            except ValueError:
+                ok &= _check(f"H {_name} 抛错（不给伪数）", True, True)
 
     # ---- 反向注入：把模型改坏，期望值必须判死 ----
     # 这三条才是这段自证的价值：如果期望值对错误模型照样通过，它就只是个装饰品。
@@ -460,7 +547,22 @@ def main(argv=None):
     ap.add_argument("--avg-packet-bytes", type=float, default=DEFAULTS["avg_packet_bytes"])
     ap.add_argument("--record-wire-bytes", type=float, default=DEFAULTS["record_wire_bytes"])
     ap.add_argument(
-        "--storage-bytes-per-record", type=float, default=DEFAULTS["storage_bytes_per_record"]
+        "--storage-bytes-per-record",
+        type=float,
+        default=None,
+        help="落盘字节/记录（缺省：读 --storage-measured 的实测值；该文件缺失时退回内置实测默认值）",
+    )
+    ap.add_argument(
+        "--storage-measured",
+        metavar="measure.json",
+        default=DEFAULTS["storage_measured"],
+        help="落盘测量的产物（默认 docs/planning/measurements/storage-ratio.json）",
+    )
+    ap.add_argument(
+        "--storage-format",
+        choices=("gzip", "raw"),
+        default="gzip",
+        help="取产物里的哪一档：gzip=规划用（默认，取较差端）· raw=未压缩上界",
     )
     ap.add_argument(
         "--per-box-records-per-sec", type=float, default=DEFAULTS["per_box_records_per_sec"]
@@ -481,12 +583,37 @@ def main(argv=None):
         help="三档分解，格式 `名称:带宽Tbps:单链路Gbps:采样率;...`（缺省用内置规划值）",
     )
     ap.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    ap.add_argument(
+        "--verify-defaults",
+        action="store_true",
+        help="核对「内置默认落盘值」与「测量产物」是否仍然一致（两者必须一起改）",
+    )
     ap.add_argument("--self-test", action="store_true", help="算术自证 + 反向注入")
     ap.add_argument("--inject", default=None, help=argparse.SUPPRESS)  # 仅供自证使用的故障注入
     args = ap.parse_args(argv)
 
     if args.self_test:
         return self_test()
+
+    if args.verify_defaults:
+        # 这条检查是给门禁用的：容量模型的默认值来自测量产物，两者一旦漂移
+        # （改了产物忘了改默认值，或反过来），报告里的"实测"口径就变成假话。
+        want = DEFAULTS["storage_bytes_per_record"]
+        if args.inject == "default-drift":
+            want = PLANNING_ASSUMPTION_BYTES
+        try:
+            got, n = load_storage_measurement(args.storage_measured, "gzip")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"✗ 读测量产物失败：{exc}", file=sys.stderr)
+            return 1
+        print(f"内置默认落盘值 {want:g} B/记录 vs 测量产物 {got:.4f} B/记录"
+              f"（{args.storage_measured}，样本 {n} 条）")
+        if abs(got - want) > 0.05:
+            print("✗ 内置默认值与测量产物不一致 —— 两者必须一起改（否则报告里的「实测」是假话）",
+                  file=sys.stderr)
+            return 1
+        print("✓ 一致")
+        return 0
 
     if args.from_bench:
         try:
@@ -508,6 +635,28 @@ def main(argv=None):
             f"（每台容量取实测：{hit[0]['measured']} Mrec/s，来自 {args.from_bench} —— "
             "该值是**机器相关**的）"
         )
+
+    # 落盘字节/记录：优先命令行显式给数，否则读测量产物（缺失时用内置实测默认值并明说）。
+    args.storage_measured_used = None
+    args.storage_measured_records = 0
+    if args.storage_bytes_per_record is None:
+        if args.storage_measured and os.path.isfile(args.storage_measured):
+            try:
+                val, n = load_storage_measurement(args.storage_measured, args.storage_format,
+                                                  inject=args.inject)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                print(f"读 --storage-measured 失败：{exc}", file=sys.stderr)
+                return 1
+            args.storage_bytes_per_record = val
+            args.storage_measured_used = f"{args.storage_measured} 的 {args.storage_format} 档"
+            args.storage_measured_records = n
+            print(f"（落盘 {val:g} B/记录取实测：{args.storage_measured} 的 {args.storage_format} 档，"
+                  f"样本 {n} 条 —— 本仓唯一有出处的落盘数字）")
+        else:
+            args.storage_bytes_per_record = DEFAULTS["storage_bytes_per_record"]
+            print(f"⚠ 未找到测量产物 {args.storage_measured}：落盘用内置实测默认值 "
+                  f"{args.storage_bytes_per_record:g} B/记录（CYS-INF-041），但**本次没有复核它**。",
+                  file=sys.stderr)
 
     if args.tiers:
         try:

@@ -542,7 +542,22 @@ test_plan() {
     echo "✗ [plan] 容量模型自证失败（算式与手算期望值不符）" >&2
     return 1
   fi
-  echo "✓ [plan] 容量模型自证通过（手算期望值 + 3 项反向注入均被检出）"
+  echo "  ✓ 容量模型：手算期望值 + 3 项反向注入均被检出"
+
+  # 落盘字节/记录实测（CYS-INF-041）：把容量表里最后一个假设变成可复算的测量。
+  echo "==> [plan] 落盘字节/记录实测脚本自证（CYS-INF-041）"
+  if ! "${PYTHON:-python3}" scripts/plan/measure-storage.py --self-test; then
+    echo "✗ [plan] 落盘测量脚本自证失败" >&2
+    return 1
+  fi
+  echo "  ✓ 落盘测量：手算字节数 + gzip 往返校验 + 5 项反向注入均被检出"
+
+  # 默认值与测量产物必须同步：只改一处时，"实测"这个词就变成假话。
+  if ! "${PYTHON:-python3}" scripts/plan/collector-capacity.py --verify-defaults; then
+    echo "✗ [plan] 容量模型默认落盘值与测量产物不一致" >&2
+    return 1
+  fi
+  echo "✓ [plan] 容量模型 + 落盘实测自证通过（含默认值↔产物一致性核对）"
 }
 
 # 跨语言共享环端到端（CYS-TRF-034）。

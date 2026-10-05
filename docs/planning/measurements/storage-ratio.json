@@ -1,0 +1,22 @@
+{
+  "gzip_bytes_per_record": 79.37837837837837,
+  "raw_bytes_per_record": 1066.0471707462095,
+  "rule": "两档各取测量中的较差端（字节数最大者）：故意保守",
+  "sources": [
+    {
+      "gzip_bytes_per_record": 79.37837837837837,
+      "label": "真实向量语料（版本库内可复现：datasets/dpi/*.pcap + datasets/pcap/sample-session-tcp.pcap → cythsec-analyze）",
+      "path": "docs/planning/measurements/storage-ratio-real.json",
+      "raw_bytes_per_record": 1008.2702702702703,
+      "records": 37
+    },
+    {
+      "gzip_bytes_per_record": 21.041522148449115,
+      "label": "同质压测语料（build/bench-pipeline/bench.pcap，914,254 帧；非版本库内，需先跑 cythsec-bench 生成）",
+      "path": "docs/planning/measurements/storage-ratio-homogeneous.json",
+      "raw_bytes_per_record": 1066.0471707462095,
+      "records": 20182
+    }
+  ],
+  "total_records": 20219
+}
