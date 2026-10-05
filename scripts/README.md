@@ -50,10 +50,21 @@
 | `check-dpi-vectors.sh` | **tshark 独立复核** DPI 向量（92 项：TLS/DNS/HTTP 字段）+ 32 个入库向量的**字节保真**比对与自证（挂 `test-all.sh --dpi`，默认全量门禁含该项；`--self-test` 可单独跑） |
 | `check-reassembly-vectors.sh` | **tshark 独立复核** TCP 重组向量（挂 `--reassembly`） |
 | `check-flow-records.sh` | **tshark 独立复核** FlowRecord（会话/计数/状态/应用）+ 17 项反向故障注入（挂 `--flows`） |
+| `check-ipfix-export.sh` | **tshark 独立复核** IPFIX 导出（九类字段逐条 vs JSONL、IE 152/153 原始字节、报文头/序列号/模板可见性）+ UDP 通道字节比对 + 5 项产物级注入（挂 `--ipfix`） |
+| `check-ipfix-collect.sh` | **采集回路**（导出→采集逐字段 9/9 相符）+ **导出丢包率可证伪**（删中间 datagram → `gaps=1 lost_records=2`，`loss_ppm` 独立手算一致）+ 无注入必须报 0 + 判定自身 6 项注入（挂 `--ipfix`） |
 | `check-ignored-sources.sh` | 抓「被 `.gitignore` 静默吃掉、因而不在版本控制里」的源码/脚本（挂 `lint-all.sh`；本仓库靠它抓出了 `scripts/release/`、`scripts/build/`、`services/telemetryd/internal/target/` 三处） |
-| `check-flow-bench.sh` | 数据面基准（CYS-TRF-037）的**回归下限**门禁（19 项用例）+ 4 项反向注入（阈值放大 / 报告模式不判定 / 参数校验 / **串行化扩展性**）；需求目标只报告（挂 `--bench`，**默认不在 ALL 里**：阈值带机器属性） |
+| `check-flow-bench.sh` | 数据面基准（CYS-TRF-037）的**回归下限**门禁（**20 项**用例，含 `ipfix-collect-decode` —— 容量模型的"每台 N 记录/秒"出处）+ 4 项反向注入（阈值放大 / 报告模式不判定 / 参数校验 / **串行化扩展性**）；需求目标只报告（挂 `--bench`，**默认不在 ALL 里**：阈值带机器属性） |
 | `e2e-control-plane.sh` | 四服务端到端验收：启动 routerd/policyd/dnsd/telemetryd → 探测端点 → 校验 metrics → jq 验证结构化日志 → 优雅关闭 |
 | `e2e-shared-ring.sh` | 跨语言共享环 e2e（CYS-TRF-034）：C++ ring-feed 写 mmap → Rust ring-consume 读并聚合 FlowKey |
+
+## plan/ — 容量与规划（可复算）
+
+> 这一目录放的是"对外承诺依据"的算式。它们不是测试，但**算法会腐烂**（改一个系数、把 ceil 写成
+> round，报告照样打印得出来），故都有手算期望值 + 反向注入，并挂进 `test-all.sh --plan`（纯 python3、秒级）。
+
+| 脚本 | 用途 |
+| --- | --- |
+| `collector-capacity.py` | 采集集群容量模型（`CYS-INF-040`）：带宽 × 采样率 × 平均包长 → 记录/秒 → 采集器台数（每台容量取 `cythsec-bench ipfix-collect-decode` 实测值）→ 存储/天；三档分解；**三个必带口径**（采样率 / 导出丢包率 / 采集覆盖率）；`--self-test` 手算期望值 + 3 项反向注入 |
 
 ## dev/
 

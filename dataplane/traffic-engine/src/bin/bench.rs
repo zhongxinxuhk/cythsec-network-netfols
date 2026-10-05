@@ -134,12 +134,16 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use traffic_engine::feature::{FeatureExtractor, FlowSample};
+use traffic_engine::export::{Encoder, ExportConfig};
+use traffic_engine::feature::FEATURE_SCHEMA_VERSION;
+use traffic_engine::feature::{FeatureExtractor, FeatureVector, FlowSample, FEATURE_COUNT};
 use traffic_engine::flow::stats::DEFAULT_IAT_CAPACITY;
 use traffic_engine::flow::table::{EvictPolicy, FlowEntry, FlowTable, FlowTableConfig};
 use traffic_engine::flow::{FlowKey, Packet, IPPROTO_TCP};
+use traffic_engine::ipfix::collector::{Collector, CollectorConfig, ExporterId};
 use traffic_engine::reassembly::stream::{Stream, StreamConfig};
 use traffic_engine::reassembly::tcp::TcpFlags;
+use traffic_engine::record::{AppInfo, FlowRecord, RECORD_SCHEMA_VERSION};
 use traffic_engine::session::{SessionConfig, SessionManager};
 use traffic_engine::tcp::{Side, TcpObservation};
 
@@ -210,6 +214,23 @@ const FLOOR_REASSEMBLY_OOO_GBPS: f64 = 0.8;
 const FLOOR_SESSION_MPPS: f64 = 1.5;
 /// 稳态内存增长上限（MiB）：这一条就是 007 的验收标准本身，不设"回归下限"之外的宽容。
 const STEADY_MEMORY_LIMIT_MIB: f64 = 16.0;
+
+/// IPFIX 采集解码的目标吞吐（Mrec/s）。
+///
+/// **出处是容量模型本身，不是"越大越好"**：省网量级 20 Tbps、1:1000 采样、平均包长
+/// 500 B 时，采样后是 5 Gpps/1000 = **5 M 采样包/秒**；按"每个采样包最多产生一条记录"
+/// 的上界（保守口径，见 §2.13）即 **5 M 记录/秒**。单台采集器至少要吃下 1 M 记录/秒，
+/// 全省才可能落在个位数台设备的量级（容量模型用它算台数）。
+const COLLECTOR_TARGET_MREC_S: f64 = 1.0;
+
+/// 采集解码吞吐的回归下限（Mrec/s）。
+///
+/// 与其它下限同源：**本机基线**（Apple M1 Pro / macOS 26，release，flows=1M，
+/// 2026-10-05 实测 4.62 Mrec/s）留 2.3× 余量，只为抓"坏了一个数量级"，
+/// 不抓"慢了 10%"。换机器请用 `--report-only` 重标定后再改这个数。
+///
+/// 注意它**低于目标值 1.0 之上不多**：这一条不是产能承诺，是防倒退。
+const FLOOR_COLLECTOR_MREC_S: f64 = 2.0;
 
 // ------------------------------------------------- 多实例分核实验（CYS-TRF-006/037）
 //
@@ -1343,6 +1364,98 @@ fn case_session(sessions: usize, report: &mut Vec<Case>) {
     });
 }
 
+// ------------------------------------------- IPFIX 采集解码（CYS-INF-040 的"每台 N 记录/秒"）
+
+/// 造一条 IPv4 流记录（基准语料，不走数据面）。
+fn bench_record(i: usize) -> FlowRecord {
+    let a = ((i >> 16) & 0xff) as u8;
+    let b = ((i >> 8) & 0xff) as u8;
+    let c = (i & 0xff) as u8;
+    FlowRecord {
+        schema_version: RECORD_SCHEMA_VERSION,
+        session_id: i as u64 + 1,
+        key: FlowKey::new_ipv4(
+            [10, a, b, c],
+            1024 + (i % 60000) as u16,
+            [10, 0, 0, 2],
+            80,
+            6,
+        ),
+        tcp_state: None,
+        initiator: None,
+        adopted_midstream: false,
+        illegal_tcp_events: 0,
+        first_seen_us: 1_700_000_000_000_000 + i as u64 * 1000,
+        last_seen_us: 1_700_000_000_001_000 + i as u64 * 1000,
+        packets: 10,
+        bytes: 1500,
+        direction_switches: 0,
+        features: FeatureVector {
+            schema_version: FEATURE_SCHEMA_VERSION,
+            values: [0f64; FEATURE_COUNT],
+        },
+        app: AppInfo::not_inspected(),
+        risk_score: None,
+    }
+}
+
+/// 采集解码吞吐：把**生产编码器**产出的真实 IPFIX 报文喂给采集器，只对解码计时。
+///
+/// 两个口径必须说清，否则这个数会被误用：
+/// ① 语料构造（`encode_batch`）放在计时之外 —— 线上导出在**另一个进程**里，
+///    把它计进来等于把导出成本算两遍；
+/// ② 这是**纯内存**解码吞吐（无 socket、无 pcap 读盘、无 dedup 命中之外的系统调用），
+///    是"每台采集器解码能力的上界"，不是端到端吞吐。端到端要另减收包/写盘成本，
+///    容量模型里用余量系数把它折下来（见 §2.13）。
+fn case_ipfix_collector(records: usize, report: &mut Vec<Case>) {
+    let cfg = ExportConfig {
+        max_msg_bytes: 1400,
+        template_refresh_msgs: 64,
+        sampling_interval: 1,
+        ..Default::default()
+    };
+    let mut enc = Encoder::new(cfg).expect("基准：导出器配置必须合法");
+    let recs: Vec<FlowRecord> = (0..records).map(bench_record).collect();
+    // 分批发：一次 4096 条，避免单报文超过 max_msg_bytes（编码器自己会切）。
+    let messages: Vec<Vec<u8>> = recs
+        .chunks(4096)
+        .flat_map(|chunk| enc.encode_batch(chunk, 1_700_000_000).expect("基准：编码"))
+        .collect();
+    let exporter = ExporterId {
+        ip: "10.0.0.1".parse().expect("基准：固定地址"),
+        port: 4739,
+    };
+    assert!(!messages.is_empty(), "基准：必须真的产生报文");
+
+    let (first, measured) = twice(|| {
+        let mut c = Collector::new(CollectorConfig::default());
+        let mut t = 0u64;
+        for m in &messages {
+            t += 1;
+            c.on_datagram(exporter, m, t);
+        }
+        // 断言不能省：解码吞吐只有在"记录真的被解出来"时才有意义，
+        // 否则一个把记录全丢掉的实现会跑出最好看的数字。
+        let st = c.stats();
+        assert_eq!(
+            st.delivered_records as usize, records,
+            "基准：必须所有记录都被交付（data_records={} duplicates={} malformed={}）",
+            st.data_records, st.duplicate_records, st.malformed_datagrams
+        );
+        assert_eq!(st.loss_ppm(), 0, "基准：同一条流连续投递，不应报出缺口");
+    });
+    report.push(Case {
+        name: "ipfix-collect-decode",
+        first: records as f64 / first / 1e6,
+        measured: records as f64 / measured / 1e6,
+        unit: "Mrec/s",
+        target: COLLECTOR_TARGET_MREC_S,
+        lower_is_better: false,
+        floor: FLOOR_COLLECTOR_MREC_S,
+        derivation: "容量模型：20Tbps×1:1000 ⇒ 5 M记录/s（上界），单台需 ≥1 M",
+    });
+}
+
 // ---------------------------------------------------------------- 输出
 
 fn print_table(cases: &[Case], factor: f64, report_only: bool) {
@@ -1537,6 +1650,8 @@ fn main() {
     case_feature(flows, &mut cases);
     case_reassembly((flows / 100).max(1000), &mut cases);
     case_session((flows / 10).max(1000), &mut cases);
+    // 采集解码：容量模型（§2.13）里"每台 N 记录/秒"的实测出处。
+    case_ipfix_collector((flows / 2).clamp(200_000, 4_000_000), &mut cases);
     case_evict(flows, &mut cases);
     case_memory(flows, rounds, &mut cases, &mut per_flow);
     // 放在内存用例**之后**：多实例实验会一次性申请 ~1.5GB 表，跑在前面会让

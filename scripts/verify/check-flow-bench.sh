@@ -39,7 +39,10 @@ cd "${ROOT}"
 # 少跑了几项而依然是绿的（这正是最典型的假绿）。
 # 13 = 流表 6 + 逐出 2 + 特征 1 + 重组 2 + 会话 1 + 内存 1；
 # 19 = 上面 13 项 + 多实例分核实验 6 项（4 个线程档位 + 相对纯计算对照的扩展效率 + 核数预算）。
-EXPECTED_CASES=19
+# 19 项数据面用例 + 1 项 IPFIX 采集解码（`ipfix-collect-decode`，容量模型的
+# "每台 N 记录/秒"出处，2026-10-05 新增）。用例数**写死**在这里是有意的：
+# 基准里少跑一项（改名、提前 return、条件短路）必须当场报错，而不是"静默少验一项"。
+EXPECTED_CASES=20
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<'EOF'
@@ -123,7 +126,7 @@ cat "${TMPDIR_RUN}/report.out"
 sed 's/^/    /' "${TMPDIR_RUN}/report.err"
 
 # 用例数：报告里的每一行 case 都算一项（少跑一项就不能算全过）。
-CASES=$(grep -cE '^(table-|feature-|reassembly-|session-)' "${TMPDIR_RUN}/report.out" || true)
+CASES=$(grep -cE '^(table-|feature-|reassembly-|session-|ipfix-)' "${TMPDIR_RUN}/report.out" || true)
 if [[ "${CASES}" != "${EXPECTED_CASES}" ]]; then
   echo "✗ [flow-bench] 用例数不符：实际 ${CASES}，期望 ${EXPECTED_CASES}（基准改了用例？请同步本脚本）" >&2
   exit 1

@@ -17,7 +17,7 @@ cd "$ROOT"
 usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
-              [--reassembly] [--flows] [--ipfix] [--e2e] [--live] [--bench] [--self-test] [--help]
+              [--reassembly] [--flows] [--ipfix] [--e2e] [--live] [--bench] [--plan] [--self-test] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
   --rust         只跑 Rust 测试（cargo test --offline）
@@ -31,6 +31,7 @@ usage() {
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
+  --plan         只跑采集容量模型的算术自证 + 反向注入（CYS-INF-040，纯 python3，秒级）
   --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
   --help         显示本帮助
 
@@ -78,8 +79,9 @@ required_tools() {
     printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark
     return 0
   fi
-  # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）
-  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E)) -gt 0 ]]; then
+  # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）。
+  # --plan 不进这条：容量模型不消费向量（纯算术），要求它下载/生成样本是多余的耦合。
+  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E + BUILD_PLAN)) -gt 0 ]]; then
     printf '%s\n' "${PYTHON:-python3}"
   fi
   if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS + BUILD_IPFIX)) -gt 0 ]]; then
@@ -268,9 +270,10 @@ STUB
   # 3. 工具链预检的**选择映射**：选了什么就只查什么（2026-10-05 在 2 核虚机上撞到的问题）
   checks=$((checks+1))
   local saved_all="${ALL}"
-  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}"
+  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}${BUILD_PLAN}"
   ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+  BUILD_PLAN=0
   got="$(required_tools | tr '\n' ' ')"
   # 注意用「空格分词的整词」匹配：直接 grep 'go' 会被 "cargo" 命中（本自证第一次跑就抓到了
   # 这个假阳性 —— 断言写松了，等于没验）。
@@ -288,6 +291,7 @@ STUB
   checks=$((checks+1))
   ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=1
+  BUILD_PLAN=0
   got="$(required_tools | tr '\n' ' ')"
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " tshark " \
@@ -296,6 +300,21 @@ STUB
     echo "  ✓ 预检映射：只选 --ipfix → 只要 cargo + tshark + ${PYTHON:-python3}"
   else
     echo "  ✗ 预检映射：只选 --ipfix 却要求了「${got}」" >&2; fails=$((fails+1))
+  fi
+
+  # 3c. --plan 只该要 python3（容量模型是纯算术，不碰 cargo/tshark/cmake）。
+  #     新分组最容易犯的错就是忘了接 required_tools —— 那样它会在缺工具的机器上
+  #     假装跑过。这条断言把"该要什么、不该要什么"都钉住。
+  checks=$((checks+1))
+  ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+  BUILD_PLAN=1
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
+     && ! printf '%s' " ${got} " | grep -qE ' (cargo|cmake|c\+\+|go|node|npm|tshark) '; then
+    echo "  ✓ 预检映射：只选 --plan → 只要 ${PYTHON:-python3}（不要求 cargo/tshark/cmake）"
+  else
+    echo "  ✗ 预检映射：只选 --plan 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
 
   # 端到端反向注入：在**只有 cargo/python3 替身**的 PATH 下
@@ -313,6 +332,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+         BUILD_PLAN=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -eq 0 ]]; then
@@ -324,6 +344,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=1; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+         BUILD_PLAN=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q '工具链缺失: cmake'; then
@@ -337,6 +358,7 @@ STUB
   BUILD_NODE="${saved_flags:3:1}"; BUILD_PARITY="${saved_flags:4:1}"; BUILD_DPI="${saved_flags:5:1}"
   BUILD_REASSEMBLY="${saved_flags:6:1}"; BUILD_FLOWS="${saved_flags:7:1}"; BUILD_E2E="${saved_flags:8:1}"
   BUILD_LIVE="${saved_flags:9:1}"; BUILD_BENCH="${saved_flags:10:1}"; BUILD_IPFIX="${saved_flags:11:1}"
+  BUILD_PLAN="${saved_flags:12:1}"
 
   # 4. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
   checks=$((checks+1))
@@ -495,6 +517,20 @@ test_ipfix() {
   return 0
 }
 
+# 采集容量模型（CYS-INF-040）。
+#
+# 为什么一份"文档脚本"也要进门禁：容量结论是对外承诺的依据，而**算式会腐烂** ——
+# 改一个系数、把采样率漏除、把 ceil 写成 round，报告照样打印得出来、表格照样好看，
+# 只有手算的期望值能抓住。故进默认集合（纯 python3、秒级）。
+test_plan() {
+  echo "==> [plan] 采集容量模型算术自证（CYS-INF-040）"
+  if ! "${PYTHON:-python3}" scripts/plan/collector-capacity.py --self-test; then
+    echo "✗ [plan] 容量模型自证失败（算式与手算期望值不符）" >&2
+    return 1
+  fi
+  echo "✓ [plan] 容量模型自证通过（手算期望值 + 3 项反向注入均被检出）"
+}
+
 # 跨语言共享环端到端（CYS-TRF-034）。
 #
 # 与 parity 的区别：parity 比的是**契约取值**（两端对同一份 ABI 的常量理解是否一致），
@@ -537,7 +573,8 @@ test_live() {
 }
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
-BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_IPFIX=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; ALL=1
+BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_IPFIX=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
+BUILD_PLAN=0; ALL=1
 SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -553,6 +590,7 @@ while [[ $# -gt 0 ]]; do
     --e2e) BUILD_E2E=1; ALL=0 ;;
     --live) BUILD_LIVE=1; ALL=0 ;;
     --bench) BUILD_BENCH=1; ALL=0 ;;
+    --plan)  BUILD_PLAN=1; ALL=0 ;;
     --self-test) SELF_TEST=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -567,6 +605,8 @@ fi
 if [[ $ALL -eq 1 ]]; then
   BUILD_CPP=1; BUILD_RUST=1; BUILD_GO=1; BUILD_NODE=1; BUILD_PARITY=1; BUILD_DPI=1
   BUILD_REASSEMBLY=1; BUILD_FLOWS=1; BUILD_IPFIX=1; BUILD_E2E=1; BUILD_LIVE=1
+  # CYS-INF-040 容量模型的算术自证：纯 python3、秒级、无外部工具 ⇒ 没有"随机红"的理由，进默认集合。
+  BUILD_PLAN=1
   # BUILD_BENCH 不进这里：机器相关，见 usage 末尾的说明。
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
@@ -597,6 +637,7 @@ failed=0
 [[ $BUILD_REASSEMBLY -eq 1 ]] && { test_reassembly || failed=$((failed+1)); }
 [[ $BUILD_FLOWS -eq 1 ]]  && { test_flows   || failed=$((failed+1)); }
 [[ $BUILD_IPFIX -eq 1 ]]  && { test_ipfix   || failed=$((failed+1)); }
+[[ $BUILD_PLAN -eq 1 ]]   && { test_plan    || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 [[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
 [[ $BUILD_BENCH -eq 1 ]] && { test_bench || failed=$((failed+1)); }
