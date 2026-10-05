@@ -51,52 +51,18 @@ TOLERATED_FLOWS = 12  # 400 条流 @1:4 的 ±3%（≈10 sd），见文件头
 DEFAULT_FLOWS = 400
 
 
-def _ip4(n):
-    return bytes([10, (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF])
-
-
-def _checksum(data):
-    if len(data) % 2:
-        data += b"\x00"
-    s = 0
-    for i in range(0, len(data), 2):
-        s += (data[i] << 8) | data[i + 1]
-    while s >> 16:
-        s = (s & 0xFFFF) + (s >> 16)
-    return (~s) & 0xFFFF
-
-
-def eth_ip_tcp(payload, src, dst, sport, dport, flags=0x10):
-    """一个最小以太/IPv4/TCP 帧（首包带载荷，第二包纯 ACK）。"""
-    tcp = struct.pack("!HHIIBBHHH", sport, dport, 1, 1, 5 << 4, flags, 8192, 0, 0)
-    tcp += payload
-    src_ip, dst_ip = _ip4(src), _ip4(dst)
-    pseudo = src_ip + dst_ip + struct.pack("!BBH", 0, 6, len(tcp))
-    csum = _checksum(pseudo + tcp)
-    tcp = tcp[:16] + struct.pack("!H", csum) + tcp[18:]
-    total = 20 + len(tcp)
-    ip = struct.pack("!BBHHHBBH", 0x45, 0, total, 0, 0x4000, 64, 6, 0) + src_ip + dst_ip
-    ip = ip[:10] + struct.pack("!H", _checksum(ip)) + ip[12:]
-    return b"\xaa\xbb\xcc\xdd\xee\xff" + b"\x11\x22\x33\x44\x55\x66" + b"\x08\x00" + ip + tcp
-
-
-def write_pcap(path, frames, ts_base=1_700_000_000):
-    with open(path, "wb") as fh:
-        fh.write(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
-        for i, fr in enumerate(frames):
-            fh.write(struct.pack("<IIII", ts_base + i // 1000, (i % 1000) * 1000, len(fr), len(fr)))
-            fh.write(fr)
+# 造语料的代码在 synthpcap.py 里与 check-estimate.py **共用一份**：各写一份的后果是两处会漂移
+# （一边改了包长/时序，另一边的手算期望值就悄悄不成立），而这种失效只会让断言变成"永远通过"。
+import synthpcap  # noqa: E402  （与本文件同目录）
 
 
 def make_corpus(path, flows):
-    """`flows` 条互不相同的 TCP 会话，每条两个包（各带载荷，保证 DPI 有东西看）。"""
-    frames = []
-    for n in range(1, flows + 1):
-        payload = b"GET /f%04d HTTP/1.1\r\nHost: h%04d\r\n\r\n" % (n, n)
-        frames.append(eth_ip_tcp(payload, n, 0x8000 + n, 40000 + n, 80))
-        frames.append(eth_ip_tcp(b"", 0x8000 + n, n, 80, 40000 + n, 0x10))
-    write_pcap(path, frames)
-    return len(frames)
+    """`flows` 条互不相同的 TCP 会话，每条两个包（各带载荷，保证 DPI 有东西看）。
+
+    流键（src/dst/sport/dport）由 synthpcap 固定，本文件的手算期望值（留 1/4 ⇒ 100±12）
+    依赖的正是"流的条数"与"包的总数"，与字节数无关。
+    """
+    return synthpcap.make_flow_pcap(path, flows, packets_per_flow=2)
 
 
 def run_analyze(binary, pcap, out, extra):

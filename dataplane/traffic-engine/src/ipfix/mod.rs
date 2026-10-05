@@ -18,6 +18,9 @@
 //   —— 这是采集侧发现"导出丢包"的唯一手段（§11.6）
 
 pub mod collector;
+// estimate 是**采样后的量级还原**（CYS-TRF-053 缺口③）：把样本求和 ×N 得到全量估计，
+// 并给出 95% 区间。放在 ipfix 下是因为它消费的是采集侧解码出的记录（IE 34 是它的输入）。
+pub mod estimate;
 
 pub use collector::{Collector, CollectorConfig, CollectorStats, DatagramOutcome, ExporterId};
 

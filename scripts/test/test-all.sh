@@ -32,7 +32,7 @@ usage() {
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
   --plan         只跑采集容量模型的算术自证 + 反向注入（CYS-INF-040，纯 python3，秒级）
-  --sampling     只跑流级采样的「声明与执行一致」关口（CYS-TRF-053，需 cargo 与 tshark）
+  --sampling     只跑流级采样的两道关口：「声明与执行一致」+「采样后的量级还原」（CYS-TRF-053，需 cargo 与 tshark）
   --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
   --help         显示本帮助
 
@@ -584,11 +584,20 @@ test_plan() {
 # 而是"我们声称的采样率是不是真的执行了"。这两件事的失败方式完全不同，
 # 混在一起时"tshark 能解"会掩盖"采样的声明是假话"。
 test_sampling() {
-  echo "==> [sampling] 流级采样关口（CYS-TRF-053）"
+  # 两道：①"声明与执行一致"（采样的**真伪**）②"量级还原"（采样的**用途**）。
+  # 分开跑是因为它们的失败方式不同：①错会让下游把采样当全量，②错会让估计值和区间本身失真。
   local rc=0
+  echo "==> [sampling] 流级采样关口（CYS-TRF-053）"
   bash scripts/verify/check-sampling.sh || rc=$?
   if [[ $rc -eq 3 ]]; then
     echo "⚠ [sampling] 未核验：环境缺少 cargo/tshark（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  [[ $rc -eq 0 ]] || return $rc
+  echo "==> [estimate] 采样后的量级还原关口（CYS-TRF-053 ③）"
+  bash scripts/verify/check-estimate.sh || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [estimate] 未核验：环境缺少 cargo/tshark（该项未执行，不计为通过）" >&2
     return 0
   fi
   return $rc

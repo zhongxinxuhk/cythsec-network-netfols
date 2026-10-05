@@ -52,6 +52,10 @@ cythsec-ipfix-collect —— IPFIX 采集器（RFC 7011）：解模板/数据集
                              （尚未观测到时用 600 秒）。未刷新的模板到期即丢弃。
       --dedup-window <n>     去重窗口（条数，默认 4096；0 = 不去重）
       --any-port             pcap 模式不按端口 4739 过滤（联调非常规端口用）
+  --estimate-volume  从采样后的记录**还原全量**（CYS-TRF-053 缺口③）：把样本求和 ×N
+                     （N 来自 IE 34），并给出 95% 区间与相对标准误。**没有数就不给数**：
+                     记录里出现多个采样间隔时直接拒绝（不同采样率的记录相加无意义）。
+                     只给点估计会被当成事实 —— 所以每次都会把口径一起打出来。
   -q, --quiet                不打印统计行
   -h, --help                 显示本帮助
 
@@ -71,6 +75,7 @@ cythsec-ipfix-collect —— IPFIX 采集器（RFC 7011）：解模板/数据集
   0  正常
   1  参数或 I/O 错误
   2  收到了报文但**一个都没解出来**（模板从未到达 / 版本不符 / 全是畸形）
+  3  `--estimate-volume` 要求了量级还原却**给不出数**（例如记录里的采样间隔不唯一）
 ";
 
 #[derive(Debug, Default)]
@@ -83,6 +88,7 @@ struct Args {
     dedup_window: usize,
     any_port: bool,
     quiet: bool,
+    estimate_volume: bool,
     help: bool,
 }
 
@@ -123,6 +129,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .map_err(|e| format!("--dedup-window: {e}"))?
             }
             "--any-port" => a.any_port = true,
+            "--estimate-volume" => a.estimate_volume = true,
             "-q" | "--quiet" => a.quiet = true,
             other => return Err(format!("未知参数：{other}")),
         }
@@ -192,6 +199,35 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     }
+    // ---- 采样后的量级还原（可选）----
+    let mut estimate_failed = false;
+    if args.estimate_volume {
+        match traffic_engine::ipfix::estimate::estimate_volume(&flows) {
+            Ok(e) => {
+                eprintln!(
+                    "[cythsec-ipfix-collect] estimate: interval={} sampled_units={} \
+                     sampled_bytes={} sampled_packets={} est_bytes={:.0} est_packets={:.0} \
+                     se_bytes={:.0} ci95_bytes=[{:.0},{:.0}] rel_se={:.4}",
+                    e.interval,
+                    e.sampled_units,
+                    e.sampled_bytes,
+                    e.sampled_packets,
+                    e.est_bytes,
+                    e.est_packets,
+                    e.se_bytes,
+                    e.ci95_bytes.0,
+                    e.ci95_bytes.1,
+                    e.rel_se_bytes()
+                );
+                eprintln!("[cythsec-ipfix-collect] {}", e.note());
+            }
+            Err(err) => {
+                // 明确"拒绝了"而不是给个近似值：这条信息本身就是关口的判据。
+                eprintln!("[cythsec-ipfix-collect] estimate_refused: {err}");
+                estimate_failed = true;
+            }
+        }
+    }
     let st = collector.stats();
     if !args.quiet {
         let ies: Vec<String> = st.unknown_ies.iter().map(|c| c.to_string()).collect();
@@ -241,6 +277,9 @@ fn main() -> ExitCode {
             st.datagrams, st.malformed_datagrams, st.version_mismatch, st.sets_without_template
         );
         return ExitCode::from(2);
+    }
+    if estimate_failed {
+        return ExitCode::from(3);
     }
     ExitCode::SUCCESS
 }

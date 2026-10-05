@@ -1,0 +1,38 @@
+{
+  "label": "核心采样 1:4（确定性哈希）",
+  "corpus": {
+    "flows": 600,
+    "packets": 1200,
+    "truth_bytes": 114000,
+    "synthetic": true,
+    "generator": "scripts/verify/synthpcap.py"
+  },
+  "design": {
+    "interval": 4,
+    "seeds": 200,
+    "sampler": "确定性哈希（flow 模式）"
+  },
+  "measured": {
+    "kept_units_mean": 150,
+    "kept_units_sd": 5.445019853593754,
+    "kept_units_min": 143,
+    "kept_units_max": 158,
+    "rel_err_sd": 0.032263793585586446,
+    "reported_rel_se_mean": 0.07175000000000001,
+    "coverage": 200,
+    "coverage_frac": 1.0
+  },
+  "bernoulli_theory": {
+    "p": 0.25,
+    "kept_units_sd": 10.606601717798213
+  },
+  "design_effect": {
+    "sd_ratio": 0.5133613949562034,
+    "variance_ratio": 0.26353992183137903
+  },
+  "caveats": [
+    "语料是脚本自造的合成流量（各流大小相近但不相同）：真实流量的大小分布更重尾，设计效应会与这里不同 —— 现场必须用**同样的多种子重放**重新标定。",
+    "结论只对'哈希在真实流键分布上分布良好'成立；若键分布退化（大量键落进同一残差类），留存条数会走向全中/全不中，实际方差可超过伯努利上界，此时区间会偏窄。",
+    "真值来自同语料未采样的一次运行（直接量总体），不是估计量自证。"
+  ]
+}
