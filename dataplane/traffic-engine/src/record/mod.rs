@@ -298,13 +298,16 @@ pub fn write_jsonl<W: Write>(w: &mut W, records: &[FlowRecord]) -> io::Result<us
 
 /// 记录层的方向词汇：`fwd` / `rev`。
 ///
+/// `pub(crate)` 而不是私有：列式落盘（`storage::project_row`）必须用**同一份**词汇，
+/// 两处各写一份时，改一边会让 JSONL 与列式对同一条记录说不同的话。
+///
 /// 为什么不直接把 `Side` 的 `"a"`/`"b"` 写进记录：落盘之后没有代码在旁边解释，
 /// `"a"` 完全不可读；而 `fwd`/`rev` 与特征名 `fwd_packets`/`rev_packets` 是同一套
 /// 方向语义（都按**规范端点序**），读记录的人不需要再猜一次。
 ///
 /// 注意它**不是**"谁发起"：中途接入时没有 SYN，`initiator` 为 `null`；
 /// 即便有值，也只有在握手顺序与规范端点序一致时才恰好等于 fwd。
-fn side_word(side: Side) -> &'static str {
+pub(crate) fn side_word(side: Side) -> &'static str {
     match side {
         Side::A => "fwd",
         Side::B => "rev",
