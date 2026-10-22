@@ -6,11 +6,17 @@
 > ⚠ **待办表的控制平面部分已滞后于代码**，直接照它做会重复劳动 —— 见 §1 顶部。
 > 本文件回答一个具体问题：**下一棒接手时，哪些事必须知道，否则会踩重复的坑。**
 
-**本文件的三条硬约束**（其余内容都是解释）：
+**本文件的四条硬约束**（其余内容都是解释）：
 
 1. §8 里标了「理由」的，理由比结论重要——**先读理由再决定是否推翻**。
 2. §6 是**诚实清单**。往报告或演示里抹平它，等于把已知风险藏起来。
 3. §4.2 的**反向注入**是新增门禁的必做动作。绿色的「通过」和绿色的「没跑」长得一样。
+4. **一个问题一条分支，两条门禁全绿才 `git merge --no-ff` 并入 `master`；提交只落本地。**
+   规则真源是仓库根 `AGENTS.md`，机械层是 `scripts/hooks/pre-commit`（git 侧）与
+   `scripts/hooks/guard-agent-git.sh`（Agent 侧，`.claude/settings.json` 已接）。
+   **每个新克隆先跑 `make hooks`** —— `core.hooksPath` 是本地配置，不装的话钩子一次都不会执行，
+   而钩子文件看着就在仓库里（这是本文件记了三次的那一族坑的第四次，所以它自己也有关口：
+   `bash scripts/test/test-all.sh --branch-policy`）。
 
 ---
 
@@ -70,8 +76,9 @@
 > 前端代码本身是绿的：`cd web/console && npm test` → 25 项通过。
 > 详见 §7.1。**除这一项外，其余各栈单独跑均全绿**（含不带参数跑时的其余部分）。
 
-待办表状态（`count-backlog.sh --write`）：**376** 任务 / **11** 里程碑 —— 未开始 311 · 进行中 18 · 已完成 47
-（M3 14/39；M10 2/17（两项都是文档）；M11 2/9 —— `CYS-INF-041` 本批转 ☑）。
+待办表状态（`count-backlog.sh --write`）：**376** 任务 / **11** 里程碑 —— 未开始 309 · 进行中 20 · 已完成 47
+（M3 14/39；M10 2/17（两项都是文档）；M11 2/9 —— `CYS-INF-041` 已 ☑；
+本批把 `CYS-INF-016`/`CYS-SEC-006` 从 ⬜ 推到 ◐：钩子从"配置文件里写着"变成"真的会被执行"）。
 
 ---
 
@@ -1236,7 +1243,7 @@ PostgreSQL 持久化、策略版本化、命中统计、审计日志、服务间
 
 ```bash
 bash scripts/test/test-all.sh            # 全部（含向量自动生成）
-bash scripts/test/test-all.sh --rust --dpi --reassembly --flows --plan --columnar --ipfix   # 日常快速回路
+bash scripts/test/test-all.sh --rust --dpi --reassembly --flows --plan --columnar --branch-policy --ipfix   # 日常快速回路
 bash scripts/lint/lint-all.sh            # 八项：格式 / 生成物一致性 / 版本真源 + 检查器自证
 ```
 
@@ -1653,6 +1660,11 @@ tshark 是唯一能发现「一致地错」的手段。
 
 ## 8. 下一棒建议顺序（含理由，可据实际情况调整）
 
+> **贯穿本节的先决条件（不是第 4 项任务，是每一项的执行方式）**：下面每一条都按
+> 「一个问题一条分支 → `lint-all` + `test-all` 全绿 → `git merge --no-ff` 回 `master`」做，
+> **提交只落本地**。理由：本表里绝大多数条目都是"收口"性质的独立问题，混在一个 master 提交里
+> 就没法单独回滚，也没法事后证明它是测绿之后才合的（2026-10-22 的 `a906c81` 正是反面样本）。
+
 ### 第一梯队：把已落地的东西收口（低风险、高收益）
 
 | 顺序 | 任务 | 理由 |
@@ -1740,6 +1752,11 @@ tshark 是唯一能发现「一致地错」的手段。
 git log --oneline -3                      # 期望看到本次交接的 HEAD
 git status --short                        # 期望为空
 
+# 1a. 分支纪律钩子是否**真的会被执行**（不装钩子，本文件第 4 条硬约束就是空话）
+git config --get core.hooksPath           # 期望 scripts/hooks；为空 → 立刻 make hooks
+bash scripts/test/test-all.sh --branch-policy
+#    期望：S1–S7 断言 + 2 项反向注入全绿；本克隆未安装时报「未核验」并给出 make hooks
+
 # 2. 关键门禁全绿（会自动生成测试向量）
 bash scripts/test/test-all.sh --rust --dpi --reassembly --flows
 #    期望：Rust 433 项通过 + 三道 tshark 核验（92 / 16 / 927 项）通过
@@ -1773,7 +1790,7 @@ bash scripts/test/test-all.sh --node
 # 6. 待办表状态
 bash docs/planning/scripts/count-backlog.sh            # 只打印
 bash docs/planning/scripts/count-backlog.sh --write    # 状态有变更时写回 §6（改一行也要写，别攒）
-#    期望：376 任务 / 11 里程碑 —— 未开始 311 · 进行中 18 · 已完成 47
+#    期望：376 任务 / 11 里程碑 —— 未开始 309 · 进行中 20 · 已完成 47
 python3 docs/planning/scripts/check-deps.py
 #    期望：无环、无悬空、无自依赖；9 处状态不一致全部是**已记录**项：
 #      - CYS-PKT-006 / CYS-PKT-024：既有项（前置的接口部分已交付，属语义重叠）
