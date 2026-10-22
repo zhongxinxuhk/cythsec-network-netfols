@@ -36,7 +36,10 @@ AI/ML 部分以 Python 训练、C++ 推理闭环，平台抽象层统一适配 L
 
 **算式可复跑**：`python3 scripts/plan/collector-capacity.py`（省网 20 Tbps / 1:1000 ⇒ 5 Mrec/s → 2~3 台 →
 **34.29 TB/天**，落盘取**实测** 79.4 B/记录；逐包全量对照 10 Tbps ⇒ **108 PB/天**，
-倍数 6,297 = 3.8 个数量级）。模型参数逐条标明出处，
+倍数 6,297 = 3.8 个数量级）。落盘两种格式**都已实测**：gzip(JSONL) 79.4 · **列式（真实 ClickHouse + 本仓 DDL）78.5 B/记录**
+（`--storage-format columnar` ⇒ 33.91 TB/天）⇒ **换格式不改量级**，"列式天然省几倍"在本仓证据里不成立
+（默认 LZ4 档 138.32 甚至略输 gzip），收益全部来自按列 CODEC + LowCardinality；见 HANDOFF §2.17。
+模型参数逐条标明出处，
 `--self-test` 用手算期望值 + 3 项反向注入自证。详细口径（采样率 / 导出丢包率 / **采集覆盖率**）见 `docs/planning/HANDOFF.md` §2.13。
 
 ---

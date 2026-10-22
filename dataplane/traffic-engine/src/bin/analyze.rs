@@ -441,13 +441,15 @@ fn run(args: &Args) -> Result<usize, String> {
                 eprintln!("[cythsec-analyze] 没有记录，未产出 Native 文件");
             }
         } else {
-            let f = File::create(path).map_err(|e| format!("创建 Native 文件 `{path}` 失败：{e}"))?;
+            let f =
+                File::create(path).map_err(|e| format!("创建 Native 文件 `{path}` 失败：{e}"))?;
             let mut w = traffic_engine::storage::native::NativeWriter::new(
                 io::BufWriter::new(f),
                 args.native_rows_per_block,
             );
             for r in records {
-                w.push(r).map_err(|e| format!("写 Native 失败（{path}）：{e}"))?;
+                w.push(r)
+                    .map_err(|e| format!("写 Native 失败（{path}）：{e}"))?;
             }
             let st = w
                 .finish()

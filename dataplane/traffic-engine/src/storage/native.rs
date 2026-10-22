@@ -62,7 +62,9 @@ pub enum ColumnarError {
         got: &'static str,
     },
     /// 不可空列投出了 NULL。
-    NullInNonNullable { column: String },
+    NullInNonNullable {
+        column: String,
+    },
     /// 没有任何记录。刻意不产出 0 字节文件：空文件与"写失败"在下游无法区分。
     EmptyInput,
 }
@@ -72,7 +74,11 @@ impl fmt::Display for ColumnarError {
         match self {
             ColumnarError::Io(e) => write!(f, "写 Native 失败：{e}"),
             ColumnarError::Project(e) => write!(f, "拒绝投影：{e}"),
-            ColumnarError::TypeMismatch { column, declared, got } => write!(
+            ColumnarError::TypeMismatch {
+                column,
+                declared,
+                got,
+            } => write!(
                 f,
                 "列 `{column}` 声明 {declared} 却投出 {got} —— 列契约与投影不同源；\
                  这种错在下游只表现为「某列读出来是别的列的值」"
@@ -106,12 +112,27 @@ impl From<io::Error> for ColumnarError {
 /// 解码侧错误：每条都带**字节偏移**。排障时"第几个字节开始不对"是唯一有用的信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
-    UnexpectedEof { at: usize, what: &'static str },
-    VarintTooLong { at: usize },
-    UnsupportedType { at: usize, ty: String },
-    NonUtf8String { at: usize, column: String },
+    UnexpectedEof {
+        at: usize,
+        what: &'static str,
+    },
+    VarintTooLong {
+        at: usize,
+    },
+    UnsupportedType {
+        at: usize,
+        ty: String,
+    },
+    NonUtf8String {
+        at: usize,
+        column: String,
+    },
     EmptyStream,
-    ColumnSetChanged { block: usize, expected: String, got: String },
+    ColumnSetChanged {
+        block: usize,
+        expected: String,
+        got: String,
+    },
 }
 
 impl fmt::Display for DecodeError {
@@ -133,7 +154,11 @@ impl fmt::Display for DecodeError {
             // 一定在某个列上以 UnexpectedEof 暴露。留一个永远不触发的分支，
             // 等于留一条没人验证过的错误文案。
             DecodeError::EmptyStream => write!(f, "空的 Native 块流"),
-            DecodeError::ColumnSetChanged { block, expected, got } => write!(
+            DecodeError::ColumnSetChanged {
+                block,
+                expected,
+                got,
+            } => write!(
                 f,
                 "第 {block} 块的列集合与第 0 块不同（期望 {expected}，得到 {got}）：\
                  同一文件内列集合必须一致，否则下游按名取数会拿到不同含义的列"
@@ -327,7 +352,9 @@ impl<W: Write> NativeWriter<W> {
                 (Kind::U16, Value::U16(x)) => buf.data.extend_from_slice(&x.to_le_bytes()),
                 (Kind::U32, Value::U32(x)) => buf.data.extend_from_slice(&x.to_le_bytes()),
                 (Kind::U64, Value::U64(x)) => buf.data.extend_from_slice(&x.to_le_bytes()),
-                (Kind::F64, Value::F64(x)) => buf.data.extend_from_slice(&x.to_bits().to_le_bytes()),
+                (Kind::F64, Value::F64(x)) => {
+                    buf.data.extend_from_slice(&x.to_bits().to_le_bytes())
+                }
                 (Kind::Ip6, Value::Ip6(b)) => buf.data.extend_from_slice(b),
                 (Kind::Str, Value::Str(s)) => {
                     let before = buf.data.len();
@@ -407,11 +434,7 @@ impl<W: Write> NativeWriter<W> {
         self.stats.rows += self.rows_in_block as u64;
         self.stats.bytes += written;
         if self.fingerprint.is_empty() {
-            self.fingerprint = format!(
-                "{} 列/{} 字节自描述",
-                self.cols.len(),
-                self_desc
-            );
+            self.fingerprint = format!("{} 列/{} 字节自描述", self.cols.len(), self_desc);
         }
         for b in &mut self.buffers {
             b.data.clear();
@@ -537,7 +560,10 @@ impl<'a> Reader<'a> {
         let n = self.varint()? as usize;
         let bytes = self.take(n, "字符串字节")?.to_vec();
         if std::str::from_utf8(&bytes).is_err() {
-            return Err(DecodeError::NonUtf8String { at, column: label.to_string() });
+            return Err(DecodeError::NonUtf8String {
+                at,
+                column: label.to_string(),
+            });
         }
         Ok(bytes)
     }
@@ -547,7 +573,10 @@ impl<'a> Reader<'a> {
         let bytes = self.take(n, "标识符字节")?;
         std::str::from_utf8(bytes)
             .map(|s| s.to_string())
-            .map_err(|_| DecodeError::NonUtf8String { at, column: "(标识符)".to_string() })
+            .map_err(|_| DecodeError::NonUtf8String {
+                at,
+                column: "(标识符)".to_string(),
+            })
     }
     fn remaining(&self) -> usize {
         self.b.len() - self.pos
@@ -588,19 +617,35 @@ fn read_block(rd: &mut Reader<'_>) -> Result<DecodedBlock, DecodeError> {
             let cell = match kind {
                 Kind::U8 => {
                     let b = rd.take(1, "UInt8")?[0];
-                    if is_null { Cell::Null } else { Cell::U8(b) }
+                    if is_null {
+                        Cell::Null
+                    } else {
+                        Cell::U8(b)
+                    }
                 }
                 Kind::U16 => {
                     let a: [u8; 2] = rd.take(2, "UInt16")?.try_into().unwrap();
-                    if is_null { Cell::Null } else { Cell::U16(u16::from_le_bytes(a)) }
+                    if is_null {
+                        Cell::Null
+                    } else {
+                        Cell::U16(u16::from_le_bytes(a))
+                    }
                 }
                 Kind::U32 => {
                     let a: [u8; 4] = rd.take(4, "UInt32")?.try_into().unwrap();
-                    if is_null { Cell::Null } else { Cell::U32(u32::from_le_bytes(a)) }
+                    if is_null {
+                        Cell::Null
+                    } else {
+                        Cell::U32(u32::from_le_bytes(a))
+                    }
                 }
                 Kind::U64 => {
                     let a: [u8; 8] = rd.take(8, "UInt64")?.try_into().unwrap();
-                    if is_null { Cell::Null } else { Cell::U64(u64::from_le_bytes(a)) }
+                    if is_null {
+                        Cell::Null
+                    } else {
+                        Cell::U64(u64::from_le_bytes(a))
+                    }
                 }
                 Kind::F64 => {
                     let a: [u8; 8] = rd.take(8, "Float64")?.try_into().unwrap();
@@ -612,7 +657,11 @@ fn read_block(rd: &mut Reader<'_>) -> Result<DecodedBlock, DecodeError> {
                 }
                 Kind::Ip6 => {
                     let a: [u8; 16] = rd.take(16, "IPv6")?.try_into().unwrap();
-                    if is_null { Cell::Null } else { Cell::Ip6(a) }
+                    if is_null {
+                        Cell::Null
+                    } else {
+                        Cell::Ip6(a)
+                    }
                 }
                 Kind::Str => {
                     let bytes = rd.string(&head.name)?;
@@ -639,11 +688,18 @@ fn read_block(rd: &mut Reader<'_>) -> Result<DecodedBlock, DecodeError> {
         cells.push(col);
     }
     let rows = cells.first().map(|c| c.len()).unwrap_or(0);
-    Ok(DecodedBlock { columns: heads, rows, cells })
+    Ok(DecodedBlock {
+        columns: heads,
+        rows,
+        cells,
+    })
 }
 
 fn split_nullable(ty: &str) -> (Option<&str>, bool) {
-    if let Some(inner) = ty.strip_prefix("Nullable(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(inner) = ty
+        .strip_prefix("Nullable(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         (Some(inner), true)
     } else {
         (Some(ty), false)
@@ -714,10 +770,10 @@ pub fn cell_of(v: &Value<'_>) -> Cell {
 mod tests {
     use super::*;
     use crate::dpi::{AppId, Confidence};
-    use crate::storage::COLUMN_CONTRACT_VERSION;
     use crate::feature::FeatureExtractor;
     use crate::flow::{FlowKey, IPPROTO_TCP, IPPROTO_UDP};
     use crate::record::{AppInfo, RECORD_SCHEMA_VERSION};
+    use crate::storage::COLUMN_CONTRACT_VERSION;
     use crate::tcp::TcpState;
 
     fn rec(sid: u64, v6: bool) -> FlowRecord {
@@ -733,8 +789,16 @@ mod tests {
             FlowKey::new_ipv4([10, 0, 0, 1], 40000, [93, 184, 216, 34], 443, IPPROTO_TCP)
         };
         let mut ex = FeatureExtractor::default();
-        ex.observe(&crate::feature::FlowSample::len_only(crate::tcp::Side::A, 1200, 1_000_000));
-        ex.observe(&crate::feature::FlowSample::len_only(crate::tcp::Side::B, 800, 1_500_000));
+        ex.observe(&crate::feature::FlowSample::len_only(
+            crate::tcp::Side::A,
+            1200,
+            1_000_000,
+        ));
+        ex.observe(&crate::feature::FlowSample::len_only(
+            crate::tcp::Side::B,
+            800,
+            1_500_000,
+        ));
         FlowRecord {
             schema_version: RECORD_SCHEMA_VERSION,
             session_id: sid,
@@ -792,7 +856,11 @@ mod tests {
         assert_eq!(rd.text().unwrap(), "UInt32");
         assert_eq!(st.rows, 1);
         assert_eq!(st.blocks, 1);
-        assert_eq!(st.bytes, bytes.len() as u64, "stats.bytes 必须等于产物真实字节数");
+        assert_eq!(
+            st.bytes,
+            bytes.len() as u64,
+            "stats.bytes 必须等于产物真实字节数"
+        );
     }
 
     #[test]
@@ -811,10 +879,17 @@ mod tests {
         assert_eq!(bytes[17] as usize, "UInt32".len());
         assert_eq!(&bytes[18..24], b"UInt32");
         // 列头之后**立刻**是该列 5 行的数据，而不是下一列的名字。
-        assert_eq!(&bytes[24..28], &1u32.to_le_bytes(), "第一行 schema_version=1");
+        assert_eq!(
+            &bytes[24..28],
+            &1u32.to_le_bytes(),
+            "第一行 schema_version=1"
+        );
         // 第一列数据 = 5 行 × 4B，从 24 起到 44；44 是第二列名字的 varint 长度。
         let second_name_len_at = 24 + 5 * 4;
-        assert_eq!(bytes[second_name_len_at] as usize, "column_contract_version".len());
+        assert_eq!(
+            bytes[second_name_len_at] as usize,
+            "column_contract_version".len()
+        );
         let second_name_at = second_name_len_at + 1;
         assert_eq!(
             &bytes[second_name_at..second_name_at + 23],
@@ -832,7 +907,10 @@ mod tests {
         assert_eq!(blocks[0].cells[idx("src_port")][0], Cell::U16(40000));
         // 直接在产物字节里找 443 的小端两字节，确认"解码器与字节"之间没有第三层假设。
         assert!(bytes.windows(2).any(|w| w == 443u16.to_le_bytes()));
-        assert!(!bytes.windows(2).any(|w| w == 443u16.to_be_bytes()), "UInt16 必须小端");
+        assert!(
+            !bytes.windows(2).any(|w| w == 443u16.to_be_bytes()),
+            "UInt16 必须小端"
+        );
     }
 
     #[test]
@@ -906,7 +984,10 @@ mod tests {
             blocks.iter().map(|b| b.rows).collect::<Vec<_>>(),
             vec![3, 3, 1]
         );
-        let total: usize = blocks.iter().map(|b| b.cells[idx("session_id")].len()).sum();
+        let total: usize = blocks
+            .iter()
+            .map(|b| b.cells[idx("session_id")].len())
+            .sum();
         assert_eq!(total, 7, "跨块拼接后必须正好 7 行");
         // 每记录字节数随块变碎而上升：列名/类型是**每块重写**的。
         let (fine, s1) = encode_records(&recs, 1).unwrap();
@@ -959,11 +1040,17 @@ mod tests {
         // 第二块：列名换成一个不存在的名字。
         let (mut second, _) = encode_records(&[rec(2, false)], 100).unwrap();
         let probe = flow_columns()[0].name.as_bytes().to_vec();
-        let at = second.windows(probe.len()).position(|w| w == probe).unwrap();
+        let at = second
+            .windows(probe.len())
+            .position(|w| w == probe)
+            .unwrap();
         second[at] = b'X';
         bytes.extend_from_slice(&second);
         let err = decode_blocks(&bytes).unwrap_err();
-        assert!(matches!(err, DecodeError::ColumnSetChanged { .. }), "得到 {err:?}");
+        assert!(
+            matches!(err, DecodeError::ColumnSetChanged { .. }),
+            "得到 {err:?}"
+        );
     }
 
     #[test]
@@ -982,11 +1069,19 @@ mod tests {
         let (bytes, _) = encode_records(&[r_none], 100).unwrap();
         let off = bytes.len() - 9; // 最后一列：1 字节掩码 + 8 字节哑值
         assert_eq!(bytes[off], 1, "未评分的掩码必须是 1");
-        assert_eq!(&bytes[off + 1..], &[0u8; 8], "null 行的哑值必须是 8 个 0 字节");
+        assert_eq!(
+            &bytes[off + 1..],
+            &[0u8; 8],
+            "null 行的哑值必须是 8 个 0 字节"
+        );
         let mut a = bytes.clone();
         a[off] = 0;
         let da = decode_blocks(&a).expect("翻掩码不报错");
-        assert_eq!(da[0].cells[ci][0], Cell::F64(0.0), "NULL 被读成 0.0 —— 正是必须比对的理由");
+        assert_eq!(
+            da[0].cells[ci][0],
+            Cell::F64(0.0),
+            "NULL 被读成 0.0 —— 正是必须比对的理由"
+        );
 
         // 方向 B：0.25 → NULL
         let mut r_some = rec(2, false);
@@ -1087,11 +1182,19 @@ mod tests {
         let rows: Vec<Vec<Value<'_>>> = recs.iter().map(|r| project_row(r).unwrap()).collect();
         let rpb = 7;
         let (bytes, st) = encode_records(&recs, rpb).unwrap();
-        assert_eq!(bytes.len(), expected_size(&rows, rpb), "产物字节数必须能独立重算");
+        assert_eq!(
+            bytes.len(),
+            expected_size(&rows, rpb),
+            "产物字节数必须能独立重算"
+        );
         assert_eq!(st.bytes as usize, bytes.len());
         assert_eq!(st.blocks, 8, "50 行 / 每块 7 行 ⇒ 8 块");
         let nullables = flow_columns().iter().filter(|c| c.nullable).count() as u64;
-        assert_eq!(st.null_mask_bytes, nullables * st.rows, "掩码 = 可空列数 × 行数");
+        assert_eq!(
+            st.null_mask_bytes,
+            nullables * st.rows,
+            "掩码 = 可空列数 × 行数"
+        );
         // 本组记录都有 risk_score=NULL、tcp_*=值、app_*=值：哑值项只来自 risk_score。
         assert_eq!(st.null_dummy_bytes, st.rows * 8);
         // 块头要**每块**重写一遍 49 列的名字与类型，所以它的占比由"行数/块"决定，
@@ -1104,6 +1207,9 @@ mod tests {
             st.header_bytes,
             one_block.header_bytes
         );
-        assert_eq!(one_block.bytes, bytes.len() as u64 - (st.bytes - one_block.bytes));
+        assert_eq!(
+            one_block.bytes,
+            bytes.len() as u64 - (st.bytes - one_block.bytes)
+        );
     }
 }

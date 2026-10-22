@@ -1,0 +1,26 @@
+{
+  "corpora": [
+    {
+      "ch_default_lz4_bpr": 22.81,
+      "jsonl_gzip_bpr": 21.04,
+      "label": "同质压测语料（build/bench-pipeline/bench.pcap，914,254 帧；非版本库内，需 python3 datasets/pcap/generate-bench.py 生成）",
+      "native_raw_bpr": 347.06,
+      "plan_bpr": 5.11,
+      "records": 20182
+    },
+    {
+      "ch_default_lz4_bpr": 138.32,
+      "jsonl_gzip_bpr": 130.16,
+      "label": "多样合成语料（build/bench-pipeline/bench-diverse.pcap，352,479 帧 / 20,000 会话；generate-bench.py --profile diverse；非版本库内）",
+      "native_raw_bpr": 346.91,
+      "plan_bpr": 78.5,
+      "records": 20000
+    }
+  ],
+  "corpora_are_synthetic": true,
+  "not_a_claim": "这个数依赖 001_flows.sql 的 CODEC/LowCardinality 选择；换 DDL 必须重测",
+  "plan_bytes_per_record": 78.5,
+  "recalibrate_on_site": "两档语料都由 datasets/pcap/generate-bench.py 生成；真实省网流量的字段重复度低于二者，这个数只能当上限参考",
+  "rule": "多语料取**较差端(max)**；每档都必须 records>=5000 且有真实 ClickHouse 落盘实测",
+  "schema": "columnar-plan/1"
+}

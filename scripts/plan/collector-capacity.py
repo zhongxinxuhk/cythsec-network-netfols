@@ -71,6 +71,13 @@ DEFAULTS = {
     # --storage-bytes-per-record 直接给数。
     "storage_bytes_per_record": 79.4,
     "storage_measured": "docs/planning/measurements/storage-ratio.json",
+    # 列式（ClickHouse MergeTree + `001_flows.sql` 的按列 CODEC）实测规划值：
+    # 78.5 B/记录 = 两档**容量可用**的合成语料（20,182 / 20,000 条）取较差端
+    # （同质 5.11 / 多样 78.50），产物 `measurements/columnar.json`。
+    # 引用它必须带上两条口径：① 它依赖这份 DDL 的 CODEC/LowCardinality 选择（换 DDL 要重测）
+    # ② 语料是本仓生成器造的，现场字段分布必须现场重标定。
+    "columnar_bytes_per_record": 78.5,
+    "columnar_measured": "docs/planning/measurements/columnar.json",
     # 单台采集器解码能力：本机实测（cythsec-bench 用例 ipfix-collect-decode，
     # Apple M1 Pro / macOS 26 / release，2026-10-05 实测 4.62~4.69 Mrec/s）。
     # **机器相关**，换机器请用 --from-bench 传入实测值。
@@ -97,6 +104,9 @@ PROVENANCE = [
     ("每台 4.7 Mrec/s", "cythsec-bench `ipfix-collect-decode`（M1 Pro release，2026-10-05）", "实测(机器相关)"),
     ("落盘 79.4 B/记录", "实测（CYS-INF-041）：gzip(JSONL) 多次测量取**较差端**；产物见 measurements/", "实测"),
     ("落盘 1066 B/记录（上界）", "实测：未压缩 JSONL（JSONL 就是当前真实落盘格式）", "实测"),
+    ("落盘 78.5 B/记录（列式）",
+     "实测（CYS-INF-041 收尾）：ClickHouse MergeTree + 本仓 DDL 的按列 CODEC，"
+     "两档合成语料取较差端；换 DDL 必须重测，语料是合成的 ⇒ 现场要重标定", "实测(合成语料)"),
     ("余量系数 0.6", "纯内存解码上界折到端到端（收包/写盘/指标）", "规划"),
     ("导出丢包率 loss_ppm", "采集器序列号缺口（CYS-TRF-054，已落地）", "实测(可算)"),
     ("采集覆盖率", "**只能由部署清单填**；缺省 100% 是规划口径，不是事实", "待填"),
@@ -184,9 +194,16 @@ def boxes(records, per_box, headroom, inject=None):
 def storage_provenance(args):
     """落盘参数的口径说明 —— 每个数都要带着"从哪来"出现在报告里。"""
     if getattr(args, "storage_measured_used", None):
+        fmt_note = {"gzip": "gzip(JSONL) 多次测量取较差端",
+                    "raw": "未压缩 JSONL（上界）",
+                    "columnar": "列式（真实 ClickHouse + 本仓 DDL 的按列 CODEC）取较差端"}.get(
+            getattr(args, "storage_format", "gzip"), args.storage_format)
+        caveat = getattr(args, "storage_caveat", None)
         return (f"实测（{args.storage_measured_used}，样本 "
-                f"{getattr(args, 'storage_measured_records', '?')} 条，gzip(JSONL) 多次测量取较差端）")
-    if args.storage_bytes_per_record == DEFAULTS["storage_bytes_per_record"]:
+                f"{getattr(args, 'storage_measured_records', '?')} 条，{fmt_note}）"
+                + (f"；口径：{caveat}" if caveat else ""))
+    if args.storage_bytes_per_record in (DEFAULTS["storage_bytes_per_record"],
+                                         DEFAULTS["columnar_bytes_per_record"]):
         return "内置实测默认值（本次**未复核**测量产物）"
     return "**命令行指定**（无出处 —— 引用这个数的人必须自己说明依据）"
 
@@ -211,6 +228,38 @@ def load_storage_measurement(path, fmt="gzip", inject=None):
     if not records or int(records) <= 0:
         raise ValueError(f"{path} 的样本量为 0 —— 空语料上的平均数不能用")
     return float(m[key]), int(records)
+
+
+def load_columnar_measurement(path, inject=None):
+    """读 `measure-columnar.py --combine` 的产物（`columnar-plan/1`）。
+
+    与 gzip 档同一条红线：**字段缺失就抛错，不许退回默认值继续算**。
+    列式这一档额外要求每条语料都带着 `plan_bpr` —— 它意味着"这一档真的落进过
+    真实 ClickHouse 并数过 part 目录的字节"。少了它，78.5 就又是一句假设。
+    """
+    with open(path, encoding="utf-8") as fh:
+        m = json.load(fh)
+    if inject == "columnar-trust-assumption":
+        # 注入：假装读了产物，实际用回旧的"列式 40 B/记录"假设
+        return PLANNING_ASSUMPTION_BYTES, 0
+    if m.get("schema") != "columnar-plan/1":
+        raise ValueError(f"{path} 的 schema 不是 columnar-plan/1（产物版本对不上，拒绝读数）")
+    v = m.get("plan_bytes_per_record")
+    if v is None or float(v) <= 0:
+        raise ValueError(f"{path} 没有正的 plan_bytes_per_record")
+    corpora = m.get("corpora") or []
+    if not corpora:
+        raise ValueError(f"{path} 里没有语料明细 —— 平均数没有分母，不能用")
+    total = 0
+    for c in corpora:
+        if not c.get("plan_bpr") or not c.get("records"):
+            raise ValueError(f"{path} 的语料「{c.get('label')}」没有 ClickHouse 实测档或样本为 0")
+        total += int(c["records"])
+    if not m.get("not_a_claim"):
+        raise ValueError(f"{path} 没带「这个数依赖 DDL 的 CODEC 选择」这句口径 —— 拒绝裸引用")
+    if inject == "columnar-drop-caveat":
+        return float(v), total, None      # 注入：把口径丢掉
+    return float(v), total, m.get("recalibrate_on_site") or "未写口径"
 
 
 def storage_tb_per_day(records, bytes_per_record, retention_days=1.0):
@@ -395,7 +444,19 @@ def print_report(args, m):
     print("    大象流主导时实际记录率明显更低（长流只在超时/结束时出一条）。")
     print("  · 台数是**解码能力**的下限估计：现场还要收包、写盘、跑指标，故有余量系数；")
     print("    在线模式当前**无法设置 SO_RCVBUF**（std 无接口），高突发下需要更大的余量（§6）。")
-    print("  · 落盘字节数是**规划假设**（列式压缩），尚未实测 —— 真做容量承诺前必须先量它。")
+    # 这一行以前写死成"落盘字节数是规划假设（列式压缩），尚未实测"，
+    # 而 CYS-INF-041 / 列式实测之后两个档都已经是实测值了 —— 写死的口径句会腐烂，
+    # 所以它必须由本次真正用了哪个来源来决定。
+    prov = m.get("storage_provenance") or ""
+    if prov.startswith("实测"):
+        print(f"  · 落盘字节/记录 = {m['storage_bytes_per_record']:g} B 是**实测值**（{prov}）；"
+              "不是「列式能压到几十 B」那种假设。")
+    elif "命令行指定" in prov:
+        print(f"  · 落盘字节/记录 = {m['storage_bytes_per_record']:g} B 由**命令行指定，无出处** —— "
+              "引用这张表的人必须自己说明这个数的依据。")
+    else:
+        print(f"  · 落盘字节/记录 = {m['storage_bytes_per_record']:g} B 是**内置实测默认值**，"
+              "但本次没有复核测量产物（要复核跑 --verify-defaults）。")
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +581,50 @@ def self_test():
             except ValueError:
                 ok &= _check(f"H {_name} 抛错（不给伪数）", True, True)
 
+    # 算例 I：列式实测产物接线（CYS-INF-041 收尾）。期望值仍是手算：
+    #   78.5 B/记录 × 5e6 记录/s × 86400 ÷ 1e12 = 33.912 TB/天。
+    with _tf.TemporaryDirectory() as _d:
+        cart = os.path.join(_d, "columnar.json")
+        with open(cart, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 78.5,
+                       "not_a_claim": "依赖 DDL 的 CODEC 选择",
+                       "recalibrate_on_site": "语料是合成的",
+                       "corpora": [{"label": "多样", "records": 20000, "plan_bpr": 78.5},
+                                  {"label": "同质", "records": 20182, "plan_bpr": 5.11}]}, fh)
+        val_c, n_c, caveat = load_columnar_measurement(cart)
+        ok &= _check("I 读数（B/记录）", val_c, 78.5)
+        ok &= _check("I 样本量（两档合计）", n_c, 40182)
+        m = model(_args_for_selftest(storage_bytes_per_record=val_c))
+        ok &= _check("I 落盘（TB/天，@78.5 B 列式）", m["tb_per_day"], 33.912)
+        ok &= _check("I 口径随数一起走", 1 if caveat else 0, 1)
+        # 注入 1：读了产物却用回旧的"列式 40 B"假设 → 落盘量必须偏离手算
+        bad_v, _ = load_columnar_measurement(cart, inject="columnar-trust-assumption")
+        m_bad = model(_args_for_selftest(storage_bytes_per_record=bad_v))
+        ok &= _check("I 注入 columnar-trust-assumption 后落盘（TB/天）", m_bad["tb_per_day"], 17.28)
+        # 注入 2：某一档其实没落进真实 ClickHouse（没有 plan_bpr）⇒ 必须抛错，不许静默用另一档
+        no_ch = os.path.join(_d, "no-ch.json")
+        with open(no_ch, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 5.11,
+                       "not_a_claim": "x", "corpora": [{"label": "同质", "records": 20182,
+                                                      "plan_bpr": 5.11},
+                                                     {"label": "没测 CH", "records": 20000,
+                                                      "plan_bpr": None}]}, fh)
+        try:
+            load_columnar_measurement(no_ch)
+            ok &= _check("I 缺一档 ClickHouse 实测必须抛错", False, True)
+        except ValueError:
+            ok &= _check("I 缺一档 ClickHouse 实测 ⇒ 抛错（不给伪数）", True, True)
+        # 注入 3：产物没带"这个数依赖 DDL 的 CODEC 选择"这句口径 ⇒ 拒绝裸引用
+        no_caveat = os.path.join(_d, "no-caveat.json")
+        with open(no_caveat, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 78.5,
+                       "corpora": [{"label": "多样", "records": 20000, "plan_bpr": 78.5}]}, fh)
+        try:
+            load_columnar_measurement(no_caveat)
+            ok &= _check("I 缺口径字段必须抛错", False, True)
+        except ValueError:
+            ok &= _check("I 缺「依赖 DDL 的 CODEC」口径 ⇒ 抛错", True, True)
+
     # ---- 反向注入：把模型改坏，期望值必须判死 ----
     # 这三条才是这段自证的价值：如果期望值对错误模型照样通过，它就只是个装饰品。
     print("  -- 反向注入（改坏模型，期望值必须判死）--")
@@ -562,9 +667,16 @@ def main(argv=None):
     )
     ap.add_argument(
         "--storage-format",
-        choices=("gzip", "raw"),
+        choices=("gzip", "raw", "columnar"),
         default="gzip",
-        help="取产物里的哪一档：gzip=规划用（默认，取较差端）· raw=未压缩上界",
+        help="取哪一档：gzip=JSONL+gzip 规划用（默认，取较差端）· raw=未压缩 JSONL 上界 · "
+             "columnar=列式（真实 ClickHouse + 本仓 DDL，读 --columnar-measured）",
+    )
+    ap.add_argument(
+        "--columnar-measured",
+        metavar="columnar.json",
+        default=DEFAULTS["columnar_measured"],
+        help="列式落盘实测产物（默认 docs/planning/measurements/columnar.json）",
     )
     ap.add_argument(
         "--per-box-records-per-sec", type=float, default=DEFAULTS["per_box_records_per_sec"]
@@ -603,6 +715,7 @@ def main(argv=None):
         want = DEFAULTS["storage_bytes_per_record"]
         if args.inject == "default-drift":
             want = PLANNING_ASSUMPTION_BYTES
+        bad = 0
         try:
             got, n = load_storage_measurement(args.storage_measured, "gzip")
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -611,10 +724,24 @@ def main(argv=None):
         print(f"内置默认落盘值 {want:g} B/记录 vs 测量产物 {got:.4f} B/记录"
               f"（{args.storage_measured}，样本 {n} 条）")
         if abs(got - want) > 0.05:
-            print("✗ 内置默认值与测量产物不一致 —— 两者必须一起改（否则报告里的「实测」是假话）",
-                  file=sys.stderr)
+            print("✗ gzip(JSONL) 档：内置默认值与测量产物不一致 —— 两者必须一起改", file=sys.stderr)
+            bad += 1
+        # 列式档同样要核对：它是 `--storage-format columnar` 的默认来源，
+        # 只核对 gzip 会留下"一半默认值是活的、另一半早就腐烂"。
+        want_c = DEFAULTS["columnar_bytes_per_record"]
+        try:
+            got_c, n_c, _caveat = load_columnar_measurement(args.columnar_measured)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"✗ 读列式测量产物失败：{exc}", file=sys.stderr)
             return 1
-        print("✓ 一致")
+        print(f"内置默认列式值 {want_c:g} B/记录 vs 测量产物 {got_c:.4f} B/记录"
+              f"（{args.columnar_measured}，语料合计 {n_c} 条）")
+        if abs(got_c - want_c) > 0.05:
+            print("✗ 列式档：内置默认值与测量产物不一致 —— 换 DDL 重测后必须一起改", file=sys.stderr)
+            bad += 1
+        if bad:
+            return 1
+        print("✓ 一致（gzip(JSONL) 与列式两档都核对了）")
         return 0
 
     if args.from_bench:
@@ -641,7 +768,27 @@ def main(argv=None):
     # 落盘字节/记录：优先命令行显式给数，否则读测量产物（缺失时用内置实测默认值并明说）。
     args.storage_measured_used = None
     args.storage_measured_records = 0
-    if args.storage_bytes_per_record is None:
+    args.storage_caveat = None
+    if args.storage_bytes_per_record is None and args.storage_format == "columnar":
+        if args.columnar_measured and os.path.isfile(args.columnar_measured):
+            try:
+                val, n, caveat = load_columnar_measurement(args.columnar_measured,
+                                                           inject=args.inject)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                print(f"读 --columnar-measured 失败：{exc}", file=sys.stderr)
+                return 1
+            args.storage_bytes_per_record = val
+            args.storage_measured_used = f"{args.columnar_measured}（列式）"
+            args.storage_measured_records = n
+            args.storage_caveat = caveat
+            print(f"（落盘 {val:g} B/记录取列式实测：{args.columnar_measured}，"
+                  f"参与合并的语料共 {n} 条 —— 依赖本仓 DDL 的 CODEC 选择，语料为合成）")
+        else:
+            args.storage_bytes_per_record = DEFAULTS["columnar_bytes_per_record"]
+            print(f"⚠ 未找到列式实测产物 {args.columnar_measured}：落盘用内置实测默认值 "
+                  f"{args.storage_bytes_per_record:g} B/记录（CYS-INF-041 收尾），但**本次没有复核它**。",
+                  file=sys.stderr)
+    elif args.storage_bytes_per_record is None:
         if args.storage_measured and os.path.isfile(args.storage_measured):
             try:
                 val, n = load_storage_measurement(args.storage_measured, args.storage_format,
@@ -653,7 +800,7 @@ def main(argv=None):
             args.storage_measured_used = f"{args.storage_measured} 的 {args.storage_format} 档"
             args.storage_measured_records = n
             print(f"（落盘 {val:g} B/记录取实测：{args.storage_measured} 的 {args.storage_format} 档，"
-                  f"样本 {n} 条 —— 本仓唯一有出处的落盘数字）")
+                  f"样本 {n} 条；另有列式实测档 --storage-format columnar）")
         else:
             args.storage_bytes_per_record = DEFAULTS["storage_bytes_per_record"]
             print(f"⚠ 未找到测量产物 {args.storage_measured}：落盘用内置实测默认值 "

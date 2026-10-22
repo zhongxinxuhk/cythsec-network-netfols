@@ -1,0 +1,42 @@
+{
+  "clickhouse_default_codec": {
+    "column_data_bpr": 141.49,
+    "column_data_bytes": 5235,
+    "counted_extensions_note": "列数据=*.bin；其余计入 index_meta（含 mark/index/统计）",
+    "index_meta_bytes": 20124,
+    "part_total_bpr": 685.38,
+    "part_total_bytes": 25359,
+    "parts": 1
+  },
+  "clickhouse_repo_ddl": {
+    "column_data_bpr": 139.16,
+    "column_data_bytes": 5149,
+    "counted_extensions_note": "列数据=*.bin；其余计入 index_meta（含 mark/index/统计）",
+    "index_meta_bytes": 20296,
+    "part_total_bpr": 687.7,
+    "part_total_bytes": 25445,
+    "parts": 1
+  },
+  "compression_note": "gzip 档只是可移植对照；ClickHouse 不这么压",
+  "jsonl_gzip_bpr": 80.24,
+  "jsonl_raw_bpr": 1008.27,
+  "label": "真实向量语料（版本库内可复现：datasets/pcap/sample-session-tcp.pcap + datasets/dpi/*.pcap）",
+  "native_bytes": 19038,
+  "native_gzip_bpr": 78.62,
+  "native_raw_bpr": 514.54,
+  "provenance": {
+    "generator": "cythsec-analyze --native（与 JSONL 同源同序）",
+    "pcaps": [
+      "datasets/pcap/sample-session-tcp.pcap",
+      "datasets/dpi/tls-vectors.pcap",
+      "datasets/dpi/dns-vectors.pcap",
+      "datasets/dpi/http-vectors.pcap"
+    ],
+    "records": 37,
+    "regenerate": "见 docs/planning/measurements/README.md 的「列式实测」一节",
+    "rows_per_block": 100000
+  },
+  "records": 37,
+  "schema": "columnar-measure/1",
+  "usable_for_capacity": false
+}

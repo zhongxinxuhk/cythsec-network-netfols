@@ -1,0 +1,39 @@
+{
+  "clickhouse_default_codec": {
+    "column_data_bpr": 138.32,
+    "column_data_bytes": 2766436,
+    "counted_extensions_note": "列数据=*.bin；其余计入 index_meta（含 mark/index/统计）",
+    "index_meta_bytes": 81100,
+    "part_total_bpr": 142.38,
+    "part_total_bytes": 2847536,
+    "parts": 1
+  },
+  "clickhouse_repo_ddl": {
+    "column_data_bpr": 78.5,
+    "column_data_bytes": 1570007,
+    "counted_extensions_note": "列数据=*.bin；其余计入 index_meta（含 mark/index/统计）",
+    "index_meta_bytes": 81230,
+    "part_total_bpr": 82.56,
+    "part_total_bytes": 1651237,
+    "parts": 1
+  },
+  "compression_note": "gzip 档只是可移植对照；ClickHouse 不这么压",
+  "jsonl_gzip_bpr": 130.16,
+  "jsonl_raw_bpr": 1082.42,
+  "label": "多样合成语料（build/bench-pipeline/bench-diverse.pcap，352,479 帧 / 20,000 会话；generate-bench.py --profile diverse；非版本库内）",
+  "native_bytes": 6938110,
+  "native_gzip_bpr": 79.87,
+  "native_raw_bpr": 346.91,
+  "provenance": {
+    "generator": "cythsec-analyze --native（与 JSONL 同源同序）",
+    "pcaps": [
+      "build/bench-pipeline/bench-diverse.pcap"
+    ],
+    "records": 20000,
+    "regenerate": "见 docs/planning/measurements/README.md 的「列式实测」一节",
+    "rows_per_block": 100000
+  },
+  "records": 20000,
+  "schema": "columnar-measure/1",
+  "usable_for_capacity": true
+}

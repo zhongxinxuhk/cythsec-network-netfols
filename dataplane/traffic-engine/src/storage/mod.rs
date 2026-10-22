@@ -174,7 +174,6 @@ impl ColumnSpec {
     }
 }
 
-
 /// 一个取值。`Null` 只允许出现在 `nullable = true` 的列上。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
@@ -194,19 +193,29 @@ pub enum ProjectError {
     /// 源与目的地址族不同：IPv6 单列 + mapped 前缀无法无损表达（见模块头第 2 条）。
     MixedIpFamily { session_id: u64, src: u8, dst: u8 },
     /// 特征值非有限（NaN/inf）。
-    NonFiniteFeature { session_id: u64, feature: &'static str },
+    NonFiniteFeature {
+        session_id: u64,
+        feature: &'static str,
+    },
 }
 
 impl std::fmt::Display for ProjectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProjectError::MixedIpFamily { session_id, src, dst } => write!(
+            ProjectError::MixedIpFamily {
+                session_id,
+                src,
+                dst,
+            } => write!(
                 f,
                 "会话 {session_id} 的源/目的地址族不同（src=IPv{src} dst=IPv{dst}）：\
                  列式用单列 IPv6 + ::ffff: 前缀表达 IPv4，混族时该前缀无法区分「IPv4 地址」\
                  与「恰好形如 ::ffff:x 的 IPv6 地址」，拒绝投影"
             ),
-            ProjectError::NonFiniteFeature { session_id, feature } => write!(
+            ProjectError::NonFiniteFeature {
+                session_id,
+                feature,
+            } => write!(
                 f,
                 "会话 {session_id} 的特征 `{feature}` 不是有限数：Float64 列没有 null 可用，\
                  写出 NaN/inf 位模式会让下游把它读成数还是缺值取决于读法，拒绝投影"
@@ -711,9 +720,7 @@ pub fn ddl_flows(ttl_days: u32) -> String {
     s.push_str(&format!(
         "-- 列契约版本：{COLUMN_CONTRACT_VERSION}（改列名/类型/顺序必须抬它）\n\n"
     ));
-    s.push_str(&format!(
-        "CREATE TABLE IF NOT EXISTS {TABLE_NAME}\n(\n"
-    ));
+    s.push_str(&format!("CREATE TABLE IF NOT EXISTS {TABLE_NAME}\n(\n"));
     let mut lines: Vec<String> = Vec::new();
     for c in &cols {
         // 用 ddl_column() 而不是手拼：**线路类型与落库类型不是同一个东西**，
@@ -732,14 +739,13 @@ pub fn ddl_flows(ttl_days: u32) -> String {
             d.expr,
             d.why.replace('\'', "\\'")
         ));
-    }    s.push_str(&lines.join(",\n"));
+    }
+    s.push_str(&lines.join(",\n"));
     s.push_str("\n)\nENGINE = MergeTree\n");
     s.push_str("PARTITION BY toYYYYMM(event_date)\n");
     s.push_str("ORDER BY (first_seen_us, session_id)\n");
     if ttl_days > 0 {
-        s.push_str(&format!(
-            "TTL event_date + INTERVAL {ttl_days} DAY\n"
-        ));
+        s.push_str(&format!("TTL event_date + INTERVAL {ttl_days} DAY\n"));
     }
     s.push_str("SETTINGS index_granularity = 8192;\n");
     s
@@ -906,7 +912,10 @@ mod tests {
         let cols = flow_columns();
         assert_eq!(cols.len(), FLOW_COLUMNS.len() + FEATURE_COUNT + 1);
         assert_eq!(cols[FEATURE_COLUMN_START].name, "feat_packets");
-        assert_eq!(cols[FEATURE_COLUMN_START - 1].name, "features_schema_version");
+        assert_eq!(
+            cols[FEATURE_COLUMN_START - 1].name,
+            "features_schema_version"
+        );
         assert_eq!(cols.last().unwrap().name, "risk_score");
     }
 
@@ -1023,7 +1032,10 @@ mod tests {
         r2.features.values[3] = f64::NAN;
         assert!(matches!(
             project_row(&r2),
-            Err(ProjectError::NonFiniteFeature { feature: "fwd_bytes", .. })
+            Err(ProjectError::NonFiniteFeature {
+                feature: "fwd_bytes",
+                ..
+            })
         ));
 
         let mut r3 = sample();
@@ -1079,7 +1091,11 @@ mod tests {
         // 数值列不许套 LC（无收益、只让 DDL 难读）。
         for c in &cols {
             if c.kind != Kind::Str {
-                assert!(!c.low_cardinality, "非 String 列 {} 要求了 LowCardinality", c.name);
+                assert!(
+                    !c.low_cardinality,
+                    "非 String 列 {} 要求了 LowCardinality",
+                    c.name
+                );
             }
         }
         // 展示列不许落盘：只有分区/TTL 需要的 event_date 才 MATERIALIZED。
@@ -1100,6 +1116,9 @@ mod tests {
         let row = project_row(&r).unwrap();
         assert_eq!(row[i_state], Value::Null);
         assert_eq!(row[i_init], Value::Null);
-        assert_eq!(row[cols.iter().position(|c| c.name == "proto").unwrap()], Value::U8(17));
+        assert_eq!(
+            row[cols.iter().position(|c| c.name == "proto").unwrap()],
+            Value::U8(17)
+        );
     }
 }

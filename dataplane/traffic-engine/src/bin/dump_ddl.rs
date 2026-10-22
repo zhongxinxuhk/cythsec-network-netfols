@@ -27,8 +27,8 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use traffic_engine::storage::{
-    ColumnSpec, TABLE_NAME, COLUMN_CONTRACT_VERSION, ddl_flows, flow_columns,
-    native::DEFAULT_ROWS_PER_BLOCK,
+    ddl_flows, flow_columns, native::DEFAULT_ROWS_PER_BLOCK, ColumnSpec, COLUMN_CONTRACT_VERSION,
+    TABLE_NAME,
 };
 
 const USAGE: &str = "\

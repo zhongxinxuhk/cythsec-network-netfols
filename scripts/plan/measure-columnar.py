@@ -21,12 +21,27 @@
    每子流约 50 B 的固定开销主导一切 —— 这个数只能用于正确性，不能用于容量。
    脚本对 `records < 5000` 的输出**显式打 `usable_for_capacity: false`**。
 
-## 实测得到的结论（不是脚本假设，是脚本跑出来的）
+## 实测得到的结论（2026-10-22 本机跑出来的数，见 docs/planning/measurements/columnar-*.json）
 
-* 默认 LZ4 下，列式落盘 ≈ gzip(JSONL)：**"换成列式"本身不带来数量级收益**。
-* 收益来自**按列编解码器 + LowCardinality**：多样语料上比 gzip(JSONL) 小约 3.7×。
-* 所以容量表用**多样语料 + 我们 DDL** 那一档，并注明它依赖 DDL 的 CODEC 选择 ——
-  换 DDL 就要重测。
+两档**容量可用**（≥5,000 条）的合成语料，同一份 DDL 只差编解码器：
+
+| 语料 | 条数 | JSONL 未压缩 | JSONL+gzip9 | Native 未压缩 | CH 默认 LZ4 | CH 我们的 DDL |
+| --- | --- | --- | --- | --- | --- | --- |
+| 同质压测（bench.pcap） | 20,182 | 1066.05 | 21.04 | 347.06 | 22.81 | **5.11** |
+| 多样合成（bench-diverse.pcap） | 20,000 | 1082.42 | 130.16 | 346.91 | 138.32 | **78.50** |
+| 真实向量（版本库内） | 37 | 1008.27 | 80.24 | 514.54 | 141.49 | 139.16 |
+
+* **默认 LZ4 下，列式不比 gzip(JSONL) 省**：多样语料 138.32 vs 130.16 B/记录，甚至略输。
+  "换成列式数据库"本身不带来数量级收益 —— 这句是本档存在的意义。
+* 收益全部来自**按列编解码器 + LowCardinality**：同一 schema 只差 CODEC 时
+  多样语料 1.8×（138.32→78.50）、同质语料 4.5×（22.81→5.11）。
+* 规划取**较差端 = 78.5 B/记录**（多样档）。它与 gzip(JSONL) 的既有规划值 79.4 基本持平 ⇒
+  容量表的 TB/天不会因为"改用列式"而改变量级。
+* 三个数都依赖 `storage/clickhouse/001_flows.sql` 的 CODEC/LowCardinality 选择：**换 DDL 必须重测**；
+  且两档大样本语料都是本仓生成器合成的（`generate-bench.py --profile homogeneous|diverse`），
+  **现场必须用自己的流量重标定**。
+* 注意反向结论也曾写错：本文件旧版写着"多样语料上比 gzip(JSONL) 小约 3.7×"，
+  那是**没跑出来的预期**；实跑是 1.66×（130.16/78.50）。教训同 §2.14：先量再写。
 
 ## 用法
 
@@ -40,6 +55,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -93,6 +109,25 @@ def run_analyze(analyze, pcaps, workdir, rows_per_block):
     return jsonl, native, records
 
 
+def rename_table(ddl_text, table):
+    """把 DDL 里的表名换成 `table`，**只认 CREATE 语句那一处**。
+
+    为什么不是 `ddl.replace("flows", table, 1)`：这份 DDL 里 "flows" 第一次出现是在
+    文件头的「重新生成」注释里（`… > storage/clickhouse/001_flows.sql`），
+    于是改名的那一下打在注释上，CREATE 语句还是 `flows` ——
+    紧接着 `INSERT INTO flows_default` 报 UNKNOWN_TABLE。
+    而这条报错在 2026-10-22 之前会被归成「未核验」，③ 档就此静默消失。
+    """
+    out, n = re.subn(r"CREATE TABLE IF NOT EXISTS\s+`?\w+`?",
+                     "CREATE TABLE IF NOT EXISTS " + table, ddl_text, count=1)
+    if n != 1:
+        raise ValueError("DDL 里没有 `CREATE TABLE IF NOT EXISTS <表名>` 这一行，"
+                         "改表名这件事无法安全完成 —— 拒绝猜测")
+    if "CREATE TABLE IF NOT EXISTS " + table not in out:
+        raise ValueError("改表名后 CREATE 语句里没有 " + table)
+    return out
+
+
 def ch_measure(clickhouse, ddl_text, native_path, workdir, table, records):
     """把产物插进真实 MergeTree，返回 part 目录的字节分解。
 
@@ -102,7 +137,7 @@ def ch_measure(clickhouse, ddl_text, native_path, workdir, table, records):
     path = os.path.join(workdir, "chdata")
     os.makedirs(path, exist_ok=True)
     query = (
-        ddl_text.replace("flows", table, 1)
+        rename_table(ddl_text, table)
         + f"\nINSERT INTO {table} FROM INFILE '{native_path}' FORMAT Native;\n"
     )
     r = subprocess.run([clickhouse, "local", "--path", path, "-n", "--query", query],
@@ -136,6 +171,69 @@ def ch_measure(clickhouse, ddl_text, native_path, workdir, table, records):
     }
 
 
+def _match_paren(text, open_idx):
+    """从 `text[open_idx] == '('` 找到配对的 `)`（跳过单引号字符串里的括号）。
+
+    为什么不数一行里的左右括号个数就完事：`CODEC(Delta(4), ZSTD(1))` 是**嵌套**的，
+    而第一个 `)` 关的是 `Delta(4`。取第一个 `)` 会把 `, ZSTD(1))` 留在原地 ——
+    这正是 2026-10-22 真实踩到的坑：baseline DDL 被 ClickHouse 以
+    `Unmatched parentheses` 拒收，③ 档（没有按列 CODEC 的对照）静默变成「未核验」，
+    于是「编解码器净收益 N×」这句话再也没有数字支撑，而报告照样打印得出来。
+    """
+    depth = 0
+    in_str = False
+    i = open_idx
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            if c == "'":
+                in_str = False
+        elif c == "'":
+            in_str = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError(f"括号不配对（位置 {open_idx}）："
+                     f"{text[max(0, open_idx - 40):open_idx + 40]!r}")
+
+
+def _find_call(text, name, start=0):
+    """找下一个**不在单引号字符串里**的 `name(`，返回 (起始, 右括号位置)；没有则 None。"""
+    pat = name + "("
+    i = text.find(pat, start)
+    while i != -1:
+        if text.count("'", 0, i) % 2 == 0:      # 单引号成对 ⇒ 当前位置在字符串外
+            return i, _match_paren(text, i + len(name))
+        i = text.find(pat, i + 1)
+    return None
+
+
+def _drop_clause(text, name):
+    """整段删掉 `NAME(...)`（连同前面那个空格），嵌套一并算进去。"""
+    while True:
+        hit = _find_call(text, name)
+        if hit is None:
+            return text
+        lo, hi = hit
+        left = lo - 1 if lo > 0 and text[lo - 1] == " " else lo
+        text = text[:left] + text[hi + 1:]
+
+
+def _unwrap_type(text, name):
+    """`LowCardinality(Nullable(String))` → `Nullable(String)`：只剥外壳，保留内部类型。"""
+    while True:
+        hit = _find_call(text, name)
+        if hit is None:
+            return text
+        lo, hi = hit
+        inner = text[lo + len(name) + 1:hi]
+        text = text[:lo] + inner + text[hi + 1:]
+
+
 def baseline_ddl(ddl_text):
     """我们 DDL 的"默认编解码"对照版：去掉所有 CODEC 子句、去掉 LowCardinality。
 
@@ -144,13 +242,76 @@ def baseline_ddl(ddl_text):
     """
     out = []
     for line in ddl_text.splitlines():
-        s = line.replace(" LowCardinality(", "(").replace("Nullable))", "Nullable)")
-        while " CODEC(" in s:
-            i = s.index(" CODEC(")
-            j = s.index(")", i) + 1
-            s = s[:i] + s[j:]
+        s = _unwrap_type(line, "LowCardinality")
+        s = _drop_clause(s, "CODEC")
         out.append(s)
     return "\n".join(out)
+
+
+def _column_names(text):
+    """取列定义行的列名（首 token），用于证明 baseline 只改了编码、没动列。"""
+    names = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        head = stripped.split(" ", 1)[0].rstrip("(").upper()
+        if head in ("CREATE", "ENGINE", "PARTITION", "ORDER", "TTL", "SETTINGS", "SELECT"):
+            continue
+        first = stripped.rstrip(",").split(" ", 1)[0]
+        if first[:1].isalpha() or first[:1] == "_":
+            names.append(first)
+    return names
+
+
+def _doc_paren_balance(text):
+    """整份 SQL 的括号配平检查（跳过单引号字符串）。返回错误描述或 None。"""
+    depth = 0
+    in_str = False
+    line = 1
+    for i, c in enumerate(text):
+        if c == "\n":
+            line += 1
+        if in_str:
+            if c == "'":
+                in_str = False
+        elif c == "'":
+            in_str = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                return f"第 {line} 行多出一个 `)`（位置 {i}）"
+    if depth:
+        return f"有 {depth} 个 `(` 没有闭合"
+    if in_str:
+        return "有单引号没有闭合"
+    return None
+
+
+def check_baseline_ddl(orig, baseline):
+    """baseline DDL 的**四项自检**，返回不合格项列表（空列表 = 合格）。
+
+    这四条不是洁癖：③ 档是「同一 schema 只差 CODEC」这句话的唯一支撑。一旦 baseline
+    偷偷改了列、改了类型、或写出一段 ClickHouse 根本不收的 SQL，报出来的
+    「编解码器净收益 N×」就是一句没有依据的话 —— 而它看起来完全像个测量结果。
+    """
+    bad = []
+    if len(orig.splitlines()) != len(baseline.splitlines()):
+        bad.append(f"行数不同：原 {len(orig.splitlines())} vs baseline {len(baseline.splitlines())}")
+    if _column_names(orig) != _column_names(baseline):
+        miss = sorted(set(_column_names(orig)) ^ set(_column_names(baseline)))
+        bad.append(f"列被改了（不该改）：{miss[:5]}")
+    for i, line in enumerate(baseline.splitlines(), 1):
+        if _find_call(line, "CODEC") or _find_call(line, "LowCardinality"):
+            bad.append(f"第 {i} 行仍残留 CODEC/LowCardinality：{line.strip()[:80]}")
+    # 括号按**整份文档**配平：`CREATE TABLE … (` 的左括号在列表现的上一行，
+    # 逐行配平会把每一行都判成不配对（第一版就是这么写错的，68 行全红）。
+    err = _doc_paren_balance(baseline)
+    if err:
+        bad.append(f"baseline 的括号不配平：{err}")
+    return bad
 
 
 def cmd_combine(paths, out_path):
@@ -173,19 +334,47 @@ def cmd_combine(paths, out_path):
         "corpora": [{"label": m.get("label"), "records": m.get("records"),
                      "plan_bpr": plan_bpr(m),
                      "jsonl_gzip_bpr": m.get("jsonl_gzip_bpr"),
+                     "ch_default_lz4_bpr": (m.get("clickhouse_default_codec") or {}).get(
+                         "column_data_bpr"),
                      "native_raw_bpr": m.get("native_raw_bpr")} for m in ms],
         "not_a_claim": "这个数依赖 001_flows.sql 的 CODEC/LowCardinality 选择；换 DDL 必须重测",
+        # 这一条不是免责声明，是**口径**：两档语料都是本仓生成器造出来的，
+        # 多样性由 generate-bench.py 的池子给。现场的字段分布必须现场重标定。
+        "corpora_are_synthetic": True,
+        "recalibrate_on_site": "两档语料都由 datasets/pcap/generate-bench.py 生成；"
+                               "真实省网流量的字段重复度低于二者，这个数只能当上限参考",
     }
     print(f"==> 列式规划值：{bpr} B/记录（取较差端；参与合并 {len(ms)} 档）")
     for c in out["corpora"]:
-        print(f"  {c['label']:16s} records={c['records']:>7} plan={c['plan_bpr']} "
-              f"gzip(JSONL)={c['jsonl_gzip_bpr']}")
+        print(f"  {c['label'][:34]:34s} records={c['records']:>7} plan={c['plan_bpr']} "
+              f"gzip(JSONL)={c['jsonl_gzip_bpr']} CH默认LZ4={c['ch_default_lz4_bpr']}")
+    gj = [c["jsonl_gzip_bpr"] for c in out["corpora"] if c.get("jsonl_gzip_bpr")]
+    if gj:
+        print(f"  对照 gzip(JSONL) 较差端：{max(gj)} B/记录 ⇒ "
+              f"列式净收益 = {max(gj) / bpr:.2f}×（这一档才是「换格式值不值」的依据）")
     if out_path:
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(out, fh, ensure_ascii=False, indent=2, sort_keys=True)
             fh.write("\n")
         print(f"产物：{out_path}")
     return 0
+
+
+def _looks_like_our_sql_defect(err):
+    """把 ClickHouse 的报错分成「我们的 SQL 有问题」与「环境跑不动」两类。
+
+    分错的代价不对称：把语法错误归成「未核验」，脚本会带着一个缺失的对照档
+    正常退出 0，而读者看到的那行「CH 默认 LZ4：未核验」看起来像环境问题。
+    """
+    e = (err or "").lower()
+    # `command not found` / `No such file or directory` 才是「这台机器跑不动 ClickHouse」；
+    # 其余（含 UNKNOWN_TABLE）都是我们交出去的 SQL 本身有问题，必须判红。
+    if "not found" in e or "no such file" in e:
+        return False
+    return any(mark in e for mark in (
+        "syntax_error", "unmatched parentheses", "expected",
+        "unknown identifier", "unknown_database", "unknown_table",
+        "does not exist", "mismatched"))
 
 
 def cmd_measure(args):
@@ -227,6 +416,15 @@ def cmd_measure(args):
             ddl_text = subprocess.run(
                 [os.path.join(args.root, "target", "debug", "cythsec-dump-ddl")],
                 check=True, capture_output=True, text=True).stdout
+            # ③ 档的前提是「同一 schema，只差编解码器」。baseline 自己就写坏时，
+            # ③ 会静默变成「未核验」，报告只剩 ④ 一个数，而「净收益 N×」仍在打印。
+            # 所以这里先自检再交给 ClickHouse，不合格就是硬失败（不是"未核验"）。
+            problems = check_baseline_ddl(ddl_text, baseline_ddl(ddl_text))
+            if problems:
+                for prob in problems[:6]:
+                    print(f"✗ baseline DDL 不合格：{prob}", file=sys.stderr)
+                return die("baseline DDL 自检未通过：③ 档（无 CODEC 对照）无法成立，"
+                            "拒绝出一个没有依据的净收益")
             out["clickhouse_default_codec"] = ch_measure(
                 args.clickhouse, baseline_ddl(ddl_text), native, workdir,
                 "flows_default", records)
@@ -234,8 +432,14 @@ def cmd_measure(args):
                 args.clickhouse, ddl_text, native, workdir, "flows", records)
             for k in ("clickhouse_default_codec", "clickhouse_repo_ddl"):
                 if "error" in out[k]:
+                    err = out[k]["error"]
+                    # 「ClickHouse 不收我们生成的 SQL」与「这台机器跑不动 ClickHouse」
+                    # 是两件事。前者是缺陷，必须判红；后者才是未核验。
+                    if _looks_like_our_sql_defect(err):
+                        return die(f"{k}：ClickHouse 拒收我们生成的 SQL（{err}）"
+                                   "—— 这是测量脚本/DDL 的缺陷，不是环境问题，不标「未核验」")
                     out[k]["unverified"] = True
-                    print(f"⚠ {k} 未核验：{out[k]['error']}", file=sys.stderr)
+                    print(f"⚠ {k} 未核验：{err}", file=sys.stderr)
         else:
             out["clickhouse_default_codec"] = {"unverified": True,
                                                "reason": "没给 --clickhouse：这两档未核验，"
@@ -317,7 +521,7 @@ def combine_bpr(ms):
 # 自证：每条断言都必须能被判红（构造一个坏输入，要求判定函数拒绝它）
 # ---------------------------------------------------------------------------
 INJECTS = ["planning-40", "records-zero", "homogeneous-as-plan", "codec-no-ch",
-           "small-sample-as-plan", "empty-native"]
+           "small-sample-as-plan", "empty-native", "baseline-ddl", "staging-rename"]
 
 
 def _good(label="多样语料", records=20000, bpr=4.87):
@@ -370,6 +574,72 @@ def cmd_self_test(inject):
               "「列式」本身不省字节，省字节的是按列编解码器")
     if inject in (None, "small-sample-as-plan"):
         want_none(_good("真实向量", 37, 138.0), "records=37 的真实向量档（part 固定开销主导）")
+    if inject in (None, "baseline-ddl"):
+        # ③ 档（无按列 CODEC 的对照）完全依赖 baseline_ddl 的字符串改写。它写坏时
+        # ClickHouse 只是拒收，脚本把那一档标成「未核验」继续跑 —— 于是"净收益 N×"
+        # 这句话只剩一半证据。故自检本身必须可判红。
+        fixture = (
+            "CREATE TABLE IF NOT EXISTS flows\n(\n"
+            "    schema_version UInt32 CODEC(Delta(4), ZSTD(1)) COMMENT '版本（含括号）',\n"
+            "    tcp_state LowCardinality(Nullable(String)) CODEC(ZSTD(1)) COMMENT '末态',\n"
+            "    app_id Nullable(UInt32) CODEC(Delta(4), ZSTD(1)) COMMENT '编号',\n"
+            "    risk_score Nullable(Float64) CODEC(ZSTD(1)) COMMENT '评分'\n"
+            ")\nENGINE = MergeTree\nORDER BY (schema_version);\n"
+        )
+        base = baseline_ddl(fixture)
+        check(not check_baseline_ddl(fixture, base),
+              "baseline DDL 自检合格：嵌套 CODEC 剥净、列不动、括号配平")
+        check("LowCardinality" not in base and "CODEC" not in base,
+              "baseline 里没有残留 LowCardinality/CODEC 字样")
+        check("Nullable(String)" in base and "Nullable(UInt32)" in base and "IPv6" not in base,
+              "只剥外壳：LowCardinality(Nullable(String)) → Nullable(String)，类型语义不变")
+        check("COMMENT '版本（含括号）'" in base,
+              "单引号里的全角括号/文字不许被动（COMMENT 也是产物的一部分）")
+
+        def naive(t):
+            out = []
+            for line in t.splitlines():
+                x = line.replace(" LowCardinality(", "(").replace("Nullable))", "Nullable)")
+                while " CODEC(" in x:
+                    i = x.index(" CODEC(")
+                    j = x.index(")", i) + 1
+                    x = x[:i] + x[j:]
+                out.append(x)
+            return "\n".join(out)
+
+        check(bool(check_baseline_ddl(fixture, naive(fixture))),
+              "反向注入：旧的「取第一个右括号」剥法必须被判红（真实踩过一次）")
+        check(bool(_doc_paren_balance(naive(fixture))),
+              "反向注入：旧剥法产出的 SQL 括号不配平（ClickHouse 会报 SYNTAX_ERROR）")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        real = os.path.join(root, "storage", "clickhouse", "001_flows.sql")
+        if os.path.isfile(real):
+            orig = open(real, encoding="utf-8").read()
+            check(not check_baseline_ddl(orig, baseline_ddl(orig)),
+                  "仓库真源 DDL（50 列）的 baseline 自检同样合格")
+        else:
+            print("  ⚠ 仓库 DDL 不在位（生成物未产出）：这一项**未核验**，不算通过")
+    if inject in (None, "staging-rename"):
+        # ③ 档要把 DDL 建成另一张 staging 表。改错地方的话 INSERT 会打到一张不存在的表上，
+        # 而"表不存在"看起来像环境问题 —— 所以改名这件事与报错分类都必须可判红。
+        fixture = ("-- 重新生成：cargo run … > storage/clickhouse/001_flows.sql\n"
+                   "CREATE TABLE IF NOT EXISTS flows\n(\n    a UInt8\n)\n"
+                   "ENGINE = MergeTree ORDER BY a;\n")
+        renamed = rename_table(fixture, "flows_default")
+        check("CREATE TABLE IF NOT EXISTS flows_default" in renamed,
+              "改表名打在了 CREATE 语句上")
+        check("001_flows.sql" in renamed.splitlines()[0],
+              "注释里的文件名不许被动（否则改的那一下落在注释上）")
+        naive = fixture.replace("flows", "flows_default", 1)
+        check("CREATE TABLE IF NOT EXISTS flows_default" not in naive,
+              "反向注入：`replace(..., 1)` 那种写法必须被上面两条抓住（真实踩过）")
+        check(_looks_like_our_sql_defect(
+                  "Code: 60. DB::Exception: Table default.flows_default does not exist. (UNKNOWN_TABLE)"),
+              "UNKNOWN_TABLE 归成「我们的 SQL 有缺陷」，不许冒充未核验")
+        check(not _looks_like_our_sql_defect(
+                  "FileNotFoundError: [Errno 2] No such file or directory: 'clickhouse'"),
+              "ClickHouse 二进制不在 ⇒ 判为「未核验」（这条是真的没跑）")
+
     if inject in (None, "empty-native"):
         m = _good(records=MIN_RECORDS_FOR_CAPACITY)
         m["native_bytes"] = 0
