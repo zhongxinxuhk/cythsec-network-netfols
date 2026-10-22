@@ -18,7 +18,7 @@ usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
               [--reassembly] [--flows] [--ipfix] [--e2e] [--live] [--bench] [--plan] [--sampling] \
-              [--columnar] [--self-test] [--help]
+              [--columnar] [--branch-policy] [--self-test] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
   --rust         只跑 Rust 测试（cargo test --offline）
@@ -37,6 +37,9 @@ usage() {
   --columnar     只跑列式落盘（ClickHouse Native）的四道关口：生成物一致 / 独立解码逐格比对 /
                  7 项反向注入 / 真实 ClickHouse 逐字节 parity（CYS-STO-002、CYS-STO-007、CYS-TRF-033，
                  需 cargo + python3；D 组需要 clickhouse 二进制，缺则显式「未核验」）
+  --branch-policy 只跑分支纪律钩子的自证与安装状态检查（一个问题一条分支，测绿才并入 master）：
+                 pre-commit + Agent 侧 PreToolUse 钩子的 S1–S7 断言与 2 项反向注入（纯 git + python3，秒级）。
+                 本克隆没装钩子（core.hooksPath 未设）时显式报「未核验」而不是通过 —— 装法：make hooks
   --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
   --help         显示本帮助
 
@@ -81,7 +84,7 @@ gen_datasets() {
 # 而该机当时确实没装 cmake，且**本次运行根本不需要它**。
 required_tools() {
   if [[ "${ALL}" == "1" ]]; then
-    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark
+    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark git
     return 0
   fi
   # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）。
@@ -105,6 +108,13 @@ required_tools() {
   fi
   if [[ $((BUILD_DPI + BUILD_FLOWS + BUILD_IPFIX + BUILD_LIVE + BUILD_SAMPLING)) -gt 0 ]]; then
     printf 'tshark\n'
+  fi
+  # --branch-policy 只吃 git + python3（钩子读 PreToolUse 的 JSON 用 python3），
+  # 刻意不要求任何编译器：它是「流程门禁」，不该因为机器缺 cargo 就退化成未核验。
+  # 也只在这一组里要 git —— 把它塞进"所有 rust/cpp 分组都要 git"会让 --rust 在只有
+  # cargo/python3 替身的自证场景里假红（本自证第一次跑就抓到了这种过度耦合）。
+  if [[ ${BUILD_BRANCH} -eq 1 ]]; then
+    printf '%s\n' "${PYTHON:-python3}" git
   fi
   return 0
 }
@@ -275,10 +285,10 @@ STUB
   # 3. 工具链预检的**选择映射**：选了什么就只查什么（2026-10-05 在 2 核虚机上撞到的问题）
   checks=$((checks+1))
   local saved_all="${ALL}"
-  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}${BUILD_PLAN}${BUILD_SAMPLING}${BUILD_COLUMNAR}"
+  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}${BUILD_PLAN}${BUILD_SAMPLING}${BUILD_COLUMNAR}${BUILD_BRANCH}"
   ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
   got="$(required_tools | tr '\n' ' ')"
   # 注意用「空格分词的整词」匹配：直接 grep 'go' 会被 "cargo" 命中（本自证第一次跑就抓到了
   # 这个假阳性 —— 断言写松了，等于没验）。
@@ -296,7 +306,7 @@ STUB
   checks=$((checks+1))
   ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=1
-  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
   got="$(required_tools | tr '\n' ' ')"
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " tshark " \
@@ -346,7 +356,7 @@ STUB
   checks=$((checks+1))
   ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=1
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=1; BUILD_BRANCH=0
   got="$(required_tools | tr '\n' ' ')"
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
@@ -354,6 +364,22 @@ STUB
     echo "  ✓ 预检映射：只选 --columnar → 只要 cargo + ${PYTHON:-python3}（不要求 cmake/tshark）"
   else
     echo "  ✗ 预检映射：只选 --columnar 却要求了「${got}」" >&2; fails=$((fails+1))
+  fi
+
+  # 3f. --branch-policy（分支纪律钩子）必须只要求 git + python3，**不**要求编译器/节点/tshark。
+  #     它是流程门禁：如果哪天有人把它塞进 cargo 组，缺 cargo 的机器就会把它退成「未核验」
+  #     而被当成跑过 —— 那正是本钩子要防的那类事。
+  checks=$((checks+1))
+  ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=1
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE " git " \
+     && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|c\+\+|go|node|npm|tshark) '; then
+    echo "  ✓ 预检映射：只选 --branch-policy → 只要 git + ${PYTHON:-python3}（不要求编译器/tshark）"
+  else
+    echo "  ✗ 预检映射：只选 --branch-policy 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
 
   # 端到端反向注入：在**只有 cargo/python3 替身**的 PATH 下
@@ -371,7 +397,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-         BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0
+         BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -eq 0 ]]; then
@@ -383,7 +409,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=1; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-         BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0
+         BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q '工具链缺失: cmake'; then
@@ -398,6 +424,7 @@ STUB
   BUILD_REASSEMBLY="${saved_flags:6:1}"; BUILD_FLOWS="${saved_flags:7:1}"; BUILD_E2E="${saved_flags:8:1}"
   BUILD_LIVE="${saved_flags:9:1}"; BUILD_BENCH="${saved_flags:10:1}"; BUILD_IPFIX="${saved_flags:11:1}"
   BUILD_PLAN="${saved_flags:12:1}"; BUILD_SAMPLING="${saved_flags:13:1}"; BUILD_COLUMNAR="${saved_flags:14:1}"
+  BUILD_BRANCH="${saved_flags:15:1}"
 
   # 4. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
   checks=$((checks+1))
@@ -658,6 +685,27 @@ test_columnar() {
   return 0
 }
 
+# 分支纪律钩子关口：「一个问题一条分支，测绿才并入 master」这条规则**真的在被执行**吗。
+#
+# 为什么它必须成组、还必须进默认集合：本仓库记过三次同一族的事故（§VERSION 检查器没人调用、
+# bench-pipeline.sh 没人调用、check-columnar.sh 入库次日仍没人调用）。这次的风险多一层：
+# git 钩子的"存在"与"会被调用"是两件事 —— core.hooksPath 是**本地配置**，不随克隆走，
+# 换机器/新克隆时钩子文件还在、但一次都不执行。所以这道关口既自证钩子的判定逻辑（S1–S7 +
+# 2 项反向注入），也检查本克隆的安装状态；没装就报「未核验」而不是通过。
+test_branch_policy() {
+  local rc=0
+  echo "==> [branch-policy] 分支纪律钩子自证 + 安装状态（先分支、测绿、再 --no-ff 并入）"
+  bash scripts/verify/check-branch-policy.sh || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [branch-policy] 未核验：本克隆未安装钩子（core.hooksPath 未设）→ 规则目前无人执行" >&2
+    echo "    装法：make hooks" >&2
+    return 0
+  fi
+  [[ $rc -eq 0 ]] || { echo "✗ [branch-policy] 分支纪律钩子检查失败（退出 ${rc}）" >&2; return 1; }
+  echo "✓ [branch-policy] 分支纪律钩子通过（钩子逻辑自证 + 本克隆已安装）"
+  return 0
+}
+
 # 跨语言共享环端到端（CYS-TRF-034）。
 #
 # 与 parity 的区别：parity 比的是**契约取值**（两端对同一份 ABI 的常量理解是否一致），
@@ -701,7 +749,7 @@ test_live() {
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
 BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_IPFIX=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
-BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; ALL=1
+BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0; ALL=1
 SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -720,6 +768,7 @@ while [[ $# -gt 0 ]]; do
     --plan)  BUILD_PLAN=1; ALL=0 ;;
     --sampling) BUILD_SAMPLING=1; ALL=0 ;;
     --columnar) BUILD_COLUMNAR=1; ALL=0 ;;
+    --branch-policy) BUILD_BRANCH=1; ALL=0 ;;
     --self-test) SELF_TEST=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -743,6 +792,11 @@ if [[ $ALL -eq 1 ]]; then
   # 脚本自己打印「未核验」并退出 0，不会造成随机红。它守的是「我们写的字节别人读不读得对」，
   # 编码器与解码器同仓 ⇒ cargo test 永远全绿，因此这道只能放在外部门禁里。
   BUILD_COLUMNAR=1
+  # 分支纪律钩子：纯 git + python3、秒级、无外部工具 ⇒ 没有"随机红"的理由，进默认集合。
+  # 它守的正是本仓库最容易腐烂的一类东西：**钩子/检查器装了没有**。core.hooksPath 不随克隆走，
+  # 新克隆不跑 `make hooks` 的话，分支纪律一次都不会被执行 —— 本关口会把这种状态显式报成
+  # 「未核验」（退出 3），而不是假装绿。
+  BUILD_BRANCH=1
   # BUILD_BENCH 不进这里：机器相关，见 usage 末尾的说明。
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
@@ -776,6 +830,7 @@ failed=0
 [[ $BUILD_PLAN -eq 1 ]]   && { test_plan    || failed=$((failed+1)); }
 [[ $BUILD_SAMPLING -eq 1 ]] && { test_sampling || failed=$((failed+1)); }
 [[ $BUILD_COLUMNAR -eq 1 ]] && { test_columnar || failed=$((failed+1)); }
+[[ $BUILD_BRANCH -eq 1 ]] && { test_branch_policy || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 [[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
 [[ $BUILD_BENCH -eq 1 ]] && { test_bench || failed=$((failed+1)); }

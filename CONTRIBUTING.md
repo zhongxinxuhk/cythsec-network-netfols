@@ -51,6 +51,30 @@ bash scripts/lint/lint-all.sh --help
 
 提交前请运行 `bash scripts/release/check-version.sh` 校验四端一致（不一致非 0 退出）。
 
+## 分支与合并（硬规则，有钩子拦）
+
+**一个问题一条分支；两条门禁全绿才并入 `master`；提交只落本地。**
+
+```bash
+make hooks                             # 每个新克隆先跑一次（见下方"为什么还要这条"）
+git switch -c <type>/<topic>           # type ∈ feat fix chore docs refactor test
+#   …改完在这个分支上提交…
+bash scripts/lint/lint-all.sh && bash scripts/test/test-all.sh   # 全绿才算"完成"
+git switch master && git merge --no-ff <type>/<topic>            # --no-ff：历史上看得见这条分支
+```
+
+- 直接 `git commit` 在 `master`/`main` 上会被 `scripts/hooks/pre-commit` 拒绝，并把上面这套
+  正确做法打印出来。唯一例外口是 `CYTHSEC_ALLOW_MAIN_COMMIT=1`（会打警告，理由须写进提交说明）；
+  **不要用 `--no-verify`** —— 那连明文密钥兜底扫描一起绕了。
+- `git push` 需要用户明确授权（Agent 侧由 `scripts/hooks/guard-agent-git.sh` 拦，
+  例外口 `CYTHSEC_ALLOW_PUSH=1`）。
+- **为什么规则还要配钩子**：`core.hooksPath` 是本地 git 配置、**不随克隆走**。新克隆里钩子文件
+  在仓库里躺着却一次都不会执行 —— 本仓库为"检查器存在但没人调用"踩过三次坑，所以
+  `bash scripts/test/test-all.sh --branch-policy`（`make check-hooks`）既自证钩子的判定逻辑
+  （S1–S7 + 2 项反向注入），也检查本克隆的安装状态；未安装时显式报「未核验」而不是通过。
+- 规则真源在仓库根 `AGENTS.md`（`CLAUDE.md`、`.claude/settings.json`、`.workbuddy/memory/MEMORY.md`
+  都指回它），本文件只面向人类贡献者复述一遍。
+
 ## 提交前自查
 
 ```bash
