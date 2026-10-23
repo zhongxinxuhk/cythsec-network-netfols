@@ -27,7 +27,7 @@ usage() {
   --parity       只跑通道 ABI 跨语言 parity（需同时能构建 C++ 与 Rust）
   --dpi          只跑 DPI 向量的 tshark 第三方交叉核验（需 tshark）
   --reassembly   只跑 TCP 重组向量的 tshark 第三方交叉核验（需 tshark）
-  --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + 反向故障注入（需 tshark）
+  --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + TCP 统计三方比对（CYS-TRF-015）+ 反向故障注入（需 tshark）
   --ipfix        只跑 IPFIX 导出的 tshark 第三方交叉核验 + UDP 通道字节比对 + 反向故障注入（需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
@@ -74,6 +74,7 @@ gen_datasets() {
   "$py" datasets/pcap/generate-samples.py || return 1
   "$py" datasets/dpi/generate-dpi-samples.py || return 1
   "$py" datasets/reassembly/generate-reassembly-samples.py || return 1
+  "$py" datasets/tcp-analysis/generate-tcp-analysis-samples.py || return 1
   echo "✓ [vectors] 向量已生成"
 }
 # 本次运行**实际需要**的工具链（纯函数：只读 ${ALL} 与 ${BUILD_*}，因此能被 --self-test 自证）。
@@ -540,16 +541,26 @@ test_flows() {
   echo "==> [flows] FlowRecord 第三方交叉核验（tshark）+ 反向故障注入"
   local rc=0
   bash scripts/verify/check-flow-records.sh || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    echo "✓ [flows] 交叉核验通过（含反向故障注入全部被检出）"
-    return 0
+  if [[ $rc -ne 0 && $rc -ne 3 ]]; then
+    echo "✗ [flows] 交叉核验失败" >&2
+    return 1
   fi
-  if [[ $rc -eq 3 ]]; then
+  local flows_rc=$rc
+  # CYS-TRF-015 的 TCP 统计三方比对也在本组：同一条样本链、同一个第三方裁判。
+  # 为什么单独成脚本而不是并进 check-flow-records.py：它验的不是“记录字段对不对”，
+  # 而是“重传/乱序/RTT 的**定义**与独立实现能否对上”——注入集与失败含义都不同。
+  rc=0
+  bash scripts/verify/check-tcp-analysis.sh || rc=$?
+  if [[ $rc -ne 0 && $rc -ne 3 ]]; then
+    echo "✗ [flows] TCP 统计三方比对失败（check-tcp-analysis）" >&2
+    return 1
+  fi
+  if [[ $rc -eq 3 || $flows_rc -eq 3 ]]; then
     echo "⚠ [flows] 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
     return 0
   fi
-  echo "✗ [flows] 交叉核验失败" >&2
-  return 1
+  echo "✓ [flows] 交叉核验通过（含反向故障注入全部被检出）"
+  return 0
 }
 
 test_ipfix() {

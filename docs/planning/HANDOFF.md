@@ -32,6 +32,7 @@
 | TCP 乱序重组 + TCP 选项解析 | ◐ 已落地，三方互证通过 | `dataplane/traffic-engine/src/reassembly/` |
 | 流表 / 超时 / 逐出 / 回调 + TCP 状态机 + 会话管理 | ☑ 已落地（CYS-TRF-006→◐ / 007→◐ / 008/009/010/011/012→☑） | `dataplane/traffic-engine/src/{flow,session,tcp}/` |
 | 特征提取 + FlowRecord + 离线 pcap CLI | ☑ 已落地（CYS-TRF-004/005/014/027/033/035）；**2026-10-05 起支持 `--workers N`**：每 worker 私有流表/会话/特征（无锁），N>1 与 N=1 输出逐字节一致，见 §2.8 | `src/{feature,record,pipeline,bin/analyze}.rs` |
+| **会话级 TCP 统计**（重传 / 乱序 / 握手 RTT / 上下行比） | ☑ **已落地（`CYS-TRF-015`，2026-10-23，见 §2.18）**：按方向的序号轨迹与 Wireshark 4.6.7 在同一条可复现样本上逐模式对齐（三方比对 46 项一致 + 17 项反向注入全检出）；「读不到序号」报 `None`/`sessions_unobserved` 而不报 0；中途接入不报上下行 | `src/session/`（`SeqTrack`）+ `src/tcp/`（`TcpObservation.seq`）+ `scripts/verify/check-tcp-analysis.sh` |
 | 真实网卡抓包（Linux AF_PACKET / macOS BPF） | **Linux 侧真抓包已验收（2026-10-05，见 §2.7）**：2 vCPU Rocky Linux 10.2 aarch64 测试机、真实网卡 `enp2s0`、13/13 断言（74 包 / tshark 74 帧一致 / 环 74=74 / 10 条 Flow）；macOS BPF 侧仍受 `/dev/bpf*` 权限阻塞（e2e 内显式 `SKIPPED`，不显绿） | `dataplane/packet-engine/src/backends/` |
 | 数据面基准（吞吐/内存 + 多实例扩展 + 反向注入门禁） | ☑ 19 项 · 回归下限全过 · 需求目标 11~14/19（差距已列明）· **多实例分核实验已定路线：4 核/10G 口** | `src/bin/bench.rs` + `scripts/verify/check-flow-bench.sh` |
 | **流级导出（IPFIX / RFC 7011）** | ◐ v1 已落地（`CYS-TRF-051/052`，2026-10-05 第五段）：`FlowRecord → IPFIX`，零第三方依赖手写编码，UDP 与 pcap 两条通道；tshark 独立解出**九类字段逐条相符** + 5 项产物级反向注入全被检出（见 §2.11）。**这是「省网量级」的入口**：逐包全量在省网差 3~5 个数量级 | `dataplane/traffic-engine/src/export/` + `scripts/verify/check-ipfix-export.sh` |
@@ -52,13 +53,14 @@
 | 门禁 | 结果 | 跑法 |
 | --- | --- | --- |
 | CTest | 6/6 通过 | `--cpp` |
-| Rust 单测 | **433 项通过**（402 lib + 13 基准 bin + 6 analyze bin + 5 集成 + 7 其余；2026-10-22 全量复跑实测，lib 侧的 +43 是 `src/storage/` 那批） | `--rust` |
+| Rust 单测 | **436 项通过**（412 lib + 13 基准 bin + 6 analyze bin + 5 集成；2026-10-23 全量复跑实测，lib 侧的 +9 是 `CYS-TRF-015` 那批） | `--rust` |
 | Go | 通过 | `--go` |
 | 前端 vitest | 25 项通过（4 文件） | `cd web/console && npm test` ⚠ 见下 |
 | 通道 ABI parity | 89 行一致 | `--parity`（须同时选 `--cpp --rust`） |
 | DPI 的 tshark 核验 + 向量字节保真 | **92 项一致**（跳过 14 项，全部有理由；另比对 32 个入库向量与生成物逐字节一致） | `--dpi` |
 | 重组的 tshark 核验 | 16 项一致（跳过 2 项已知例外） | `--reassembly` |
 | 流记录的 tshark 核验 + 反向故障注入 | **927 项一致**（跳过 8 项，全部有理由；17 项注入全部被检出） | `--flows` |
+| **会话级 TCP 统计三方比对**（`CYS-TRF-015`） | **46 项全一致**（生成器真值 ↔ Rust 实现 ↔ tshark `tcp.analysis`，同一条 pcap）；17/17 反向注入被检出，含两条「期望值本身腐烂」与一条「统计行缺键 ⇒ 契约变更显式报错」 | `--flows`（同一组） |
 | 跨语言 e2e | 4 阶段 / 19 项断言通过 | `--e2e`（须同时选 `--cpp --rust`） |
 | IPFIX 采集回路（含导出丢包率） | 回路逐字段 **9/9** 相符；删中间 datagram → `gaps=1 lost_records=2 loss_ppm=222222` 与手算一致；6/6 注入被检出 | `--ipfix` |
 | 异厂导出器互操作（独立实现 → 我们的采集器） | **5 个场景**逐条对手写常量相符（含缩减长度编码 / IPv6 / 未登记 IE / 模板撤回 / 重定义 / 模板缺失）；tshark 确认报文合法；6/6 注入被检出 | `--ipfix` |
@@ -76,8 +78,8 @@
 > 前端代码本身是绿的：`cd web/console && npm test` → 25 项通过。
 > 详见 §7.1。**除这一项外，其余各栈单独跑均全绿**（含不带参数跑时的其余部分）。
 
-待办表状态（`count-backlog.sh --write`）：**376** 任务 / **11** 里程碑 —— 未开始 309 · 进行中 20 · 已完成 47
-（M3 14/39；M10 2/17（两项都是文档）；M11 2/9 —— `CYS-INF-041` 已 ☑；
+待办表状态（`count-backlog.sh --write`，2026-10-23 重生成）：**376** 任务 / **11** 里程碑 —— 未开始 308 · 进行中 20 · 已完成 48
+（M3 15/39；M10 2/17（两项都是文档）；M11 2/9 —— `CYS-INF-041` 已 ☑；
 本批把 `CYS-INF-016`/`CYS-SEC-006` 从 ⬜ 推到 ◐：钩子从"配置文件里写着"变成"真的会被执行"）。
 
 ---
@@ -1162,6 +1164,77 @@ T̂ = N · Σ样本 x        Var(T̂) ≈ N(N-1) · Σ样本 x²        区间 =
 - 列式档只在 macOS 一台机上量过（Rocky 上没装 ClickHouse）⇒ **两机复验缺口**。
 - ClickHouse 侧只有 `clickhouse local`，没有真服务/集群、没有查询侧压测（`CYS-STO-010`）。
 
+### 2.18 会话级 TCP 统计：定义不是自己定的，是探针定的（`CYS-TRF-015`，2026-10-23）
+
+**先回答「为什么这一批值得单独写一节」**：本项曾被 `b9f850d` 的提交说明声称「已完整收口并通过验收」，
+而那次提交的内容是列式落盘 —— 代码里根本没有重传/乱序计数（§6 诚实清单里有记录）。所以这一节
+的第一条不是实现细节，而是**验收只能对着代码与关口，不能对着提交说明**。
+
+**核心难点不是「怎么算」，而是「重传/乱序这两个词到底指什么」** —— 因为同一段字节有两种读法。
+Wireshark 4.6.7 在同一堆字节上给过两种分类：
+
+| 探针 | 构型 | Wireshark 的标记 |
+| --- | --- | --- |
+| 早期（2026-10-22） | 握手**缺第三次 ACK** | 部分重叠段、补洞段 → `retransmission` |
+| 正式（2026-10-23） | 完整握手电报（含第三次 ACK） | 同样的字节 → `out_of_order` |
+
+分类**依赖 ACK 上下文**，所以任何「把定义抄成一张表格」的做法都会在未来某次改动里假绿或假红。
+本项的锤点是：**三方（生成器真值 / Rust 实现 / tshark）必须在同一条可复现 pcap 上同场比对**，
+样本由 `datasets/tcp-analysis/generate-tcp-analysis-samples.py` 生成（与重组/DPI 向量同一口径：
+生成器入库、pcap 与 `expected.json` 不入库）。
+
+**定稿的六种模式**（`session::SeqTrack::observe_segment`，按方向各一份轨迹）：
+
+| 模式 | 本实现 | Wireshark 实测 |
+| --- | --- | --- |
+| 正常按序 + 握手 + 重复 ACK | 0/0 | 只有 `duplicate_ack`（假阳性哨兵） |
+| 已 ACK 的段原样重发 | `retransmissions` | `retransmission` |
+| 未 ACK 就重发同一段（`seq == cursor`） | `retransmissions` | `retransmission` |
+| 段部分重叠（前旧后新） | `out_of_order` | `out_of_order` |
+| 先发后一段再补前一段（补洞段） | `out_of_order`（补洞段） | 补洞段 `out_of_order`，超前段 `lost_segment` |
+| 中间段永不再来（只有超前段） | **两列都不计** | 只有 `lost_segment` |
+
+最后两行是本项真正难的地方：`lost_segment` 是「丢包/未捕获」口径，**跟重传、乱序都不是一回事**。
+把「没收到」数成「乱序」，下游拿到的重传率和乱序率会一起假。关口把每条流的
+`lost_segment`/`duplicate_ack` 帧数也逐格钉住，就是为了防将来两边默默漂移。
+
+**类型层面把「没观测」和「观测到 0」分开**（项内约定「未识别 ≠ 识别为无」）：
+
+- `TcpObservation.seq: Option<u32>`。**`0` 是一个合法序号**（ISO 初始化、回绕后都会出现），
+  拿它当「没读到」的哨兵 ⇒ 每个截断包都被数成重传，而且**看不出来**。
+- `retransmissions()` / `out_of_order()` 返回 `Option<u64>`；`seq_judged() == 0` 的会话进
+  `sessions_unobserved`，不进 `sessions_judged`。统计行两列**分开打印**。
+- 上下行由 `initiator()` 定方向：中途接入 ⇒ `None`（不拿字典序一侧兜底 —— 那是把随机数当指标）。
+- 0 长度段（纯 ACK / 重复 ACK）不占序号空间 ⇒ 不进轨迹。这一步是 baseline 模式假阳为 0 的原因。
+- 判定与 TCP 状态机**完全分家**：状态机只吃事件类型，轨迹吃序号 + 时间戳。一个乱序段
+  不该把会话推成错误状态，反之亦然。
+
+**RTT 口径**：`handshake_rtt_us` = SYN → 对侧 SYN/ACK。**刻意不与 tshark 的 `iRTT` 比**：
+iRTT 量的是 SYN → 第三次握手 ACK，两者不是同一个数。RTT 只与生成器真值（自己写进 pcap 的
+时间戳差）比对 —— 这是可精确断言的口径；跨口径比较只会造出一个「差不多对」的假绿。
+
+**出口取舍（本批最重要的一条工程决定）**：新统计走 CLI **统计行** `tcp retr=… ooo=… judged=…
+sess_judged=… sess_unobs=… rtt=n/N sum_us=… min_us=… max_us=… up=… down=… ratio_n=`，
+**没有**给 `FlowRecord`/JSONL 加键。理由很实在：加键会直接改变 §2.17 刚量出来的落盘字节/记录
+（gzip 79.4 / 列式 78.5 B/记录），那必须是「改契约 + 抬 `schema_version` + 重测」的专门批次，
+不能混在这里静默偷掉。本批 `schema_version` 与 `001_flows.sql` 均未动。
+RTT 跨 worker 合并取 `min/max/sum` 而不是均值 —— 均值需要额外的样本量字段，而这三个是可结合量。
+
+**接线**（不重复 §2.17 那次「检查器入库却没人调用」的事故）：`check-tcp-analysis.sh` 挂在
+`test-all.sh --flows` 里并进默认集合，与 `check-flow-records.sh` 同组（同一条样本链、同一个第三方
+裁判），且两处退出码**分别判定** —— 任一项真失败则整组红，任一项缺工具则整组报「未核验」而非通过；
+生成器加进 `gen_datasets`，`required_tools` 沿用本组已有的 cargo + tshark + python3。
+
+**验证（实际退出码）**：`bash scripts/lint/lint-all.sh` → **0**；`bash scripts/test/test-all.sh`（默认全集）→ **0**。
+其中 `--rust` 436 通过（lib 412，本批 +9）、`--flows` 927 项一致 + TCP 三方 46 项一致 + 17/17 注入检出。
+**如实转述两处非绿**：`--live` 真网卡抓包在本机 **SKIPPED（缺特权，未验收，不算通过）**；
+tshark 交叉核验 927 项里**跳过 8 项**（跳过 = 未核验）。
+
+**未达成（别把 ☑ 读成没有边界）**：① 序号**回绕**本身不处理 —— 要区分「回绕」与「倒退」必须有窗口语义，
+本实现只用 `u64` 保证它不在 `u32` 加法上静默变成错误计数；② 语料是**合成**的，探针只在 macOS /
+Wireshark 4.6.7 一台机上做过 ⇒ 真实流量上的重传/乱序率与口径需现场标定（同 §2.17 的两机复验缺口）；
+③ 逐会话导出列未做（见上面的出口取舍）；④ 上下行只到**合计**，没有分位数或按会话分布。
+
 ## 3. 代码地图
 
 ```
@@ -1180,6 +1253,8 @@ dataplane/
     src/reassembly/       seq / intervals / stream / tcp（+ tests）
     src/flow/             ★ 本批：五元组 + canonical() / 分片流表（超时·LRU 逐出·回调）/ FlowStats
     src/session/          ★ 本批：会话管理器（双向聚合 / 反向键规范化 / 超时销毁）+ 会话 id 复用池
+                          ★ 2026-10-23：`SeqTrack` 按方向序号轨迹（重传/乱序）+ `handshake_rtt_us`
+                          + `side_counters`/`uplink_bytes`/`down_up_ratio`（CYS-TRF-015，见 §2.18）
     src/tcp/              ★ 本批：TCP 状态机（严格 / 容忍双模式）+ TcpObservation
     src/feature/          ★ 本批：21 维特征提取（包长/IAT/速率/上下行比/方向切换/载荷熵）
     src/record/           ★ 本批：FlowRecord（schema_version=1，JSONL 写出）
@@ -1204,7 +1279,8 @@ scripts/verify/           check-attributes / check-channel-abi / check-channel-p
                           check-flow-bench（数据面基准回归门禁 + 3 项反向注入）/
                           check-ipfix-export / -collect / -interop / check-sampling / check-estimate /
                           ★ check-columnar（列式落盘四道关口，含 .py 独立解码器）/
-                          ★ measure-columnar（列式字节实测 + baseline DDL 自检）
+                          ★ measure-columnar（列式字节实测 + baseline DDL 自检）/
+                          ★ check-tcp-analysis（会话级 TCP 统计三方比对 + 17 项注入，CYS-TRF-015，挂 --flows）
                           e2e-shared-ring / e2e-control-plane
 
 services/                 Go 控制平面（约 9000 行源码 / 7000 行测试，19 个测试包全过）
@@ -1256,7 +1332,7 @@ bash scripts/lint/lint-all.sh            # 八项：格式 / 生成物一致性 
 | `--parity` | 通道 ABI 跨语言取值一致性（逐行 diff） | 89 行一致（需配 `--cpp --rust`） |
 | `--dpi` | **tshark 独立复核** DPI 向量 + 入库字节保真 | **92 项一致**（跳过 14 项，全部有理由） |
 | `--reassembly` | **tshark 独立复核** 重组向量 | 16 项一致（跳过 2 项已知例外） |
-| `--flows` | **tshark 独立复核 FlowRecord**（会话/计数/状态/应用）+ 反向故障注入 | 927 项一致，跳过 8 项；17 项注入全部被检出 |
+| `--flows` | **tshark 独立复核 FlowRecord**（会话/计数/状态/应用）+ **会话级 TCP 统计三方比对**（`CYS-TRF-015`：生成器真值 ↔ Rust 实现 ↔ tshark `tcp.analysis`，同一条 pcap，恒等式 retr/ooo 逐流+全局）+ 反向故障注入 | 927 项一致，跳过 8 项；17 项注入全部被检出；TCP 统计 46 项一致 + 17 项注入全部被检出（含「期望值本身腐烂」两条与「统计行缺键」一条） |
 | `--ipfix` | 两个关口：① `check-ipfix-export.sh` —— **tshark 独立复核导出**（九类字段逐条 vs JSONL、IE 152/153 原始 8 字节、报文头/序列号/模板可见性）+ UDP 通道字节比对 + 5 项产物级反向注入；② `check-ipfix-collect.sh` —— **采集回路**（逐字段还原 9/9）+ **导出丢包率可证伪**（删中间 datagram → `gaps=1 lost_records=2 loss_ppm=222222` 与手算一致）+ 无注入必须报 0 + 判定自身 6 项反向注入；③ `check-ipfix-interop.sh` —— **异厂导出器互操作**（独立实现：模板 ID/字段序/长度/观测域全不同 + 未登记 IE + 模板撤回 + 重定义 + 缩减长度编码，5 场景逐条对手写常量）+ tshark 确认报文合法 + 判定自身 6 项反向注入（2026-10-05 新增） | macOS 与 Rocky 测试机均全一致；导出侧 5/5、采集侧 6/6、异厂 6/6 注入被检出 |
 | `--e2e` | C++ 进程写 → 共享环 → Rust 进程读并解 Flow | 4 阶段 / 19 项通过（需配 `--cpp --rust`） |
 | `--bench` | 数据面吞吐/内存的**回归下限** + 判定自身的反向注入（含 `ipfix-collect-decode`：容量模型的"每台 N 记录/秒"出处） | 20 项回归下限全过、注入 4/4 检出（需求目标 13/20，只报告） |
@@ -1418,7 +1494,8 @@ tshark 是唯一能发现「一致地错」的手段。
 | `CYS-INF-040` | **容量模型已落地（◐）**：算式 + 可复算脚本（`scripts/plan/collector-capacity.py`，挂 `--plan`）。**未达成**：① ~~落盘 40 B/记录是规划假设~~ **已由 `CYS-INF-041` 实测替换**（79.4 B/记录 gzip、1066 B 未压缩上界，见 §2.14）；~~列式/数据库落盘仍未实测~~ **已实测**（§2.17：列式 78.5 B/记录，与 gzip 持平，换格式不改量级），但**列式档只在 macOS 一台机、且语料是合成的** ⇒ 现场必须重标定；② **采集覆盖率待填**（缺省 100% 是规划口径，不是事实 —— 必须由部署清单给出被观测链路）；③ 每台容量是**单机实测**（M1 Pro 4.7 Mrec/s），现场服务器需重标定；④ ~~真采样未实现~~ **流级采样已落地**（`CYS-TRF-053`，§2.15）；"哪一层用哪个采样率"仍是规划值 | ① ~~需要一次真实落盘格式（列式/CH）的写入测量~~ **已做**（§2.17）；**剩**列式档两机复验 + 现场语料重标定；② 需要部署清单；③ 换机器跑 `cythsec-bench --report-only` + `--from-bench`；④ 在线采样点见 `CYS-PKT-032` |
 | `CYS-STO-002` | **只做了 `flows` 一张表（◐）**：列清单单一真源（50 列）→ 生成的建表 DDL（MergeTree + 按月分区 + TTL 90 + 按列 CODEC + LowCardinality + IPv6 二进制地址 + 两个 ALIAS 文本列）已被**真实 ClickHouse 26.11 逐字节 parity + 读回逐格相符**验证（§2.17）。**未达成**：`sessions`/`events`/`metrics`/`dns_queries` 四张表没有；验收标准里的「大表插入与时间范围查询性能达标」**未测**（只有 `clickhouse local`，没有常驻服务与查询侧压测） | 需要 ClickHouse 服务端与真大样本（百万~亿级）压测环境（`CYS-STO-005`/`CYS-STO-010`） |
 | `CYS-STO-007` | **只走到"一次性批量落盘"这一步（◐）**：`FlowRecord → Native 块`编码器（零依赖）+ `cythsec-analyze --native` + `INSERT … FROM INFILE FORMAT Native`。**未达成**：验收标准「高吞吐下无数据丢失」所要求的**常驻写入器、背压控制、失败落盘重放**三项全部没有做；也没有 Go/Rust 侧的存储客户端（`CYS-STO-006`/`CYS-STO-012`） | 需要先有常驻服务与 ClickHouse 连接通道（`CYS-STO-005` 起库 + `CYS-STO-006` 客户端）；这三项没做之前，**不许把 007 说成"写入器已落地"** |
-| 交接记录的**口径失真**（2026-10-22 核对） | `b9f850d` 的提交说明写着「**CYS-TRF-015 已完整收口并通过验收**」，但那次提交的实际内容是列式落盘（`src/storage/`、`check-columnar.*`、`001_flows.sql`）。逐处核对：`session/mod.rs` 里没有重传/乱序计数，`record/mod.rs` 与 DDL 里没有 RTT/重传/乱序列 —— **`CYS-TRF-015`（会话级统计）未落地，待办表仍正确地标 ⬜** | 提交说明由上一棒写串了。**照提交说明去做 = 以为已有再去"用"**；做会话级统计前先读 `session/mod.rs`（§8 第二梯队第 8 项仍是真缺口） |
+| 交接记录的**口径失真**（2026-10-22 核对） | `b9f850d` 的提交说明写着「**CYS-TRF-015 已完整收口并通过验收**」，但那次提交的实际内容是列式落盘（`src/storage/`、`check-columnar.*`、`001_flows.sql`）。逐处核对：`session/mod.rs` 里没有重传/乱序计数，`record/mod.rs` 与 DDL 里没有 RTT/重传/乱序列 —— **`CYS-TRF-015`（会话级统计）当时未落地，待办表当时仍正确地标 ⬜** | 提交说明由上一棒写串了。**照提交说明去做 = 以为已有再去“用”**。教训已生效：**验收只对着代码与关口退出码，不对着提交说明**；本项已于 2026-10-23 真正落地（`SeqTrack` + `handshake_rtt_us` + 上下行 + `check-tcp-analysis.sh` 三方关口，见 §2.18），待办表因此才改 ☑ |
+| `CYS-TRF-015` | **会话级 TCP 统计已落地（☑，2026-10-23，§2.18）**：重传/乱序/握手 RTT/上下行比，三方比对 46 项 + 17 项注入。**未达成**：① 序号**回绕**不处理（要区分回绕与倒退必须有窗口语义，现仅用 `u64` 保证不静默算错）；② 语料**合成**、探针只在 macOS / Wireshark 4.6.7 一台机做过 ⇒ 真实流量上的重传/乱序率与口径需现场标定；③ **逐会话导出列未做**（只走 CLI 统计行）—— 因为给 `FlowRecord` 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5 B/记录），那必须是「改契约 + 抬 `schema_version` + 重测」的专门批次；④ 上下行只到合计，无分位数/分布 | ① 需要窗口语义（与 `CYS-TRF-016` 双向重组同族）；② 需要真实链路样本与两机复验；③ 需要一次专门的存储契约变更（`CYS-STO-002`/`007`） |
 | `CYS-TRF-054` | **采集器已落地（◐，含异厂互操作）**：序列号缺口 → `loss_ppm` 可复算（见 §2.12）。**未达成**：① 在线模式**无法设置 `SO_RCVBUF`**（std 无该接口、仓库不引第三方依赖）→ 高突发下内核丢弃会混进缺口，该指标只在**低突发**下口径干净；② TCP/SCTP 语义（传输会话结束隐式撤回模板）未做；③ Options Template 未解码（只跳过并计数）；④ ~~未与异厂导出器联调~~ **离线替代已落地**（2026-10-05，`check-ipfix-interop.sh`：独立实现 + tshark + 6 项注入，见 §2.12）——异厂分歧里的**缩减长度编码**、**未登记 IE**、**模板撤回/重定义**、**先数据后模板**、**IPv6** 都已实测；**仍缺的是真实网元**（硬件导出器的字段子集/刷新节奏/计数器宽度习惯）与 IE 6 这类常见字段的语义（只跳过、不取值） | ① 需等 `CYS-PKT-032` 那批内核侧工作；④ 需一台真实网元或第三方导出器（softflowd/nprobe）产出的 pcap |
 | `CYS-TRF-019` | 「样本集准确率 ≥ 95%」无样本集 | 现有 **32 条**向量只证明**边界正确**，不构成准确率指标 |
 | `CYS-TRF-016` | 双向 `Reassembler` / 超时 / 连接表驱逐未做 | 当前只有单向 `Stream` |
@@ -1697,9 +1774,10 @@ tshark 是唯一能发现「一致地错」的手段。
 | ~~5b~~ | ~~稳态吞吐够不上 10G~~ **已提为第一梯队第 1 项** | 见上 |
 | 6 | `CYS-TRF-028` 特征定义单一来源 + 与训练侧对齐 | 现在特征定义在 Rust 代码里；一旦 Python 侧用手抄一份，两边就会各自漂移，且**两边都会自认为对** |
 | 7 | `CYS-TRF-020/023` 补全（HTTP 响应侧/UA、DNS RCODE/EDNS0） | 已落地部分的自然延伸，向量体系现成，加样本成本低 |
-| 8 | `CYS-TRF-015` 会话级统计（重传/乱序计数、RTT 粗估） | 记录已经在产出，补列即可；重传与乱序要用到序号，重组层已有 |
+| 8 | ~~`CYS-TRF-015` 会话级统计（重传/乱序计数、RTT 粗估）~~ **已于 2026-10-23 落地**（§2.18，☑） | 原写「记录已经在产出，补列即可」不够准确：真正难的是**定义**（同一段字节在缺/含第三次 ACK 时 Wireshark 分类不同），所以定义钉在可复现样本 + 三方比对上（§2.18） |
+| ~~8b~~ | ~~`CYS-TRF-015` 会话级统计（**真缺口**，别被提交说明骗）~~ **已闭合（2026-10-23）** | 本行原来记的是：`b9f850d` 提交说明写“已收口”但代码里没有。**代码现在真有了**（`SeqTrack` / `handshake_rtt_us` / `uplink_bytes` + `check-tcp-analysis.sh`，§2.18）。它留下来的可复用结论已归入 §6：“验收只对着代码与关口退出码，不对着提交说明”；而“要不要抬 `schema_version` 把统计写进记录”仍未做（它是存储契约变更，见 §6 `CYS-TRF-015` 行第 ③ 条） |
 | ~~9~~ | ~~`CYS-TRF-033` 与 `storage/clickhouse` 建表 DDL 对齐~~ **已于 2026-10-21/22 落地**（§2.17）：列清单单一真源 `flow_columns()`（50 列）同时生成 DDL、编码器与第三方对照的期望规则，`001_flows.sql` 是**生成物**（关口 A 要求逐字节可复现） | **剩下的口子**：`sessions`/`events`/`metrics`/`dns_queries` 四表（`CYS-STO-002`）+ 常驻写入器（`CYS-STO-007`）+ 存储客户端抽象（`CYS-STO-012`） |
-| 8b | `CYS-TRF-015` 会话级统计（**真缺口**，别被提交说明骗） | `b9f850d` 的提交说明写"已收口"，但代码里没有：`session/mod.rs` 无重传/乱序计数、`record`/DDL 无 RTT 列（见 §6 最后一条）。序号信息在 `reassembly/` 已有，补列即可，但要同步抬 `schema_version` 与列契约版本 |
+
 
 ### 第三梯队：结构化重构（有明确前置时才做）
 

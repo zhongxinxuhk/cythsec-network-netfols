@@ -117,6 +117,108 @@ impl SessionIdAllocator {
     }
 }
 
+/// 一个方向的包数与字节数（字节口径同 `Session::bytes`：IP 载荷长度，含四层头）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SideCounters {
+    pub packets: u64,
+    pub bytes: u64,
+}
+
+/// 一个方向的序列号轨迹（`CYS-TRF-015`）。
+///
+/// 定义拿 tshark 当裁判做过探针。两次探针（同字节、不同 ACK 上下文给过不同分类）
+/// 说明定义必须钉在**可复现样本**上，而不是一句“tshark 实测如何”的表格：
+/// 可复现样本 = `datasets/tcp-analysis/` + `check-tcp-analysis.py`（2026-10-23，
+/// Wireshark 4.6.7 / macOS，完整握手（含第三次 ACK）的六模式探针）：
+///
+/// | 模式 | Wireshark 实测标记 | 本实现的判定 |
+/// | --- | --- | --- |
+/// | 正常按序 + 握手 + 重复 ACK | 只有 `duplicate_ack` | 0/0 |
+/// | 已 ACK 的段原样重发 | `retransmission` | `retransmissions` |
+/// | 未 ACK 就重发同一段（seq==cursor） | `retransmission` | `retransmissions` |
+/// | 段部分重叠（前旧后新） | `out_of_order` | `out_of_order` |
+/// | 先发后一段再补前一段 | 补洞段 `out_of_order`，超前段 `lost_segment` | `out_of_order`（补洞段） |
+/// | 中间段永不再来（只有超前段） | 只有 `lost_segment`，无 retr/ooo | 两者都不计 |
+///
+/// 关口钉的恒等式：`本实现 retr == tshark retransmission 帧数`、
+/// `本实现 ooo == tshark out_of_order 帧数`；`lost_segment` 是“丢包/未捕获”口径，
+/// 与本项两个计数器无关，样本里钉住其帧数防止将来两边默默漂移。
+/// 反面教训（同批 2026-10-22 探针的教训）：握手缺第三次 ACK 时，同样的重叠/补洞
+/// 字节被 Wireshark 归成 retransmission —— “拿实现去对表格”会因构型不同而假绿或假红，
+/// 所以只有“生成器真值 ↔ 实现 ↔ tshark”在同一条 pcap 上同场比对才算数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SeqTrack {
+    /// 已按序收到的右端点（下一个期望序号）。用 `u64` 避免 32 位序号回绕把判定打转。
+    ///
+    /// **序号回绕本身不处理**（那是另一个特性：要区分“回绕”与“倒退”必须有窗口语义），
+    /// 这里只是不让它在 `u32` 加法上静默变成错误计数。
+    cursor: Option<u64>,
+    /// 见过的最高段右端点（含乱序到达的）：用来判断“这洞是不是被后面的段暴露过”。
+    max_end: u64,
+    retransmissions: u64,
+    out_of_order: u64,
+    /// 参与过判定的段数（没序号的段不计入，也**不能**把没判定过的会话报成 0）。
+    judged: u64,
+}
+
+impl Default for SeqTrack {
+    fn default() -> Self {
+        Self {
+            cursor: None,
+            max_end: 0,
+            retransmissions: 0,
+            out_of_order: 0,
+            judged: 0,
+        }
+    }
+}
+
+impl SeqTrack {
+    /// 吃掉一个段。`consume` 是该段占用的序号空间（载荷 + SYN/FIN 各算 1）。
+    ///
+    /// 0 长度的纯 ACK 不走这里：它们不占序号空间，拿“序号比期望小”去数它们会把
+    /// 每个重复 ACK 都数成重传（探针里 baseline 模式假阳 0 靠的就是这一步）。
+    fn observe_segment(&mut self, seq: u64, consume: u64) {
+        if consume == 0 {
+            return;
+        }
+        self.judged += 1;
+        let end = seq.saturating_add(consume);
+        let cursor = match self.cursor {
+            None => {
+                // 中途接入的首段：无法知道它之前收过什么，只建立基准，不判定。
+                self.cursor = Some(end);
+                self.max_end = end;
+                return;
+            }
+            Some(c) => c,
+        };
+        if end <= cursor {
+            // 全部字节此前已按序收到（无论是否被 ACK）→ 重传
+            self.retransmissions += 1;
+        } else if seq < cursor {
+            // 既有旧字节又有新字节 → 乱序。2026-10-23 正式样本探针：完整握手下
+            // Wireshark 同样给 out_of_order（早期无第三次 ACK 的探针里它曾归
+            // retransmission —— 分类依赖 ACK 上下文，所以比对只钉在同一条 pcap 上）。
+            self.out_of_order += 1;
+            self.max_end = self.max_end.max(end);
+        } else if seq == cursor {
+            // 按序推进；但如果之前已经有更高序号的段到达过（洞被暴露过），
+            // 这一补洞段就是乱序（探针实测 Wireshark 对补洞段同样报 out_of_order）。
+            if end < self.max_end {
+                self.out_of_order += 1;
+            }
+            self.cursor = Some(end);
+            self.max_end = self.max_end.max(end);
+        } else {
+            // seq > cursor：前面缺了一段。本段不判定：探针实测 Wireshark 给它的是
+            // `lost_segment`（丢包/未捕获口径），retrans/out-of-order 两列都不计 ——
+            // 把“没收到”数成乱序，下游两个指标就都假了。记下右端点，等补洞段再判。
+            self.max_end = self.max_end.max(end);
+        }
+    }
+}
+
 /// 一条双向会话。
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -135,7 +237,19 @@ pub struct Session {
     pub bytes: u64,
     /// 方向切换次数（上下行交替的频度，是交互型/批处理型流量的区分特征之一）。
     pub direction_switches: u64,
+    /// 按**规范方向**（A = `forward` 键，B = `backward` 键）分别计的包数与字节数。
+    ///
+    /// 存 A/B 而不是"上/下行"：规范方向与会话是谁发起无关，同一个会话在两个
+    /// 方向键上拿到的是同一个数；"上/下行"必须再过一道 `initiator` 才能说（见
+    /// [`Session::uplink_bytes`]），中途接入的会话发起方未知 ⇒ 那是 `None` 而不是 0。
+    pub side_counters: [SideCounters; 2],
     last_side: Option<Side>,
+    /// 按方向的序列号轨迹（`CYS-TRF-015`：重传 / 乱序）。
+    seq_track: [SeqTrack; 2],
+    /// 首次看到 SYN 的那一侧与时间（握手 RTT 的起点）。
+    syn_at: Option<(Side, u64)>,
+    /// 握手 RTT（SYN → 对侧 SYN/ACK），微秒。没测到是 `None`，不是 0。
+    handshake_rtt_us: Option<u64>,
 }
 
 impl Session {
@@ -151,7 +265,11 @@ impl Session {
             packets: 0,
             bytes: 0,
             direction_switches: 0,
+            side_counters: [SideCounters::default(), SideCounters::default()],
             last_side: None,
+            seq_track: [SeqTrack::default(), SeqTrack::default()],
+            syn_at: None,
+            handshake_rtt_us: None,
         }
     }
 
@@ -211,6 +329,14 @@ impl Session {
         }
         self.packets += 1;
         self.bytes += u64::from(pkt.payload_len);
+        {
+            let idx = match side {
+                Side::A => 0,
+                Side::B => 1,
+            };
+            self.side_counters[idx].packets += 1;
+            self.side_counters[idx].bytes += u64::from(pkt.payload_len);
+        }
         if let Some(prev) = self.last_side {
             if prev != side {
                 self.direction_switches += 1;
@@ -232,7 +358,102 @@ impl Session {
         // 注意用的是段载荷长度，**不是** pkt.payload_len（后者含四层头，
         // 会把每个纯 ACK 都判成 Data），见 TcpObservation 的说明。
         let event = TcpEvent::classify(&tcp.flags, tcp.l4_payload_len);
+        self.track_tcp_anomalies(side, tcp, pkt.timestamp_us);
         self.tcp.apply(event, side).err()
+    }
+
+    /// 重传 / 乱序 / 握手 RTT（`CYS-TRF-015`）。
+    ///
+    /// 与状态机完全分开：状态机只吃事件类型，这里吃序号与时间。**不能因为
+    /// 判定失败就影响状态机**（一个乱序段不该把会话推成错误状态），也不能反过来。
+    fn track_tcp_anomalies(&mut self, side: Side, tcp: &TcpObservation, ts_us: u64) {
+        // —— 握手 RTT：第一个 SYN 到对侧第一个 SYN/ACK ——
+        if tcp.flags.is_syn() && !tcp.flags.is_syn_ack() {
+            if self.syn_at.is_none() {
+                self.syn_at = Some((side, ts_us));
+            }
+        } else if tcp.flags.is_syn_ack() {
+            if let Some((syn_side, syn_ts)) = self.syn_at {
+                if syn_side != side && self.handshake_rtt_us.is_none() {
+                    self.handshake_rtt_us = Some(ts_us.saturating_sub(syn_ts));
+                }
+            }
+        }
+
+        // —— 重传 / 乱序：没序号就什么都不动（计入“未观测”而不是 0）——
+        let Some(seq) = tcp.seq else { return };
+        let consume =
+            u64::from(tcp.l4_payload_len) + u64::from(tcp.flags.syn) + u64::from(tcp.flags.fin);
+        let idx = Self::side_index(side);
+        self.seq_track[idx].observe_segment(u64::from(seq), consume);
+    }
+
+    /// 会话两侧重传计数之和。**全程读不到序号时返回 `None`**：
+    /// 截断采集 / 只看标志位的调用路径下，报 0 会被下游读成“这条会话没有重传”，
+    /// 而实情是“本会话没有任何判定输入”（项内约定：“未识别 ≠ 识别为无”）。
+    pub fn retransmissions(&self) -> Option<u64> {
+        let judged = self.seq_track[0].judged + self.seq_track[1].judged;
+        if judged == 0 {
+            None
+        } else {
+            Some(self.seq_track[0].retransmissions + self.seq_track[1].retransmissions)
+        }
+    }
+
+    /// 同上语义的乱序计数。
+    pub fn out_of_order(&self) -> Option<u64> {
+        let judged = self.seq_track[0].judged + self.seq_track[1].judged;
+        if judged == 0 {
+            None
+        } else {
+            Some(self.seq_track[0].out_of_order + self.seq_track[1].out_of_order)
+        }
+    }
+
+    /// 参与过重传/乱序判定的段数（两侧合计）。`0` 表示本会话**没有任何判定输入**
+    /// （截断采集 / 调用方没给序号），而不是“判定完发现没重传”。
+    pub fn seq_judged(&self) -> u64 {
+        self.seq_track[0].judged + self.seq_track[1].judged
+    }
+
+    /// 一个方向的包数与字节数（供端到端统计出口用；口径同 `Session::bytes`）。
+    pub fn side_counters(&self) -> [SideCounters; 2] {
+        self.side_counters
+    }
+
+    /// 握手 RTT（微秒）。没见到完整 SYN → SYN/ACK 时为 `None`（中途接入不猜）。
+    pub fn handshake_rtt_us(&self) -> Option<u64> {
+        self.handshake_rtt_us
+    }
+
+    /// 发起方方向的字节（“上行”）。**发起方未知 ⇒ `None`**，不拿 A 当发起方兜底：
+    /// 中途接入的会话里 A 只是字典序更小的一侧，把它叫上行会让下游把随机数当成指标。
+    pub fn uplink_bytes(&self) -> Option<u64> {
+        let side = self.initiator()?;
+        Some(self.side_counters[Self::side_index(side)].bytes)
+    }
+
+    /// 对侧（应答方）字节。同样：发起方未知 ⇒ `None`。
+    pub fn downlink_bytes(&self) -> Option<u64> {
+        let side = self.initiator()?.other();
+        Some(self.side_counters[Self::side_index(side)].bytes)
+    }
+
+    /// 下行/上行字节比。任一侧为 0 或发起方未知 ⇒ `None`（比 0 或 inf 诚实）。
+    pub fn down_up_ratio(&self) -> Option<f64> {
+        let up = self.uplink_bytes()?;
+        let down = self.downlink_bytes()?;
+        if up == 0 {
+            return None;
+        }
+        Some(down as f64 / up as f64)
+    }
+
+    const fn side_index(side: Side) -> usize {
+        match side {
+            Side::A => 0,
+            Side::B => 1,
+        }
     }
 }
 
@@ -547,6 +768,260 @@ mod tests {
 
     fn ack() -> TcpFlags {
         TcpFlags {
+            ack: true,
+            ..TcpFlags::default()
+        }
+    }
+
+    // ---- CYS-TRF-015 会话级重传 / 乱序 / RTT / 上下行 ----
+    //
+    // 六组模式的期望值由构造参数手写；与 tshark 的分类在 2026-10-23 的正式样本
+    // 探针上逐组对齐（完整握手电报含第三次 ACK）：baseline 0/0、已 ACK 重发→retr、
+    // 未 ACK 重发→retr、部分重叠→ooo、补洞段→ooo（超前段 lost）、
+    // 中间段永不再来→两边 retr/ooo 都 0。最后一条是防“把没收到数成乱序”的
+    // 关键反向断言；逐组比对由 `check-tcp-analysis.py` 在同一条 pcap 上守门。
+
+    /// 带序号的段观测（生产路径由 `tcp_seq_ack` 从四层头读出）。
+    fn segq(flags: TcpFlags, len: u32, seq: u32, ackno: u32) -> TcpObservation {
+        TcpObservation::with_seq(flags, len, seq, ackno)
+    }
+
+    fn mgr1() -> SessionManager {
+        SessionManager::new(SessionConfig::default())
+    }
+
+    /// 跑一段脚本（side, ts, flags, len, seq, ack），返回会话引用所需的一切已喂入。
+    fn feed(m: &mut SessionManager, script: &[(bool, u64, TcpFlags, u32, u32, u32)]) {
+        for (from_a, ts, fl, len, seq, ackno) in script.iter() {
+            let k = if *from_a {
+                tcp_key()
+            } else {
+                tcp_key().reverse()
+            };
+            m.observe(&pkt(k, *ts, *len), Some(&segq(*fl, *len, *seq, *ackno)));
+        }
+    }
+
+    fn session_of(m: &SessionManager) -> &Session {
+        m.session(&tcp_key()).expect("会话应存在")
+    }
+
+    #[test]
+    fn cys_trf_015_clean_handshake_yields_zero_counts_and_measured_rtt() {
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 1500, syn_ack(), 0, 5000, 1001),
+                (true, 1510, ack(), 0, 1001, 5001),
+                (true, 1520, data_flags(), 100, 1001, 5001),
+                (false, 1530, ack(), 0, 5001, 1101),
+                (true, 1540, data_flags(), 100, 1101, 5001),
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.retransmissions(), Some(0), "干净会话不得产出重传");
+        assert_eq!(s.out_of_order(), Some(0), "干净会话不得产出乱序");
+        assert_eq!(
+            s.handshake_rtt_us(),
+            Some(1500),
+            "RTT = SYN → SYN/ACK 的实测间隔（不是 0，也不是猜）"
+        );
+    }
+
+    #[test]
+    fn cys_trf_015_retransmission_of_acked_data_is_counted() {
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 100, syn_ack(), 0, 5000, 1001),
+                (true, 110, data_flags(), 100, 1001, 5001),
+                (false, 120, ack(), 0, 5001, 1101),
+                (true, 130, data_flags(), 100, 1101, 5001),
+                (false, 140, ack(), 0, 5001, 1201),
+                (true, 900, data_flags(), 100, 1101, 5001), // 已被 ACK 的那段原样重发
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.retransmissions(), Some(1));
+        assert_eq!(s.out_of_order(), Some(0), "重发已收到的字节不是乱序");
+    }
+
+    #[test]
+    fn cys_trf_015_resend_before_ack_is_also_a_retransmission() {
+        // 探针实测：未等 ACK 就重发同一段，Wireshark 给的是 retransmission（不是乱序）。
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 100, syn_ack(), 0, 5000, 1001),
+                (true, 110, data_flags(), 100, 1001, 5001),
+                (true, 120, data_flags(), 100, 1001, 5001),
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.retransmissions(), Some(1));
+        assert_eq!(s.out_of_order(), Some(0));
+    }
+
+    #[test]
+    fn cys_trf_015_reorder_counts_out_of_order_not_retransmission() {
+        // 先发后一段（seq 1101），再补前一段（1001）：补上的那个是乱序。
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 100, syn_ack(), 0, 5000, 1001),
+                (true, 110, data_flags(), 100, 1101, 5001),
+                (true, 120, data_flags(), 100, 1001, 5001),
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.out_of_order(), Some(1));
+        assert_eq!(
+            s.retransmissions(),
+            Some(0),
+            "补洞的字节此前根本没收到，不是重传"
+        );
+    }
+
+    #[test]
+    fn cys_trf_015_missing_segment_is_neither_retransmission_nor_out_of_order() {
+        // 关键反向断言：中间一段永不再来。探针实测 tshark 只给它 `lost_segment`，
+        // retrans/out-of-order 两列都不计；把它数成乱序会把“丢包/未捕获”混进“乱序”，
+        // 下游两个指标就都假了。
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 100, syn_ack(), 0, 5000, 1001),
+                (true, 110, data_flags(), 100, 1001, 5001),
+                (true, 120, data_flags(), 100, 1201, 5001),
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.retransmissions(), Some(0));
+        assert_eq!(s.out_of_order(), Some(0), "缺段不得被数成乱序");
+    }
+
+    #[test]
+    fn cys_trf_015_partially_overlapping_segment_is_out_of_order() {
+        // 前 50 字节旧、后 50 字节新：探针实测（含第三次 ACK 的正式样本）tshark 给
+        // 的是 out_of_order，不是 retransmission；早期无完整握手的探针曾把它归成
+        // retransmission —— 分类依赖 ACK 上下文，所以本行只钉在可复现样本上。
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 100, syn_ack(), 0, 5000, 1001),
+                (true, 110, data_flags(), 100, 1001, 5001),
+                (true, 120, data_flags(), 100, 1051, 5001),
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.out_of_order(), Some(1));
+        assert_eq!(s.retransmissions(), Some(0));
+    }
+
+    #[test]
+    fn cys_trf_015_without_sequence_numbers_the_counts_are_unknown_not_zero() {
+        // “读不到序号”与“没有重传”必须能分开：截断采集下报 0 等于向下游谎报全网零重传。
+        let mut m = mgr1();
+        let script = [
+            (tcp_key(), syn(), 0u64),
+            (tcp_key().reverse(), syn_ack(), 0),
+            (tcp_key(), data_flags(), 100),
+            (tcp_key(), data_flags(), 100),
+        ];
+        for (i, (k, fl, len)) in script.iter().enumerate() {
+            m.observe(
+                &pkt(*k, (i as u64) * 10, *len as u32),
+                Some(&seg(*fl, *len as u32)),
+            );
+        }
+        let s = session_of(&m);
+        assert_eq!(s.retransmissions(), None, "没判定输入时不得报 Some(0)");
+        assert_eq!(s.out_of_order(), None);
+        assert_eq!(
+            s.handshake_rtt_us(),
+            Some(10),
+            "RTT 只依赖时间戳，没序号也能测到"
+        );
+    }
+
+    #[test]
+    fn cys_trf_015_updown_bytes_are_keyed_by_initiator_and_refuse_midstream() {
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 100, syn_ack(), 0, 5000, 1001),
+                (true, 110, data_flags(), 120, 1001, 5001), // 上行：IP 载荷 120B
+                (false, 120, data_flags(), 480, 5001, 1101), // 下行：IP 载荷 480B
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.uplink_bytes(), Some(120));
+        assert_eq!(s.downlink_bytes(), Some(480));
+        assert_eq!(
+            s.down_up_ratio(),
+            Some(4.0),
+            "上下行比 = 下行/上行，由发起方定方向"
+        );
+
+        // 中途接入（没见过 SYN）：发起方未知 ⇒ 上下行必须是 None。
+        let mut m2 = mgr1();
+        feed(
+            &mut m2,
+            &[
+                (true, 0, data_flags(), 120, 1001, 5001),
+                (false, 10, data_flags(), 480, 5001, 1101),
+            ],
+        );
+        let s2 = session_of(&m2);
+        assert!(s2.initiator().is_none());
+        assert_eq!(
+            s2.uplink_bytes(),
+            None,
+            "中途接入不猜谁发起，也就不报上下行"
+        );
+        assert_eq!(s2.down_up_ratio(), None);
+        // 而重传/乱序计数仍然可用（它们不依赖发起方）。
+        assert_eq!(s2.retransmissions(), Some(0));
+    }
+
+    #[test]
+    fn cys_trf_015_zero_length_segments_never_count_as_retransmission() {
+        // 重复 ACK（不占序号空间）是最容易误判成重传的一类：探针里 baseline 假阳 0
+        // 靠的就是这一步。断言它不会因为“序号比期望小”而被数成重传。
+        let mut m = mgr1();
+        feed(
+            &mut m,
+            &[
+                (true, 0, syn(), 0, 1000, 0),
+                (false, 100, syn_ack(), 0, 5000, 1001),
+                (true, 110, data_flags(), 100, 1001, 5001),
+                (false, 120, ack(), 0, 5001, 1101),
+                (false, 130, ack(), 0, 5001, 1101),
+                (false, 140, ack(), 0, 5001, 1101),
+            ],
+        );
+        let s = session_of(&m);
+        assert_eq!(s.retransmissions(), Some(0), "重复 ACK 不得数成重传");
+        assert_eq!(s.out_of_order(), Some(0));
+    }
+
+    fn data_flags() -> TcpFlags {
+        TcpFlags {
+            psh: true,
             ack: true,
             ..TcpFlags::default()
         }
