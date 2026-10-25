@@ -26,11 +26,13 @@ if [[ "${1:-}" == "--help" ]]; then
   cat <<'EOF'
 用法: check-tcp-analysis.sh [--no-self-test]
 
-三方比对 cythsec-analyze 的 TCP 统计行 / 生成器真值 / tshark tcp.analysis 标记：
+三方比对 cythsec-analyze 的 TCP 统计行 / 生成器真值 / tshark tcp.analysis 标记，
+并比对**逐会话记录列**（FlowRecord v2 的 tcp.* 六列）：
   恒等式 我们的retr == tshark retransmission 帧数（逐流 + 全局）
   恒等式 我们的ooo  == tshark out_of_order 帧数（逐流 + 全局）
+  恒等式 记录逐会话 retr/ooo == tshark 对该流的帧数（列值与汇总行各自可错）
   RTT / 上下行字节 / 未观测会话数 与生成器真值逐键比对（RTT 不与 tshark iRTT 比，口径不同）
-  反向故障注入 17 项必须全部被检出
+  反向故障注入 26 项必须全部被检出
 
 退出码：0 一致 / 1 不一致或注入漏检 / 2 样本缺失 / 3 缺 python3、tshark 或 cargo
 EOF
@@ -95,7 +97,7 @@ if [[ ! -s "$TMP/stats.txt" ]]; then
   exit 1
 fi
 
-ARGS=(--stats "$TMP/stats.txt" --tsv "$TMP/tshark.tsv" --expected "$EXPECTED")
+ARGS=(--stats "$TMP/stats.txt" --tsv "$TMP/tshark.tsv" --records "$TMP/records.jsonl" --expected "$EXPECTED")
 if [[ "$SELF_TEST" == "1" ]]; then
   ARGS+=(--self-test)
 fi

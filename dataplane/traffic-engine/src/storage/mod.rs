@@ -480,6 +480,70 @@ pub const FLOW_COLUMNS: &[ColumnSpec] = &[
         low_cardinality: false,
         codec: "Delta(8), ZSTD(1)",
     },
+    // ---- 会话级 TCP 统计（CYS-TRF-015，记录 v2）----
+    // 六列全可空：`NULL` = 没有这项证据，`0` = 判定了且确实是 0。这两个数在下游
+    // 含义相反（前者不能进分母），所以上面那行不能迿进列式：列式没有"缺键"这种
+    // 表达，只能用 Nullable + null 位图（见 `native.rs` 的序列化口径）。
+    ColumnSpec {
+        name: "tcp_seq_judged",
+        kind: Kind::U64,
+        nullable: true,
+        group: "tcp",
+        jsonl_path: "tcp.seq_judged",
+        comment: "参与重传/乱序判定的段数（样本量）；0 表示本会话无判定输入，非 TCP 为 NULL",
+        low_cardinality: false,
+        codec: "Delta(8), ZSTD(1)",
+    },
+    ColumnSpec {
+        name: "tcp_retransmissions",
+        kind: Kind::U64,
+        nullable: true,
+        group: "tcp",
+        jsonl_path: "tcp.retransmissions",
+        comment: "重传段数（口径与 Wireshark retransmission 在同一条 pcap 上逐模式对齐）；无判定输入为 NULL",
+        low_cardinality: false,
+        codec: "Delta(8), ZSTD(1)",
+    },
+    ColumnSpec {
+        name: "tcp_out_of_order",
+        kind: Kind::U64,
+        nullable: true,
+        group: "tcp",
+        jsonl_path: "tcp.out_of_order",
+        comment: "乱序段数（含部分重叠与补洞段）；缺段不计此项而是 lost_segment 口径；无判定输入为 NULL",
+        low_cardinality: false,
+        codec: "Delta(8), ZSTD(1)",
+    },
+    ColumnSpec {
+        name: "tcp_handshake_rtt_us",
+        kind: Kind::U64,
+        nullable: true,
+        group: "tcp",
+        jsonl_path: "tcp.handshake_rtt_us",
+        comment: "握手 RTT（SYN → 对侧 SYN/ACK，微秒）；与 tshark iRTT 口径不同（后者量到第三次 ACK）；未见到完整握手为 NULL",
+        low_cardinality: false,
+        codec: "Delta(8), ZSTD(1)",
+    },
+    ColumnSpec {
+        name: "tcp_uplink_bytes",
+        kind: Kind::U64,
+        nullable: true,
+        group: "tcp",
+        jsonl_path: "tcp.uplink_bytes",
+        comment: "发起方方向字节（IP 载荷长，含四层头）；中途接入发起方未知为 NULL，不拿字典序兜底",
+        low_cardinality: false,
+        codec: "Delta(8), ZSTD(1)",
+    },
+    ColumnSpec {
+        name: "tcp_downlink_bytes",
+        kind: Kind::U64,
+        nullable: true,
+        group: "tcp",
+        jsonl_path: "tcp.downlink_bytes",
+        comment: "应答方方向字节；与 uplink 合计等于 bytes；上下行比由查询侧相除（不存比例：0 分母另需表达）",
+        low_cardinality: false,
+        codec: "Delta(8), ZSTD(1)",
+    },
     // ---- time ----
     ColumnSpec {
         name: "first_seen_us",
@@ -659,7 +723,10 @@ pub fn flow_columns() -> Vec<ColumnSpec> {
 /// 为什么和 `RECORD_SCHEMA_VERSION` 分开：JSONL 的列变更与列式的列变更**不是同一件事**
 /// ——JSONL 少一个键是解析失败，列式少一列是插入失败，两者的下游也不同。
 /// 合成一个版本号会在只改一边时被迫抬两边。
-pub const COLUMN_CONTRACT_VERSION: u32 = 1;
+///
+/// `1 → 2`（2026-10-23）：`tcp` 组末尾增加六列会话级 TCP 统计（`CYS-TRF-015`）。
+/// 与 `RECORD_SCHEMA_VERSION` 同批抬是因为本批两边真的都改了；只改一边时仍然只抬一边。
+pub const COLUMN_CONTRACT_VERSION: u32 = 2;
 
 /// 派生列（**不在 `flow_columns()` 里**，因为不由我们写）与它的存储形式。
 ///
@@ -801,6 +868,38 @@ pub fn project_row<'a>(r: &'a FlowRecord) -> Result<Vec<Value<'a>>, ProjectError
     });
     out.push(Value::U8(u8::from(r.adopted_midstream)));
     out.push(Value::U64(r.illegal_tcp_events));
+    // 会话级 TCP 统计（CYS-TRF-015）。非 TCP 记录（`tcp_stats == None`）六列全部投 NULL：
+    // 它们对 UDP/ICMP 没有定义，写 0 等于把"不适用"说成"无异常"。
+    match r.tcp_stats {
+        Some(t) => {
+            out.push(Value::U64(t.seq_judged));
+            out.push(match t.retransmissions {
+                Some(v) => Value::U64(v),
+                None => Value::Null,
+            });
+            out.push(match t.out_of_order {
+                Some(v) => Value::U64(v),
+                None => Value::Null,
+            });
+            out.push(match t.handshake_rtt_us {
+                Some(v) => Value::U64(v),
+                None => Value::Null,
+            });
+            out.push(match t.uplink_bytes {
+                Some(v) => Value::U64(v),
+                None => Value::Null,
+            });
+            out.push(match t.downlink_bytes {
+                Some(v) => Value::U64(v),
+                None => Value::Null,
+            });
+        }
+        None => {
+            for _ in 0..6 {
+                out.push(Value::Null);
+            }
+        }
+    }
     out.push(Value::U64(r.first_seen_us));
     out.push(Value::U64(r.last_seen_us));
     out.push(Value::U64(r.last_seen_us.saturating_sub(r.first_seen_us)));
@@ -896,6 +995,7 @@ mod tests {
             initiator: Some(Side::A),
             adopted_midstream: false,
             illegal_tcp_events: 0,
+            tcp_stats: None,
             first_seen_us: 1_000_000,
             last_seen_us: 2_000_000,
             packets: 2,
@@ -994,6 +1094,67 @@ mod tests {
         assert_eq!(row2[idx("app_name")], Value::Str("dns"));
         assert_eq!(row2[idx("app_id")], Value::U32(AppId::Dns.as_u32()));
         assert_eq!(row2[idx("app_bytes_inspected")], Value::U64(21));
+    }
+
+    #[test]
+    fn tcp_stat_columns_are_null_when_unobserved_and_values_when_observed() {
+        // `CYS-TRF-015` 落到列式的那一条红线：NULL 与 0 必须在字节上就不同。
+        let cols = flow_columns();
+        let idx = |n: &str| cols.iter().position(|c| c.name == n).unwrap();
+        for name in [
+            "tcp_seq_judged",
+            "tcp_retransmissions",
+            "tcp_out_of_order",
+            "tcp_handshake_rtt_us",
+            "tcp_uplink_bytes",
+            "tcp_downlink_bytes",
+        ] {
+            let c = &cols[idx(name)];
+            assert!(c.nullable, "{name} 必须是 Nullable：它要能表达“没证据”");
+            assert_eq!(c.group, "tcp");
+        }
+        // ① 非 TCP（整块 None）：六列全 NULL。
+        let r = sample();
+        let row = project_row(&r).expect("投影成功");
+        for name in [
+            "tcp_seq_judged",
+            "tcp_retransmissions",
+            "tcp_out_of_order",
+            "tcp_handshake_rtt_us",
+            "tcp_uplink_bytes",
+            "tcp_downlink_bytes",
+        ] {
+            assert_eq!(row[idx(name)], Value::Null, "非 TCP 时 {name} 不得有值");
+        }
+        // ② TCP 但没判定输入：seq_judged=0（这是事实），计数是 NULL（这是没证据）。
+        let mut r = sample();
+        r.tcp_stats = Some(crate::record::TcpSessionStats {
+            seq_judged: 0,
+            ..Default::default()
+        });
+        let row = project_row(&r).expect("投影成功");
+        assert_eq!(row[idx("tcp_seq_judged")], Value::U64(0));
+        assert_eq!(row[idx("tcp_retransmissions")], Value::Null);
+        assert_eq!(row[idx("tcp_out_of_order")], Value::Null);
+        // ③ 真判定出 0 重传：必须是 0，不能回退成 NULL。
+        r.tcp_stats = Some(crate::record::TcpSessionStats {
+            seq_judged: 4,
+            retransmissions: Some(0),
+            out_of_order: Some(0),
+            handshake_rtt_us: Some(1_500),
+            uplink_bytes: Some(1_200),
+            downlink_bytes: Some(800),
+        });
+        let row = project_row(&r).expect("投影成功");
+        assert_eq!(
+            row[idx("tcp_retransmissions")],
+            Value::U64(0),
+            "Some(0) 不得变成 NULL"
+        );
+        assert_eq!(row[idx("tcp_out_of_order")], Value::U64(0));
+        assert_eq!(row[idx("tcp_handshake_rtt_us")], Value::U64(1_500));
+        assert_eq!(row[idx("tcp_uplink_bytes")], Value::U64(1_200));
+        assert_eq!(row[idx("tcp_downlink_bytes")], Value::U64(800));
     }
 
     #[test]

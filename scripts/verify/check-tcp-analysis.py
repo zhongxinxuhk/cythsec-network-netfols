@@ -6,6 +6,11 @@
      + 生成器真值（datasets/tcp-analysis/expected.json，按构造参数手写）
      + tshark 对同一条 pcap 的独立标记（tcp.analysis.* 帧计数）。
 
+2026-10-23 加了**第四条腿**：`FlowRecord.tcp.*` 的**逐会话列值**（记录契约 v2）。
+理由不是“多一个出口多一份安心”，而是统计行与记录列可以**各自错**：汇总只校合计，
+“40002 的重传记到 40003 上”在它上面完全隐形；而逐会话列不抬版就会被下游按旧列序读错。
+现在两者都对同一份真值，且逐流 retr/ooo 还额外与 tshark 的逐流帧数相等。
+
 比对口径（为什么是这几条恒等式）：
     · `我们的 retr == tshark retransmission 帧数`、`我们的 ooo == tshark out_of_order 帧数`
       —— 2026-10-23 正式样本（完整握手含第三次 ACK）实测两边逐组一致。
@@ -26,7 +31,7 @@
 
 用法（由 check-tcp-analysis.sh 调用）：
     check-tcp-analysis.py --stats <analyze-stderr> --tsv <tshark-fields> \
-        --expected <expected.json> --self-test
+        --records <records.jsonl> --expected <expected.json> --self-test
 TSV 列序固定为：frame.number | srcport | dstport | retr | ooo | lost | dupack
 
 退出码：0 一致 / 1 不一致或注入未检出 / 2 输入缺失 / 3 不在此脚本使用。
@@ -38,6 +43,17 @@ import sys
 
 STATS_PREFIX = "[cythsec-analyze] tcp "
 SERVER_PORT = "443"
+
+# 记录里 `tcp` 块的会话级统计键（v2）。名字与 `record::TCP_BLOCK_COLUMNS` 同步，
+# 两边不一致时 `compare_records` 会报“缺键”，而不是默默少比。
+RECORD_KEYS = (
+    "seq_judged",
+    "retransmissions",
+    "out_of_order",
+    "handshake_rtt_us",
+    "uplink_bytes",
+    "downlink_bytes",
+)
 
 # 统计行必须齐 these 键；缺键 = 契约变了，必须显式红，不许按默认值比。
 STATS_KEYS = (
@@ -107,6 +123,75 @@ def parse_tshark_tsv(tsv_path):
     return counts
 
 
+def parse_records(jsonl_path):
+    """读 `cythsec-analyze` 产出的 JSONL，按端口取 `tcp.*` 六键。
+
+    只取会话级统计这六列 + 五元组端口；其他字段是 `check-flow-records.py` 的领域。
+    这里的口径：**记录里的逐会话值与统计行的汇总值是两条独立出口**，两者都要对得上
+    真值 —— 只比对其中一条时，“汇总对了但逐会话错了”（或反之）会漏过去。
+    缺 `tcp.*` 任一键 ⇒ 抛 `Missing`：记录契约变了必须显式红，不能默默少比。
+    """
+    out = {}
+    with open(jsonl_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            flow = rec["flow"]
+            port = str(flow["dst_port"] if str(flow["src_port"]) == SERVER_PORT
+                        else flow["src_port"])
+            tcpb = rec["tcp"]
+            missing = [k for k in RECORD_KEYS if k not in tcpb]
+            if missing:
+                raise Missing(f"记录 port={port} 的 tcp 块缺键 {missing}（列契约变更必须同步改关口）")
+            out[port] = {k: tcpb[k] for k in RECORD_KEYS}
+            out[port]["_proto"] = str(flow.get("proto"))
+    return out
+
+
+def compare_records(records, tshark_counts, expected, failures, checked):
+    """逐会话：记录列值 ↔ 生成器真值 ↔ tshark 逐流帧数。"""
+    def chk(name, got, want):
+        checked.append(name)
+        if got != want:
+            failures.append(f"{name}: 得到 {got!r}，期望 {want!r}")
+
+    for fl in expected["flows"]:
+        port = str(fl["port"])
+        name = fl["name"]
+        want = fl.get("record")
+        if want is None:
+            # 生成器没有记录级真值 = 样本与关口不同批，比对不能默认跳过。
+            failures.append(f"record[{name}]：expected.json 缺 record 真值块")
+            continue
+        got = records.get(port)
+        if got is None:
+            failures.append(f"record[{name}]：port={port} 在记录里没出现（会话丢了）")
+            continue
+        missing = [k for k in RECORD_KEYS if k not in got]
+        if missing:
+            # 缺键不能当成"值为 None"：前者是契约变了，后者是这条会话真的没证据。
+            failures.append(f"record[{name}]：tcp 块缺键 {missing}（列契约变更必须同步改关口）")
+            continue
+        ts = fl["tshark"]
+        tc = tshark_counts.get(port, {})
+        for key in RECORD_KEYS:
+            chk(f"record[{name}].{key}", got[key], want[key])
+        # 恒等式（逐流）：记录的重传/乱序列 == tshark 对该流的标记帧数。
+        # 截断会话的 `None` 必须对 tshark 的 0 以外的口径：它没被判定过，所以只对
+        # 真值对，不强求与 tshark 相等（那是 `compare()` 的全局恒等式管的）。
+        if want["retransmissions"] is not None:
+            chk(f"恒等式 record[{name}].retransmissions == tshark retransmission",
+                want["retransmissions"], tc.get("retransmission", 0))
+            chk(f"恒等式 record[{name}].out_of_order == tshark out_of_order",
+                want["out_of_order"], tc.get("out_of_order", 0))
+    # 会话不得多发：记录里比真值多出未知端口 = 实现在同一条 pcap 上多建了会话。
+    known = {str(fl["port"]) for fl in expected["flows"]}
+    extra = sorted(set(records) - known)
+    chk("记录会话集与样本一致（不得多）", extra, [])
+
+
 def compare(stats, tshark_counts, expected, failures, checked):
     def chk(name, got, want):
         checked.append(name)
@@ -168,13 +253,23 @@ def run(args):
         print(f"✗ {e}", file=sys.stderr)
         return 1
     try:
+        records = parse_records(args.records)
+    except (Missing, OSError, ValueError) as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 1
+    try:
         with open(args.expected, encoding="utf-8") as fh:
             expected = json.load(fh)
     except OSError as e:
         print(f"✗ expected.json 读取失败：{e}", file=sys.stderr)
         return 2
+    if any("record" not in fl for fl in expected["flows"]):
+        print("✗ expected.json 里没有逐会话真值（record 块）—— 生成器与关口不同批",
+              file=sys.stderr)
+        return 1
     tshark_counts = parse_tshark_tsv(args.tsv)
     skipped = compare(stats, tshark_counts, expected, failures, checked)
+    compare_records(records, tshark_counts, expected, failures, checked)
 
     if not checked:
         print("✗ 一项都没比对（空输入不得判通过）", file=sys.stderr)
@@ -191,18 +286,23 @@ def run(args):
     # ---- 反向故障注入：每一项都必须被检出 ----
     import copy
 
-    def inject(desc, mutate_stats=None, mutate_counts=None, mutate_expected=None):
+    def inject(desc, mutate_stats=None, mutate_counts=None, mutate_expected=None,
+               mutate_records=None):
         s = copy.deepcopy(stats)
         c = copy.deepcopy(tshark_counts)
         e = copy.deepcopy(expected)
+        r = copy.deepcopy(records)
         if mutate_stats:
             mutate_stats(s)
         if mutate_counts:
             mutate_counts(c)
         if mutate_expected:
             mutate_expected(e)
+        if mutate_records:
+            mutate_records(r)
         f2, k2 = [], []
         compare(s, c, e, f2, k2)
+        compare_records(r, c, e, f2, k2)
         if f2:
             print(f"   已检出 ← 注入「{desc}」：{f2[0][:90]}")
             return 0
@@ -237,6 +337,32 @@ def run(args):
     missed += inject("真值里把 partial-overlap 改回旧口径（retr/ooo 对调）",
                      mutate_expected=lambda e: [e["totals"].__setitem__("retr", e["totals"]["retr"] + 1),
                                                 e["totals"].__setitem__("ooo", e["totals"]["ooo"] - 1)][0])
+    # ---- 逐会话记录列（v2 新列自己的注入）----
+    # 统计行对不代表记录对：这两条出口可以各自错。下面的注入都只动 records。
+    missed += inject("记录 40002 的 retransmissions 改 0（逐会话错了而汇总仍对）",
+                     mutate_records=lambda r: r["40002"].__setitem__("retransmissions", 0))
+    missed += inject("记录 40004 的 out_of_order 改成 None（乱序丢了）",
+                     mutate_records=lambda r: r["40004"].__setitem__("out_of_order", None))
+    missed += inject("记录 40007（未观测）的 retransmissions 从 null 改成 0 —— "
+                     "“没得判”伪装成“没重传”，本项最不能错的一条",
+                     mutate_records=lambda r: r["40007"].__setitem__("retransmissions", 0))
+    missed += inject("记录 40007 的 uplink_bytes 从 null 改成 100（截断会话字节混进列）",
+                     mutate_records=lambda r: r["40007"].__setitem__("uplink_bytes", 100))
+    missed += inject("记录 40001 的 handshake_rtt_us +1",
+                     mutate_records=lambda r: r["40001"].__setitem__("handshake_rtt_us",
+                                                                     r["40001"]["handshake_rtt_us"] + 1))
+    missed += inject("记录 40005 的 uplink/downlink 对调（发起方定方向错了）",
+                     mutate_records=lambda r: (r["40005"].__setitem__(
+                         "uplink_bytes", r["40005"]["downlink_bytes"]),
+                         r["40005"].__setitem__("downlink_bytes", r["40005"]["uplink_bytes"]))[0])
+    missed += inject("记录里丢掉 downlink_bytes 键（列契约变更必须显式报错）",
+                     mutate_records=lambda r: r["40001"].pop("downlink_bytes"))
+    missed += inject("真值 record 的 judged +1（逐会话期望腐烂也会被检出）",
+                     mutate_expected=lambda e: e["flows"][0]["record"].__setitem__(
+                         "seq_judged", e["flows"][0]["record"]["seq_judged"] + 1))
+    missed += inject("记录集里多一条会话（实现多建会话不得默默过）",
+                     mutate_records=lambda r: r.__setitem__(
+                         "49999", {k: 0 for k in RECORD_KEYS}))
     # 缺键注入单独测（它抛 Missing，不走 compare）
     import io
     tmp = args.stats + ".tmp-missing"
@@ -265,6 +391,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stats", required=True)
     ap.add_argument("--tsv", required=True)
+    ap.add_argument("--records", required=True,
+                    help="cythsec-analyze 产出的 JSONL（逐会话列值比对）")
     ap.add_argument("--expected", required=True)
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()

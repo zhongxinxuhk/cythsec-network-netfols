@@ -8,29 +8,30 @@
       "risk_score": 666,
       "schema_version": 703,
       "session_id": 561,
-      "tcp": 3227,
+      "tcp": 7740,
       "time": 3345
     },
     "lines_scanned": 37
   },
-  "gzip_bytes": 2937,
-  "gzip_bytes_per_record": 79.37837837837837,
+  "gzip_bytes": 3112,
+  "gzip_bytes_per_record": 84.10810810810811,
   "gzip_level": 9,
-  "gzip_ratio": 12.70207694926796,
+  "gzip_method": "stdin 管道（gzip -9 -c，不含 FNAME/MTIME 头）",
+  "gzip_ratio": 13.437982005141388,
   "gzip_roundtrip_verified": true,
-  "gzip_tool": "未知",
+  "gzip_tool": "Apple gzip 487.0.1",
   "inputs": [
     {
-      "bytes": 37306,
-      "path": "/tmp/msr/all-versioned.jsonl",
+      "bytes": 41819,
+      "path": "/tmp/msr-v2/all-versioned.jsonl",
       "records": 37
     }
   ],
   "label": "真实向量语料（版本库内可复现：datasets/dpi/*.pcap + datasets/pcap/sample-session-tcp.pcap → cythsec-analyze）",
-  "raw_bytes": 37306,
-  "raw_bytes_per_record": 1008.2702702702703,
+  "raw_bytes": 41819,
+  "raw_bytes_per_record": 1130.2432432432433,
   "record_rate_per_sec": 5000000,
   "records": 37,
-  "tb_per_day_gzip": 34.29145945945945,
-  "tb_per_day_raw": 435.5727567567568
+  "tb_per_day_gzip": 36.3347027027027,
+  "tb_per_day_raw": 488.2650810810811
 }

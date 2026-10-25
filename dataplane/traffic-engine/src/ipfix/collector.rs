@@ -223,6 +223,8 @@ impl CollectedFlow {
             initiator: None,
             adopted_midstream: false,
             illegal_tcp_events: 0,
+            // 会话级 TCP 统计：IPFIX v1 模板里没这些 IE ⇒ None（“没采集到”），不是 0。
+            tcp_stats: None,
             first_seen_us: self.first_seen_ms.saturating_mul(1000),
             last_seen_us: self.last_seen_ms.saturating_mul(1000),
             packets: self.packets,
