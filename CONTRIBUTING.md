@@ -27,7 +27,7 @@ bash scripts/lint/lint-all.sh --help
 - cmake ≥ 3.20
 - go ≥ 1.22
 - rustc/cargo（稳定版）
-- node ≥ 18 + npm
+- Node.js ^22.12.0 或 ≥24 + npm；CI 精确版本由根 `.node-version` 指定
 
 脚本开头会做版本预检，不足时给出可读报错并非 0 退出。
 

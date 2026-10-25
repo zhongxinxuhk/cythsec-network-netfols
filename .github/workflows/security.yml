@@ -61,3 +61,18 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - name: 逐模块扫描，任一模块报错或发现可达漏洞均阻断
         run: bash scripts/security/scan-go-vulns.sh
+
+  npm-audit:
+    name: 前端完整依赖漏洞扫描（含开发依赖）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+      - name: 完整锁文件审计，任一严重级别或扫描错误均阻断
+        working-directory: web/console
+        run: npm audit --package-lock-only --audit-level=low
