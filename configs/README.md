@@ -55,3 +55,9 @@
 
 - 生成器：`tools/README.md`
 - 消费方：`dataplane/` `services/` `web/` `ml/` 各自 README
+
+## 流特征契约（CYS-TRF-028）
+
+`registry/features.json` 是 21 维流特征布局与定义的唯一真源。版本/维数/列顺序/单位/公式语义/小包阈值均在此登记。修改维数或含义必须升版；包记录的版本与特征版本独立。
+
+生成：`python3 tools/codegen/gen-features.py`；只读检查：追加 `--check`。生成物为 Rust `feature/schema_gen.rs` 与 Python `ml/training/features/schema_gen.py`，不得手改。生成需要 python3 与 rustfmt；Python 提取器只用标准库。公式实现保持独立，数值一致性由 `scripts/verify/check-features.sh` 验证，挂在 lint/test-all `--rust` 与 CI Rust job。

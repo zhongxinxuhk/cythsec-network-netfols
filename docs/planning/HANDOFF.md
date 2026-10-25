@@ -1,5 +1,7 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-10-25 当前增量**：从 `956febb` 核对开发进度并推进 `CYS-TRF-028`（单一特征 schema + Rust/Python 绑定 + 23 样本/483 维值 parity）。本批验收与分支状态以 [PROGRESS-20261025.md](PROGRESS-20261025.md) 为准；下方历史统计未全部刷新。
+
 > 状态点：`b9f850d` · 2026-10-22 —— 列式落盘（ClickHouse `Native`）字节实测收口（§2.17）
 > 上一检查点：`fb88e35`（采样量级还原）、`0282ef6`（IPFIX 采集器）、`4d62530`（DPI/重组批次）
 > 主待办表：`docs/planning/BACKLOG.md`（376 任务 / 11 里程碑）
@@ -1612,7 +1614,7 @@ tshark 是唯一能发现「一致地错」的手段。
 | ~~`evict_lru` 的 O(每分片容量)~~ | **已修**（见 §2.5 发现 2）：0.21µs@每片256 / 0.34µs@每片8192（需求 ≤500ns/次），容量 32× → 耗时 1.6~1.8× | 语义未变（精确 LRU），只剩一处**已文档化的可观察差异**：时间戳相同时旧实现按键序、新实现按"谁更晚被访问"（链表本身就是全序）。已在源码写明并用测试钉住 |
 | `CYS-TRF-012`/`013` | 超时驱动的状态迁移与真实丢包环境参数标定未做 | 当前只有流级超时回收；没有真实丢包样本，就不给默认值之外的结论 |
 | `CYS-TRF-010` | 多线程并发 id 分配未定义 | 分配器由 `SessionManager` 单线程持有。**2026-10-05 部分推进**（§2.8）：分片模式把 id 分配**上移到派发端**，worker 侧不需要并发分配器（id 由派发端按首次出现顺序给出，与 worker 数无关）；但**在线多队列**各自的分配器要不要全局唯一 id、还是每队列独立 id + 队列号前缀，仍未定 |
-| `CYS-TRF-028` | 特征定义仍是「Rust 代码里一份」 | 与训练侧对齐（单一来源 + 双端生成）未做，Python 侧一旦手抄就会各自漂移 |
+| `CYS-TRF-028` | **2026-10-25 已实现单一来源与双端对齐，等待全量验收收口（◐）** | 见 `PROGRESS-20261025.md`：特征版本/21 维布局生成，Python 独立提取，同一夹具逐维核验；模型训练与推理尚未实现 |
 | ~~`CYS-TRF-033`~~ | ~~与 `storage/clickhouse` 建表 DDL 未对齐~~ | **已对齐**（2026-10-21/22 起）：`flow_columns()` 是列名/类型/顺序的单一真源，DDL 由它生成且关口 A 要求逐字节可复现。**这一行原样停留在旧状态，本批按代码核实后更正**（同类 Doc rot 见本表末行提醒：状态要对着代码核实，不要凭印象） |
 | `CYS-TRF-035` | 无真实省网 pcap 上的批量验证 | 现有样本是确定性生成的合成流量，只覆盖已知边界 |
 | — | ~~`VERSION=9.9.9` 与 `Cargo.toml`/`package.json` 的 `0.1.0` 不一致~~ | **已修**（`64f4079` 定真源 `VERSION=0.1.0`，四端全部改为派生）。**本批补齐了"它不会再悄悄坏掉"这一步，而且挖出比"没人跑"更深的一层**：`scripts/release/check-version.sh` 此前**没有任何门禁调用它**（检查器存在但没人跑，等于没有；现已挂成 `lint-all.sh` 第 6 条），更糟的是**它自己从未入库** —— `.gitignore` 里不带前导斜杠的 `release/` 会匹配任意层级同名目录，把 `scripts/release/` 整个忽略了：`scripts/README.md` 与本文件都在引用它，`git status` 却看不见它，**全新克隆里根本没有这个文件**。已把规则改为 `/release/`（只忽略根目录打包输出）并让两份脚本入库；同类规则还吞掉了 `scripts/build/` 与 `services/telemetryd/internal/target/`（见 §7.7），一并修掉并加了 `[repo]` 门禁。挂门禁 + 加 `--self-test`（临时最小仓库树 + 注入 3 处不一致，要求分别判红并指出位置）+ `check-version-bump.sh`（真改真源重建四端）。四端已逐个**以产物级证据**复核：`cythsec-analyze --version` → `version=0.1.0`；`build/dataplane/packet-engine/hello_packet --version` → `version : 0.1.0`；`policyd -version` → `policyd 0.1.0 (commit …, go1.26.2 darwin/arm64)`；前端 `version.test.ts` 直接读根 `VERSION` 比对（经构建期 `define` 注入）。**踩到的坑**：`cmake-build-debug/` 是 IDE 的陈旧构建树（配置于 `VERSION=9.9.9` 时期），它的 `hello_packet --version` 仍打印 `9.9.9` —— 拿它验收会以为修复没生效，见 §7.6 |

@@ -16,6 +16,7 @@ usage() { cat <<'EOF'
     - cargo fmt --all -- --check（Rust）
     - gofmt -l（Go，services/ 下）
     - 属性字典生成物一致性（scripts/verify/check-attributes.sh）
+    - 特征 schema Rust/Python 生成物一致性（tools/codegen/gen-features.py --check）
     - 通道 ABI 双端契约一致性（scripts/verify/check-channel-abi.sh）
     - 版本单一真源一致性 + 检查器自证（scripts/release/check-version.sh [--self-test]）
     - 有没有源码被 .gitignore 静默忽略（scripts/verify/check-ignored-sources.sh）
@@ -76,6 +77,13 @@ if ! cargo fmt --all -- --check; then
   failed=$((failed+1))
 else
   echo "✓ [rust] 格式检查通过"
+fi
+
+# ---------- 特征布局单一来源 ----------
+echo "==> [features] Rust/Python 特征 schema 生成物一致性"
+if ! "${PYTHON:-python3}" tools/codegen/gen-features.py --check; then
+  echo "✗ [features] 特征生成物与真源不一致" >&2
+  failed=$((failed+1))
 fi
 
 # ---------- Go : gofmt ----------

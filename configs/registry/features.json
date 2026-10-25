@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "value_type": "f64",
+  "small_packet_max_len": 128,
+  "iat_policy": "adjacent_arrival_saturating_zero_all_samples",
+  "features": [
+    {
+      "index": 0,
+      "name": "packets",
+      "unit": "count",
+      "definition": "All observed packets, including zero payload."
+    },
+    {
+      "index": 1,
+      "name": "bytes",
+      "unit": "byte",
+      "definition": "Sum of declared L4 payload lengths; captured bytes may be shorter."
+    },
+    {
+      "index": 2,
+      "name": "fwd_packets",
+      "unit": "count",
+      "definition": "Packets on canonical endpoint side A, independent of initiator."
+    },
+    {
+      "index": 3,
+      "name": "fwd_bytes",
+      "unit": "byte",
+      "definition": "Declared L4 payload bytes on side A."
+    },
+    {
+      "index": 4,
+      "name": "rev_packets",
+      "unit": "count",
+      "definition": "Packets on canonical endpoint side B."
+    },
+    {
+      "index": 5,
+      "name": "rev_bytes",
+      "unit": "byte",
+      "definition": "Declared L4 payload bytes on side B."
+    },
+    {
+      "index": 6,
+      "name": "fwd_byte_ratio",
+      "unit": "ratio",
+      "definition": "fwd_bytes / bytes; zero when bytes is zero."
+    },
+    {
+      "index": 7,
+      "name": "duration_us",
+      "unit": "microsecond",
+      "definition": "max(0, maximum timestamp - first arrival timestamp); first arrival is not the minimum."
+    },
+    {
+      "index": 8,
+      "name": "byte_rate_bps",
+      "unit": "bit/second",
+      "definition": "8 * bytes / (duration_us / 1000000); zero at zero duration."
+    },
+    {
+      "index": 9,
+      "name": "packet_rate_pps",
+      "unit": "packet/second",
+      "definition": "packets / (duration_us / 1000000); zero at zero duration."
+    },
+    {
+      "index": 10,
+      "name": "mean_payload_len",
+      "unit": "byte",
+      "definition": "bytes / packets as float; zero for empty input."
+    },
+    {
+      "index": 11,
+      "name": "min_payload_len",
+      "unit": "byte",
+      "definition": "Minimum declared payload length, including zero; zero for empty input."
+    },
+    {
+      "index": 12,
+      "name": "max_payload_len",
+      "unit": "byte",
+      "definition": "Maximum declared payload length; zero for empty input."
+    },
+    {
+      "index": 13,
+      "name": "stddev_payload_len",
+      "unit": "byte",
+      "definition": "Population stddev over all declared lengths; zero below two packets."
+    },
+    {
+      "index": 14,
+      "name": "mean_iat_us",
+      "unit": "microsecond",
+      "definition": "Integer floor of mean over all adjacent arrival deltas, including overwritten ring samples."
+    },
+    {
+      "index": 15,
+      "name": "min_iat_us",
+      "unit": "microsecond",
+      "definition": "Minimum over all adjacent arrival deltas; zero without intervals."
+    },
+    {
+      "index": 16,
+      "name": "max_iat_us",
+      "unit": "microsecond",
+      "definition": "Maximum over all adjacent arrival deltas; zero without intervals."
+    },
+    {
+      "index": 17,
+      "name": "stddev_iat_us",
+      "unit": "microsecond",
+      "definition": "Population stddev over all adjacent arrival deltas; zero below two intervals."
+    },
+    {
+      "index": 18,
+      "name": "direction_switches",
+      "unit": "count",
+      "definition": "Count of changes in canonical side between adjacent arrivals."
+    },
+    {
+      "index": 19,
+      "name": "small_packet_ratio",
+      "unit": "ratio",
+      "definition": "Fraction of declared lengths <= small_packet_max_len (inclusive); zero for empty input."
+    },
+    {
+      "index": 20,
+      "name": "payload_entropy_bits",
+      "unit": "bit/byte",
+      "definition": "Shannon entropy of pooled captured payload bytes (not per-packet average); zero without captured bytes."
+    }
+  ]
+}

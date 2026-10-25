@@ -21,7 +21,7 @@ usage() {
               [--columnar] [--branch-policy] [--self-test] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
-  --rust         只跑 Rust 测试（cargo test --offline）
+  --rust         只跑 Rust 测试（cargo test --offline）+ Rust/Python 特征 parity 与反向注入
   --go           只跑 Go 测试（go test ./...）
   --node         只跑前端测试（npm test = vitest run）
   --parity       只跑通道 ABI 跨语言 parity（需同时能构建 C++ 与 Rust）
@@ -156,7 +156,12 @@ test_rust() {
     echo "✗ [rust] 测试失败" >&2
     return 1
   fi
-  echo "✓ [rust] 测试通过"
+  echo "==> [features] Rust/Python 特征契约与逐维向量一致性（含反向注入）"
+  if ! bash scripts/verify/check-features.sh; then
+    echo "✗ [features] 特征契约或双端数值不一致" >&2
+    return 1
+  fi
+  echo "✓ [rust] 测试通过（含 CYS-TRF-028 特征 parity）"
 }
 
 test_go() {

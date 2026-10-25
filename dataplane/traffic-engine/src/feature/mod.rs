@@ -24,77 +24,15 @@
 use crate::flow::stats::{FlowStats, IatRing};
 use crate::tcp::Side;
 
-/// 特征向量布局版本。**改维度或改含义必须升版**。
-pub const FEATURE_SCHEMA_VERSION: u32 = 1;
-
-/// 特征维度。
-pub const FEATURE_COUNT: usize = 21;
+// 布局、版本与阈值由唯一真源 configs/registry/features.json 生成。
+mod schema_gen;
+pub use schema_gen::{
+    idx, FEATURE_COUNT, FEATURE_NAMES, FEATURE_SCHEMA_VERSION, IDX_LAYOUT_CHECK,
+    SMALL_PACKET_MAX_LEN,
+};
 
 /// 载荷字节直方图的桶数（一个字节的全部取值）。
 pub const ENTROPY_BINS: usize = 256;
-
-/// 小包阈值：载荷长度 ≤ 该值计为小包。
-///
-/// 128 这个取值来自实测分布谷底（TCP ACK 与纯查询类请求集中在 ≤ 64，
-/// 数据段集中在 ≥ 512），而不是随手取整。它用于刻画"扫描/心跳"与"数据传输"的差异。
-pub const SMALL_PACKET_MAX_LEN: u32 = 128;
-
-/// 特征在数组中的下标。**不要在别处写裸数字**：下标写错时维度数目不变，
-/// 类型检查也过得去，只会把两个特征悄悄对调。
-pub mod idx {
-    pub const PACKETS: usize = 0;
-    pub const BYTES: usize = 1;
-    pub const FWD_PACKETS: usize = 2;
-    pub const FWD_BYTES: usize = 3;
-    pub const REV_PACKETS: usize = 4;
-    pub const REV_BYTES: usize = 5;
-    pub const FWD_BYTE_RATIO: usize = 6;
-    pub const DURATION_US: usize = 7;
-    pub const BYTE_RATE_BPS: usize = 8;
-    pub const PACKET_RATE_PPS: usize = 9;
-    pub const MEAN_PAYLOAD_LEN: usize = 10;
-    pub const MIN_PAYLOAD_LEN: usize = 11;
-    pub const MAX_PAYLOAD_LEN: usize = 12;
-    pub const STDDEV_PAYLOAD_LEN: usize = 13;
-    pub const MEAN_IAT_US: usize = 14;
-    pub const MIN_IAT_US: usize = 15;
-    pub const MAX_IAT_US: usize = 16;
-    pub const STDDEV_IAT_US: usize = 17;
-    pub const DIRECTION_SWITCHES: usize = 18;
-    pub const SMALL_PACKET_RATIO: usize = 19;
-    pub const PAYLOAD_ENTROPY_BITS: usize = 20;
-}
-
-/// 特征名，顺序与 `idx` 一一对应。
-pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
-    "packets",
-    "bytes",
-    "fwd_packets",
-    "fwd_bytes",
-    "rev_packets",
-    "rev_bytes",
-    "fwd_byte_ratio",
-    "duration_us",
-    "byte_rate_bps",
-    "packet_rate_pps",
-    "mean_payload_len",
-    "min_payload_len",
-    "max_payload_len",
-    "stddev_payload_len",
-    "mean_iat_us",
-    "min_iat_us",
-    "max_iat_us",
-    "stddev_iat_us",
-    "direction_switches",
-    "small_packet_ratio",
-    "payload_entropy_bits",
-];
-
-/// 编译期自检：最后一个下标 + 1 必须等于维度数。
-///
-/// 这类错只有人肉数数才能发现，交给类型系统最省事：加了特征但忘了同步
-/// `FEATURE_COUNT` 时，这里直接编译失败。
-pub const IDX_LAYOUT_CHECK: [(); FEATURE_COUNT] = [(); idx::PAYLOAD_ENTROPY_BITS + 1];
 
 /// 一个包的观测输入。
 #[derive(Debug, Clone, Copy)]
