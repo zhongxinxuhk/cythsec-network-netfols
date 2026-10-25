@@ -1,5 +1,7 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-10-25 MLT-001**：从 `b24bc80` 开立 `feat/cys-mlt-001-python-project`，补 Python 工程/锁文件/可安装命令与仓库外 wheel 验收；默认门禁与独立 Python CI 接线，真实抓包仍 SKIPPED、未合 master。任务登记 376（305 未开始 / 23 进行中 / 48 完成）。见 [MLT001-20261025.md](MLT001-20261025.md)。
+
 > **2026-10-25 MLT-006**：从 `26c139d` 开立 `feat/cys-mlt-006-feature-dataset`，实现两种 JSONL 输入到训练 CSV/清单、显式标签、完整性校验；18 项测试与默认门禁接线通过，真实抓包仍 SKIPPED，未合 master。当前任务登记 376（306 未开始 / 22 进行中 / 48 完成）。见 [MLT006-20261025.md](MLT006-20261025.md)。
 
 > **2026-10-25 续批**：从 `0aeb5ff` 开立 `fix/iat-square-sum-overflow`，修复 IAT 二阶矩溢出与空摘要重复计数；统计 debug/release 均 20/20，特征核验 26 样本/546 值。lint/test 实际退出均 0，但真实抓包仍 SKIPPED，未合 master。见 [IAT-OVERFLOW-20261025.md](IAT-OVERFLOW-20261025.md)。

@@ -2,7 +2,7 @@
 
 当前契约是 `configs/registry/features.json` 的 **v1 / 21 维**。本模块只从包观测提取特征，或从已有 FlowRecord 投影特征，产出 CSV 与可校验清单。没有数据集切分、归一化、标签推断、模型训练或性能评估。
 
-依赖：Python 3.9+ 标准库（含 sqlite3），从仓库根目录运行，无需 pip 安装。Python 工程与依赖锁定仍属 CYS-MLT-001。
+当前工程环境由 CYS-MLT-001 钉扎为 Python 3.11.15 / uv 0.12.1；先执行 `uv sync --project ml/training --locked`，再用 `uv run --project ml/training --locked cythsec-features` 调用。安装后也可导入 `cythsec_training.features`。原有从仓库根运行的源码入口保留，运行时仍只用标准库（含 sqlite3）。安装、锁定与隔离验证见 `../README.md`。
 
 ## 包观测输入
 

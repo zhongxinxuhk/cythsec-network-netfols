@@ -43,7 +43,8 @@ usage() {
   --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
   --help         显示本帮助
 
-不带参数时跑全部；parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
+不带参数时跑全部，含 Python 工程锁定/隔离安装验收（需 uv，先 uv sync --project ml/training --locked）；
+可单跑 bash scripts/verify/check-training-project.sh。parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
 
 --bench 刻意**不在"全部"里**：它的回归下限标定在特定机器上（Apple M1 Pro/macOS 1M 条规模），
 同机连跑两次都能差 20~30%，换机器/换核数/开省电模式都会变。放进默认集合只会变成
@@ -85,7 +86,7 @@ gen_datasets() {
 # 而该机当时确实没装 cmake，且**本次运行根本不需要它**。
 required_tools() {
   if [[ "${ALL}" == "1" ]]; then
-    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark git
+    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark git uv
     return 0
   fi
   # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）。
@@ -305,7 +306,7 @@ STUB
   # 这个假阳性 —— 断言写松了，等于没验）。
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
-     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm|tshark) '; then
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm|tshark|uv) '; then
     echo "  ✓ 预检映射：只选 --rust → 只要 cargo + ${PYTHON:-python3}（不要求 cmake/go/node）"
   else
     echo "  ✗ 预检映射：只选 --rust 却要求了「${got}」" >&2; fails=$((fails+1))
@@ -392,6 +393,17 @@ STUB
   else
     echo "  ✗ 预检映射：只选 --branch-policy 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
+
+  # CYS-MLT-001: the default suite requires uv; selected legacy groups do not.
+  checks=$((checks+1))
+  ALL=1
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE ' uv '; then
+    echo "  ✓ 预检映射：默认全集要求 uv（Python 工程门禁）"
+  else
+    echo "  ✗ 默认全集漏查 uv" >&2; fails=$((fails+1))
+  fi
+  ALL=0
 
   # 端到端反向注入：在**只有 cargo/python3 替身**的 PATH 下
   #   (a) rust-only 必须通过（缺 cmake 不该挡住它）—— 这条就是本次修复要守的行为；
@@ -840,6 +852,11 @@ fi
 failed=0
 [[ $BUILD_CPP -eq 1 ]]   && { test_cpp   || failed=$((failed+1)); }
 [[ $BUILD_RUST -eq 1 ]]  && { test_rust  || failed=$((failed+1)); }
+# CYS-MLT-001: isolated packaging gate runs in the default suite; standalone entry below.
+if [[ ${ALL} -eq 1 ]]; then
+  echo "==> [training-project] 锁定环境与隔离安装包验收（CYS-MLT-001）"
+  bash scripts/verify/check-training-project.sh || failed=$((failed+1))
+fi
 [[ $BUILD_GO -eq 1 ]]    && { test_go    || failed=$((failed+1)); }
 [[ $BUILD_NODE -eq 1 ]]  && { test_selftest || failed=$((failed+1)); }
 [[ $BUILD_NODE -eq 1 ]]  && { test_node  || failed=$((failed+1)); }

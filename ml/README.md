@@ -15,7 +15,9 @@
 - `features/extractor.py`：标准库独立 Python 提取器，对齐 Rust 的同一 21 维特征契约。
 - `features/dataset.py`：从包观测 JSONL 提取，或从 FlowRecord v2 投影，产出严格定序的 CSV 与来源/版本/完整性清单；外部标签显式连接，无标签时明确标记，支持发布前/读取前校验。
 - 输入契约、命令、示例和限制见 [features/README.md](training/features/README.md)。
-- `pyproject.toml`、依赖锁定、统一多格式加载器、切分、预处理、训练与评估尚未实现，分别按 MLT-001/003/004/005/008/010 推进。
+- `training/pyproject.toml` / `.python-version` / `uv.lock`：Python 3.11.15 与 uv 0.12.1 钉扎，可安装包 `cythsec-training` 与命令 `cythsec-features`。构建工具有精确版本与锁文件摘要，wheel 无第三方运行时依赖；安装说明见 [training/README.md](training/README.md)。
+- Python 工程门禁：`bash scripts/verify/check-training-project.sh`，默认全量测试和独立 CI Python job 也调用；远端 CI 尚未触发。
+- 统一多格式加载器、切分、预处理、训练与评估尚未实现，分别按 MLT-003/004/005/008/010 推进。
 
 验收：`bash scripts/test/test-all.sh --rust`（含既有特征 parity 与训练产物测试）；单独运行：`python3 -m unittest discover -s tests/ml -p 'test_feature_dataset.py' -v`。
 

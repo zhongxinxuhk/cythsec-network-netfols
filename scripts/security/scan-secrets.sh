@@ -25,6 +25,10 @@ if [ ! -d "$REPO" ]; then
   echo "ERROR: REPO_ROOT 不存在: $REPO" >&2
   exit 2
 fi
+if ! REPO="$(cd "$REPO" && pwd)"; then
+  echo "ERROR: cannot normalize REPO_ROOT" >&2
+  exit 2
+fi
 
 # 扫描排除项：构建产物、依赖、VCS、测试夹具、示例配置、文档。
 EXCLUDES=(
@@ -79,6 +83,11 @@ scan_rule() {
     printf '%s\n' "$matches" | while IFS= read -r m; do
       # 注意：bash 3.2 在单条 local 内多赋值会引用旧值，必须分行赋值。
       f="${m%%:*}"
+      # CYS-MLT-001: this exact project-local environment contains installed
+      # dependencies, not repository sources. Do not exempt other Python paths.
+      case "$f" in
+        "${REPO}/ml/training/.venv/"*) continue ;;
+      esac
       rest="${m#*:}"
       ln="${rest%%:*}"
       # 仅当能解析出 文件:行号 时才记录，丢弃异常行。

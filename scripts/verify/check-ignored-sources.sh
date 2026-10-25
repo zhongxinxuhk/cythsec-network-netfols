@@ -45,6 +45,8 @@ ALLOW='(^|/)(\.mimosa|\.idea|\.vscode|node_modules)/'
 ALLOW="${ALLOW}"'|^build/|^target/|^cmake-build-|^out/|^dist/|^release/'
 ALLOW="${ALLOW}"'|^datasets/|^secrets/|^logs/|^web/console/dist/|^web/console/\.vite/'
 ALLOW="${ALLOW}"'|^ml/.*/(runs|wandb)/'
+# CYS-MLT-001: exact training venv, setuptools staging and egg metadata only.
+ALLOW="${ALLOW}"'|^ml/training/(\.venv/|build/|[^/]+\.egg-info/)'
 
 hits="$(git ls-files --others --ignored --exclude-standard \
         | grep -E "${EXT}" \

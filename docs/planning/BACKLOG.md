@@ -486,7 +486,7 @@
 
 | 状态 | ID | 任务 | 交付物与实现要点 | 验收标准 | 依赖 | P/规模 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ⬜ | CYS-MLT-001 | Python 工程化 | `ml/training/pyproject.toml`（PEP 621）、Python 版本钉扎、`uv` 或 `poetry` 锁文件 | `uv sync` 后环境可用 | — | P0/M |
+| ◐ | CYS-MLT-001 | Python 工程化 | **2026-10-25 实现**：PEP 621 项目、Python 3.11.15 / uv 0.12.1 / setuptools 84.2.1 钉扎、含构建工具哈希的 uv.lock、可安装 `cythsec-features`；Python 版本副本挂入根 VERSION 门禁。详见 `MLT001-20261025.md`。 | `uv sync --locked` 实测退出 0；sdist→wheel→仓库外新环境安装、隔离导入与 CLI 构建/校验通过；6 元数据 + 1 真实过期锁注入、产物白名单反向验证通过；挂默认全集及独立 CI job（远端未跑）。**lint/test 实际均退出 0，但真实抓包仍 SKIPPED，保持 ◐、不合 master**。 | — | P0/M |
 | ⬜ | CYS-MLT-002 | 代码质量 | `ruff` + `black` + `mypy` 配置并纳入 CI | 三工具零告警 | CYS-MLT-001 | P1/S |
 | ⬜ | CYS-MLT-003 | 数据加载框架 | `datasets/` 统一加载器：pcap/CSV/Parquet/FlowRecord JSONL | 各格式均能读入统一 DataFrame | CYS-MLT-001 | P0/M |
 | ⬜ | CYS-MLT-004 | 数据切分 | 分层切分（train/val/test）+ 时间切分（防泄漏） | 切分脚本可复现（固定 seed） | CYS-MLT-003 | P0/S |
@@ -917,8 +917,8 @@ CYS-TRF-043（属性字典 owner/弃用周期）与 CYS-TIP-011（签名注册�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 306 |
-| 进行中 | 22 |
+| 未开始 | 305 |
+| 进行中 | 23 |
 | 已完成 | 48 |
 
 ### 6.6 里程碑完成度
@@ -942,6 +942,8 @@ CYS-TRF-043（属性字典 owner/弃用周期）与 CYS-TIP-011（签名注册�
 ---
 
 ## 7. 变更记录
+
+- 2026-10-25（MLT-001）：Python 项目、精确工具链/构建锁、可安装包和命令落地；隔离分发包验收与默认/CI 接线就绪，根版本门禁新增 Python 副本与注入验证。状态 ◐，当前 305 未开始 / 23 进行中 / 48 完成；详见 `MLT001-20261025.md`。
 
 - 2026-10-25（MLT-006）：训练特征产物实现与 18 项验收落地，支持两种 JSONL 输入、定序矩阵、显式标签和可校验清单；25 非空样本/525 值独立对齐，实际 FlowRecord 5 行导出保真。任务置 ◐，全量退出 0 仍含真实抓包 SKIPPED，详见 `MLT006-20261025.md`。
 

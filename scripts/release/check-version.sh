@@ -8,7 +8,8 @@
 #   A. 必需副本（语言/工具链强制要求存在字面量，无法派生）
 #      - 根 Cargo.toml 的 [workspace.package] version   （Cargo 不支持从文件读版本）
 #      - web/console/package.json 的 version            （npm 不支持从文件读版本）
-#      这两处**必须等于** VERSION。
+#      - ml/training/pyproject.toml 的 project.version （可独立构建的包元数据）
+#      这三处**必须等于** VERSION。
 #
 #   B. 派生点（应当从 VERSION 派生，不得存在字面量）
 #      - dataplane/packet-engine/CMakeLists.txt 的 project(... VERSION ...)
@@ -34,8 +35,8 @@ case "${1:-}" in
     cat <<'EOF'
 用法: check-version.sh [--self-test]
 
-  （无参数）    校验根 VERSION 与四处副本/派生点一致
-  --self-test   自证：在临时目录里搭一份最小仓库树，注入三处不一致，
+  （无参数）    校验根 VERSION 与各语言副本/派生点一致
+  --self-test   自证：在临时目录里搭一份最小仓库树，注入五处不一致，
                 要求检查器分别判红**并指出位置** —— 一个永远不会失败的
                 检查器和没有检查器是一回事，绿色的「通过」与绿色的
                 「没跑」必须能区分开
@@ -54,12 +55,13 @@ cd "$ROOT"
 st_ok()  { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 st_bad() { printf '  \033[31m✗\033[0m %s\n' "$1" >&2; }
 
-# 搭一份最小仓库树：只放检查器真正读的 8 个文件，内容恰好满足全部检查。
+# 搭一份最小仓库树：只放检查器真正读的 9 个文件，内容恰好满足全部检查。
 build_fixture() {
   local t="$1"
   mkdir -p "${t}/web/console" "${t}/dataplane/packet-engine" \
-           "${t}/dataplane/traffic-engine" "${t}/scripts/build"
+           "${t}/dataplane/traffic-engine" "${t}/scripts/build" "${t}/ml/training"
   printf '0.1.0\n' > "${t}/VERSION"
+  printf '[project]\nversion = "0.1.0"\n' > "${t}/ml/training/pyproject.toml"
   printf '[workspace.package]\nversion = "0.1.0"\n' > "${t}/Cargo.toml"
   printf '{\n  "name": "console",\n  "version": "0.1.0"\n}\n' > "${t}/web/console/package.json"
   # 派生自 ${CYTHSEC_VERSION}：既无字面量，又确实引用了真源
@@ -118,6 +120,8 @@ run_self_test() {
     failures=$((failures+1))
   fi
 
+  build_fixture "${ST_TMP}" # Restore S3 first; each injection must fail independently.
+
   # S4 注入实现被删掉（派生点既无字面量也无注入）→ 必须判红，否则「静默失效」无人发现
   : > "${ST_TMP}/dataplane/traffic-engine/build.rs"
   rc=0
@@ -130,8 +134,28 @@ run_self_test() {
     failures=$((failures+1))
   fi
 
+  # S5/S6: Python metadata drift and missing metadata must both fail explicitly.
+  build_fixture "${ST_TMP}"
+  printf '[project]\nversion = "9.9.9"\n' > "${ST_TMP}/ml/training/pyproject.toml"
+  rc=0
+  out="$(CYTHSEC_VERSION_ROOT="${ST_TMP}" bash "${SELF}" 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q 'ml/training/pyproject.toml'; then
+    st_ok "S5 Python 包版本漂移 → 判红且指出位置"
+  else
+    st_bad "S5 Python 包版本漂移未被检出"; failures=$((failures+1))
+  fi
+  build_fixture "${ST_TMP}"
+  rm "${ST_TMP}/ml/training/pyproject.toml"
+  rc=0
+  out="$(CYTHSEC_VERSION_ROOT="${ST_TMP}" bash "${SELF}" 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q 'ml/training/pyproject.toml'; then
+    st_ok "S6 Python 包元数据缺失 → 判红且指出位置"
+  else
+    st_bad "S6 Python 包元数据缺失未被检出"; failures=$((failures+1))
+  fi
+
   if [[ ${failures} -eq 0 ]]; then
-    echo "自证通过：4 个场景（1 通过 + 3 注入判红）全部符合预期"
+    echo "自证通过：6 个场景（1 通过 + 5 注入判红）全部符合预期"
     return 0
   fi
   echo "自证失败：${failures} 个场景不符预期 —— 检查器不可信" >&2
@@ -181,6 +205,17 @@ check_copy() {
 
 check_copy "Cargo.toml [workspace.package].version" "$(cargo_ver)"
 check_copy "web/console/package.json version" "$(node_ver)"
+
+python_ver() {
+  if [[ ! -f ml/training/pyproject.toml ]]; then
+    printf 'missing'
+    return
+  fi
+  awk '/^\[project\]/{project=1; next} /^\[/{project=0}
+       project && /^version[[:space:]]*=/{print; exit}' ml/training/pyproject.toml \
+    | sed -E 's/.*"([^"]+)".*/\1/'
+}
+check_copy "ml/training/pyproject.toml project.version" "$(python_ver)"
 
 # ---------- B. 派生点不得存在版本字面量 ----------
 echo
@@ -235,4 +270,4 @@ if [[ $fail -ne 0 ]]; then
   echo "版本校验失败：请同步上列位置到 ${VER}，或消除 B 类位置的版本字面量。" >&2
   exit 1
 fi
-echo "版本单一真源校验通过：真源 ${VER}，四端（C++ / Rust / Go / 前端）均已派生或同步。"
+echo "版本单一真源校验通过：真源 ${VER}，各端（C++ / Rust / Go / 前端 / Python）均已派生或同步。"

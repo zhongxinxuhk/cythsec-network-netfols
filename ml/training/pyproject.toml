@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cythsec-training"
+# Required metadata copy; scripts/release/check-version.sh checks root VERSION.
+version = "0.1.0"
+description = "CythSec training feature contracts and reproducible dataset tooling"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = "LicenseRef-Proprietary"
+dependencies = []
+
+[dependency-groups]
+build = ["setuptools==84.2.1"]
+
+[project.scripts]
+cythsec-features = "cythsec_training.features.dataset:main"
+
+[tool.setuptools]
+# Map the existing sources without moving the generated binding paths.
+packages = ["cythsec_training", "cythsec_training.features"]
+package-dir = {cythsec_training = "."}
+include-package-data = false
+
+[tool.uv]
+required-version = "==0.12.1"
+default-groups = ["build"]

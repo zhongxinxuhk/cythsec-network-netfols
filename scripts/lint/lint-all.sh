@@ -138,7 +138,7 @@ if ! bash scripts/release/check-version.sh; then
   echo "✗ [version] 版本副本/派生点与根 VERSION 不一致（见上方具体位置）" >&2
   failed=$((failed+1))
 else
-  echo "✓ [version] 版本单一真源一致（四端已派生或同步）"
+  echo "✓ [version] 版本单一真源一致（各端已派生或同步）"
 fi
 if ! bash scripts/release/check-version.sh --self-test >/dev/null; then
   echo "✗ [version] 检查器自证失败：它对注入的不一致视而不见（见上方输出）" >&2

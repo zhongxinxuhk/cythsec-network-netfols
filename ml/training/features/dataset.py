@@ -1,6 +1,7 @@
 """CYS-MLT-006: reproducible training feature bundles (standard library only).
 
-Run from repository root: python3 -m ml.training.features.dataset --help.
+Installed CLI: cythsec-features --help. Repository entry: python3 -m
+ml.training.features.dataset --help (from the repository root).
 A bundle is complete only after manifest.json is published and validate_bundle
 passes. Labels are explicit annotations, never inferred from DPI or risk fields.
 """
