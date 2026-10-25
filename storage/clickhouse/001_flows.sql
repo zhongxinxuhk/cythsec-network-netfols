@@ -3,7 +3,7 @@
 -- 重新生成：cargo run --offline --quiet --bin cythsec-dump-ddl > storage/clickhouse/001_flows.sql
 -- 一致性关口：bash scripts/verify/check-columnar.sh
 --   （它同时把本文件交给真实 ClickHouse 执行，并核对生成物与真源逐字节相同）
--- 列契约版本：1（改列名/类型/顺序必须抬它）
+-- 列契约版本：2（改列名/类型/顺序必须抬它）
 
 CREATE TABLE IF NOT EXISTS flows
 (
@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS flows
     tcp_initiator LowCardinality(Nullable(String)) CODEC(ZSTD(1)) COMMENT '发起方 fwd|rev；没见过 SYN 为 NULL（中途接入不猜）',
     adopted_midstream UInt8 CODEC(Delta(1), ZSTD(1)) COMMENT '是否中途接入（1/0；列式不用 Bool 是为了少一种类型）',
     illegal_tcp_events UInt64 CODEC(Delta(8), ZSTD(1)) COMMENT '非法 TCP 迁移次数（被拒绝的证据，不是被丢弃的包）',
+    tcp_seq_judged Nullable(UInt64) CODEC(Delta(8), ZSTD(1)) COMMENT '参与重传/乱序判定的段数（样本量）；0 表示本会话无判定输入，非 TCP 为 NULL',
+    tcp_retransmissions Nullable(UInt64) CODEC(Delta(8), ZSTD(1)) COMMENT '重传段数（口径与 Wireshark retransmission 在同一条 pcap 上逐模式对齐）；无判定输入为 NULL',
+    tcp_out_of_order Nullable(UInt64) CODEC(Delta(8), ZSTD(1)) COMMENT '乱序段数（含部分重叠与补洞段）；缺段不计此项而是 lost_segment 口径；无判定输入为 NULL',
+    tcp_handshake_rtt_us Nullable(UInt64) CODEC(Delta(8), ZSTD(1)) COMMENT '握手 RTT（SYN → 对侧 SYN/ACK，微秒）；与 tshark iRTT 口径不同（后者量到第三次 ACK）；未见到完整握手为 NULL',
+    tcp_uplink_bytes Nullable(UInt64) CODEC(Delta(8), ZSTD(1)) COMMENT '发起方方向字节（IP 载荷长，含四层头）；中途接入发起方未知为 NULL，不拿字典序兜底',
+    tcp_downlink_bytes Nullable(UInt64) CODEC(Delta(8), ZSTD(1)) COMMENT '应答方方向字节；与 uplink 合计等于 bytes；上下行比由查询侧相除（不存比例：0 分母另需表达）',
     first_seen_us UInt64 CODEC(Delta(8), ZSTD(1)) COMMENT '首包时间（epoch 微秒）',
     last_seen_us UInt64 CODEC(Delta(8), ZSTD(1)) COMMENT '末包时间（epoch 微秒）',
     duration_us UInt64 CODEC(Delta(8), ZSTD(1)) COMMENT '时长（微秒；派生自末减首，乱序到达时钳到 0）',

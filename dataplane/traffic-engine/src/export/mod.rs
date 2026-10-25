@@ -370,13 +370,14 @@ mod tests {
 
     fn rec_v4() -> FlowRecord {
         FlowRecord {
-            schema_version: 1,
+            schema_version: crate::record::RECORD_SCHEMA_VERSION,
             session_id: 7,
             key: crate::flow::FlowKey::new_ipv4([192, 0, 2, 1], 12345, [198, 51, 100, 7], 443, 6),
             tcp_state: None,
             initiator: None,
             adopted_midstream: false,
             illegal_tcp_events: 0,
+            tcp_stats: None,
             first_seen_us: 1_000_000_000_000_000,
             last_seen_us: 1_000_000_001_000_000,
             packets: 10,

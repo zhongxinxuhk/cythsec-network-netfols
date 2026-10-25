@@ -20,7 +20,8 @@
 #      表现必须是**判红**，不是"这一列静静不比对"。
 #   B. **独立解码 + 逐格比对**：`scripts/verify/check-columnar.py` 按格式规范
 #      独立实现（不 import 仓库常量），把真实向量产物解成格子，与同源 JSONL
-#      逐格对照 50 列 —— 含 NULL 必须对 NULL（`risk_score` 未评分绝不能被读成 0.0）、
+#      逐格对照 56 列（记录契约 v2；v1 时 50 列）—— 含 NULL 必须对 NULL（`risk_score` 未评分
+#      绝不能被读成 0.0，`tcp_*` 未观测绝不能被读成 0）、
 #      IPv4 必须按 `::ffff:a.b.c.d` 落在 IPv6 列里。
 #   C. **反向故障注入必须全部被判红**：改 null 掩码 / 改值字节 / 改类型名 /
 #      改行数 varint / 截断 / 交换列名 / 改字符串长度。7 种里任何一种"没被检出"
@@ -30,7 +31,7 @@
 #         产物后再 `SELECT <列契约顺序> FORMAT Native`，与我们的文件 `cmp`。
 #         这证明字节布局与参考实现**逐字节相同**，而不是"差不多能读"。
 #      D2 真实 DDL 落地：执行仓库里那份 `001_flows.sql`（MergeTree + CODEC + ALIAS），
-#         `INSERT … FROM INFILE … FORMAT Native`，再把 50 列读回 TSV 与 JSONL 逐格对照。
+#         `INSERT … FROM INFILE … FORMAT Native`，再把 56 列读回 TSV 与 JSONL 逐格对照。
 #         IPv6 两列走 DDL 的 `src_ip_text/dst_ip_text` ALIAS 反解 —— 顺带证明
 #         "地址只存一份二进制"的取舍在查询侧仍然可用。
 #

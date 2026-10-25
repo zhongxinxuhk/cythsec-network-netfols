@@ -1,36 +1,36 @@
 {
   "clickhouse_default_codec": {
-    "column_data_bpr": 141.49,
-    "column_data_bytes": 5235,
+    "column_data_bpr": 150.41,
+    "column_data_bytes": 5565,
     "counted_extensions_note": "列数据=*.bin；其余计入 index_meta（含 mark/index/统计）",
-    "index_meta_bytes": 20124,
-    "part_total_bpr": 685.38,
-    "part_total_bytes": 25359,
+    "index_meta_bytes": 21785,
+    "part_total_bpr": 739.19,
+    "part_total_bytes": 27350,
     "parts": 1
   },
   "clickhouse_repo_ddl": {
-    "column_data_bpr": 139.16,
-    "column_data_bytes": 5149,
+    "column_data_bpr": 159.41,
+    "column_data_bytes": 5898,
     "counted_extensions_note": "列数据=*.bin；其余计入 index_meta（含 mark/index/统计）",
-    "index_meta_bytes": 20296,
-    "part_total_bpr": 687.7,
-    "part_total_bytes": 25445,
+    "index_meta_bytes": 21943,
+    "part_total_bpr": 752.46,
+    "part_total_bytes": 27841,
     "parts": 1
   },
   "compression_note": "gzip 档只是可移植对照；ClickHouse 不这么压",
-  "jsonl_gzip_bpr": 80.24,
-  "jsonl_raw_bpr": 1008.27,
+  "jsonl_gzip_bpr": 84.49,
+  "jsonl_raw_bpr": 1130.24,
   "label": "真实向量语料（版本库内可复现：datasets/pcap/sample-session-tcp.pcap + datasets/dpi/*.pcap）",
-  "native_bytes": 19038,
-  "native_gzip_bpr": 78.62,
-  "native_raw_bpr": 514.54,
+  "native_bytes": 21880,
+  "native_gzip_bpr": 84.05,
+  "native_raw_bpr": 591.35,
   "provenance": {
     "generator": "cythsec-analyze --native（与 JSONL 同源同序）",
     "pcaps": [
       "datasets/pcap/sample-session-tcp.pcap",
-      "datasets/dpi/tls-vectors.pcap",
       "datasets/dpi/dns-vectors.pcap",
-      "datasets/dpi/http-vectors.pcap"
+      "datasets/dpi/http-vectors.pcap",
+      "datasets/dpi/tls-vectors.pcap"
     ],
     "records": 37,
     "regenerate": "见 docs/planning/measurements/README.md 的「列式实测」一节",

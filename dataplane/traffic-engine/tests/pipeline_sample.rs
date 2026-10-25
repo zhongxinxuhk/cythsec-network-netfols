@@ -23,6 +23,15 @@ fn analyze(opts: &AnalyzeOptions) -> (Vec<FlowRecord>, AnalyzeStats) {
     analyze_pcap(SAMPLE, opts).expect("样本 pcap 必须能被完整分析")
 }
 
+/// 行首必须是 `{"schema_version":<真源常量>,`。
+///
+/// 故意**不写数字**：写死 `1` 时抬版本会让这条断言假红，而假红的常见处理是把断言
+/// 改成新数字 —— 那就变成了「实现给自己打分」。这里只能被「行里带的版本 ≠ 契约」打破。
+fn line_prefix_matches_version(r: &FlowRecord) -> bool {
+    r.to_json_line()
+        .starts_with(&format!("{{\"schema_version\":{},", r.schema_version))
+}
+
 /// 按**正向**端口对取记录（正向 = 规范端点序里较小的一端，见 FlowKey::canonical）。
 fn rec<'a>(records: &'a [FlowRecord], sport: u16, dport: u16) -> &'a FlowRecord {
     records
@@ -156,6 +165,79 @@ fn session_sample_matches_the_handwritten_expectations() {
         "ICMP 头长度随类型变化，本解码器不展开，故载荷起点未知 —— 这是「没看」，不是「不认识」"
     );
 
+    // ---- 会话级 TCP 统计（`CYS-TRF-015`，记录 v2）----
+    // 下面每个数都是按 `generate-samples.py` 的构造手算的（段序号 + 时间戳），
+    // 不是把实现输出抄回来。
+    let ts = |r: &FlowRecord| r.tcp_stats.expect("TCP 会话必须有 tcp_stats");
+    // S1：完整握手 + 双向数据 + 四次挥手。A 侧进序号空间的段 = SYN(1)+120+FIN(1)，
+    // B 侧 = SYN/ACK(1)+500+FIN(1) ⇒ 各 3 段；三个纯 ACK 不占序号空间。
+    let s1t = ts(s1);
+    assert_eq!(s1t.seq_judged, 6, "A 侧 3 段 + B 侧 3 段");
+    assert_eq!(
+        s1t.retransmissions,
+        Some(0),
+        "全部按序：必须是 Some(0) 不是 None"
+    );
+    assert_eq!(s1t.out_of_order, Some(0));
+    assert_eq!(
+        s1t.handshake_rtt_us,
+        Some(1_000),
+        "SYN@t=1ms → SYN/ACK@t=2ms（与特征里的 IAT 同一份时间戳）"
+    );
+    assert_eq!(s1t.uplink_bytes, Some(5 * 20 + 120), "发起方 5 包");
+    assert_eq!(s1t.downlink_bytes, Some(4 * 20 + 500), "应答方 4 包");
+    assert_eq!(
+        s1t.uplink_bytes.unwrap() + s1t.downlink_bytes.unwrap(),
+        s1.bytes,
+        "上下行合计必须等于 bytes（两条路径不得各自记账）"
+    );
+
+    // S2：SYN → RST/ACK。只有 SYN 占序号空间（RST 的载荷 0 且非 SYN/FIN）。
+    let s2t = ts(s2);
+    assert_eq!(s2t.seq_judged, 1, "只有 SYN 那一格进得了轨迹");
+    assert_eq!(s2t.retransmissions, Some(0));
+    assert_eq!(s2t.out_of_order, Some(0));
+    assert_eq!(
+        s2t.handshake_rtt_us, None,
+        "没有 SYN/ACK ⇒ RTT 是 null，不是 0"
+    );
+    assert_eq!(s2t.uplink_bytes, Some(20), "发起方是 B 侧（SYN 那包）");
+    assert_eq!(s2t.downlink_bytes, Some(20));
+
+    // S3：中途接入 ⇒ 没看到 SYN ⇒ 上下行必须是 null；但重传/乱序仍然可判。
+    let s3t = ts(s3);
+    assert_eq!(s3t.seq_judged, 2, "每侧首段只建立基准，不判定");
+    assert_eq!(
+        s3t.retransmissions,
+        Some(0),
+        "有判定输入⇒ 该报 Some(0)，不能因中途接入就报 None"
+    );
+    assert_eq!(s3t.out_of_order, Some(0));
+    assert_eq!(s3t.handshake_rtt_us, None);
+    assert_eq!(s3t.uplink_bytes, None, "发起方未知就不报上行");
+    assert_eq!(s3t.downlink_bytes, None);
+
+    // S4/S5：非 TCP ⇒ 整个结构体 None（这些量对 UDP/ICMP 没有定义）。
+    assert_eq!(s4.tcp_stats, None, "UDP 没有重传/乱序/RTT 语义");
+    assert_eq!(s5.tcp_stats, None, "ICMP 同理");
+
+    // ---- CLI 统计行与逐会话记录必须同口径（同一批会话的两个出口）----
+    assert_eq!(stats.tcp.sessions_judged, 3, "S1/S2/S3");
+    assert_eq!(
+        stats.tcp.sessions_unobserved, 0,
+        "非 TCP 会话不进这两个计数"
+    );
+    assert_eq!(stats.tcp.judged_segments, 6 + 1 + 2);
+    assert_eq!(stats.tcp.retransmissions, 0);
+    assert_eq!(stats.tcp.out_of_order, 0);
+    assert_eq!(stats.tcp.rtt_measured, 1, "只有 S1 见到完整握手");
+    assert_eq!(stats.tcp.rtt_sum_us, 1_000);
+    assert_eq!(stats.tcp.rtt_min_us, 1_000);
+    assert_eq!(stats.tcp.rtt_max_us, 1_000);
+    assert_eq!(stats.tcp.uplink_bytes, (5 * 20 + 120) + 20);
+    assert_eq!(stats.tcp.downlink_bytes, (4 * 20 + 500) + 20);
+    assert_eq!(stats.tcp.ratio_sessions, 2, "S3 没发起方 ⇒ 不进比例样本量");
+
     // ---- 会话 id 唯一且都被归还（无泄漏）----
     let mut ids: Vec<u64> = records.iter().map(|r| r.session_id).collect();
     ids.sort_unstable();
@@ -164,13 +246,27 @@ fn session_sample_matches_the_handwritten_expectations() {
 
     // ---- 输出契约 ----
     for r in &records {
+        assert!(
+            line_prefix_matches_version(r),
+            "行首必须是当前记录契约版本：{r:?}"
+        );
         let line = r.to_json_line();
-        assert!(line.starts_with("{\"schema_version\":1,"), "{line}");
         assert!(!line.contains("NaN") && !line.contains("inf"), "{line}");
         assert!(
             line.contains("\"risk_score\":null"),
             "评分未实现时必须写 null"
         );
+        // v2 新契约：`tcp` 块的键集不随协议变（UDP/ICMP 也得带着六个 null 键）。
+        for key in [
+            "\"seq_judged\":",
+            "\"retransmissions\":",
+            "\"out_of_order\":",
+            "\"handshake_rtt_us\":",
+            "\"uplink_bytes\":",
+            "\"downlink_bytes\":",
+        ] {
+            assert!(line.contains(key), "记录里缺少 tcp 键 {key}");
+        }
     }
     let mut buf = Vec::new();
     let n = traffic_engine::record::write_jsonl(&mut buf, &records).expect("写 JSONL");

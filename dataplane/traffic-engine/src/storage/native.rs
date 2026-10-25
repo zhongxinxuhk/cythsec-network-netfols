@@ -505,6 +505,11 @@ impl Cell {
             Cell::Null => "NULL",
         }
     }
+
+    /// 是否就是 NULL 位。比对里区分"没值"与"值为 0"全靠它。
+    pub fn is_null(&self) -> bool {
+        matches!(self, Cell::Null)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -807,6 +812,16 @@ mod tests {
             initiator: Some(crate::tcp::Side::A),
             adopted_midstream: false,
             illegal_tcp_events: 0,
+            // 本组样本是 TCP 且发起方已知 ⇒ 六列全有值（让上面的 NULL 预算仍然
+            // 只来自 risk_score；新列的 NULL 路径另用一测专门跑）。
+            tcp_stats: Some(crate::record::TcpSessionStats {
+                seq_judged: 4,
+                retransmissions: Some(sid % 3),
+                out_of_order: Some(0),
+                handshake_rtt_us: Some(1_500 + sid),
+                uplink_bytes: Some(1_200),
+                downlink_bytes: Some(800),
+            }),
             first_seen_us: 1_000_000 + sid,
             last_seen_us: 2_000_000 + sid,
             packets: 2,
@@ -865,11 +880,11 @@ mod tests {
 
     #[test]
     fn columns_are_written_head_then_data_interleaved() {
-        // 锁定参考实现观察到的布局：50 列/5 行的真实产物开头是
+        // 锁定参考实现观察到的布局：56 列/5 行的真实产物开头是
         //   32 05 | 0e "schema_version" | 06 "UInt32" | 5×4B 数据 | 17 "column_contract_version" ...
         // 这些偏移全部来自 2026-10-19 与 `clickhouse local` 产物的逐字节对照。
-        // 写成"先集中列头再集中数据"时，总字节数与参考实现相同（以 5 条样本为例都
-        // 是 2973），只有这里的偏移能把它区分开 —— 所以这条断言必须先于任何门禁存在。
+        // 写成"先集中列头再集中数据"时，总字节数与参考实现相同（v1/50 列时以 5 条样本
+        // 为例都是 2973），只有这里的偏移能把它区分开 —— 所以这条断言必须先于任何门禁存在。
         let recs: Vec<FlowRecord> = (1..=5).map(|i| rec(i, false)).collect();
         let (bytes, _) = encode_records(&recs, 1000).unwrap();
         assert_eq!(bytes[0], flow_columns().len() as u8);
@@ -881,8 +896,8 @@ mod tests {
         // 列头之后**立刻**是该列 5 行的数据，而不是下一列的名字。
         assert_eq!(
             &bytes[24..28],
-            &1u32.to_le_bytes(),
-            "第一行 schema_version=1"
+            &RECORD_SCHEMA_VERSION.to_le_bytes(),
+            "第一行 schema_version 必须等于记录契约版本"
         );
         // 第一列数据 = 5 行 × 4B，从 24 起到 44；44 是第二列名字的 varint 长度。
         let second_name_len_at = 24 + 5 * 4;
@@ -1129,11 +1144,46 @@ mod tests {
     fn schema_version_and_contract_version_are_both_carried() {
         let (bytes, _) = encode_records(&[rec(1, false)], 100).unwrap();
         let b = decode_blocks(&bytes).unwrap();
-        assert_eq!(b[0].cells[idx("schema_version")][0], Cell::U32(1));
+        assert_eq!(
+            b[0].cells[idx("schema_version")][0],
+            Cell::U32(RECORD_SCHEMA_VERSION),
+            "行里带的版本必须来自真源常量：写死数字时抬版本会让这条断言假红（而假红会让人去改断言而不是去查谁没改）"
+        );
         assert_eq!(
             b[0].cells[idx("column_contract_version")][0],
             Cell::U32(COLUMN_CONTRACT_VERSION)
         );
+    }
+
+    #[test]
+    fn tcp_stat_columns_round_trip_values_and_nulls_separately() {
+        // 一条 TCP（六列有值）+ 一条 UDP（tcp_stats=None ⇒ 六列 NULL），同块编码后解码：
+        // 要验证的是新列的 null 位图真写对了，而不是只验证了 risk_score 那一列。
+        let mut udp = rec(2, false);
+        udp.key = FlowKey::new_ipv4([10, 0, 0, 1], 53, [8, 8, 8, 8], 53, IPPROTO_UDP);
+        udp.tcp_state = None;
+        udp.tcp_stats = None;
+        let (bytes, st) = encode_records(&[rec(1, false), udp], 100).unwrap();
+        let b = decode_blocks(&bytes).unwrap();
+        let names = [
+            "tcp_seq_judged",
+            "tcp_retransmissions",
+            "tcp_out_of_order",
+            "tcp_handshake_rtt_us",
+            "tcp_uplink_bytes",
+            "tcp_downlink_bytes",
+        ];
+        for n in names {
+            let col = &b[0].cells[idx(n)];
+            match n {
+                "tcp_seq_judged" => assert_eq!(col[0], Cell::U64(4), "{n} 第一行"),
+                "tcp_handshake_rtt_us" => assert_eq!(col[0], Cell::U64(1_501), "{n} 第一行"),
+                "tcp_out_of_order" => assert_eq!(col[0], Cell::U64(0), "{n} 必须是 0 不是 NULL"),
+                _ => assert!(!col[0].is_null(), "{n} 第一行应当有值"),
+            }
+            assert!(col[1].is_null(), "{n} 第二条（UDP）必须是 NULL");
+        }
+        assert_eq!(st.rows, 2);
     }
 
     /// 用**另一条路径**（不读产物、不读 stats，只按列值重算）算出期望字节数。

@@ -8,30 +8,30 @@
       "risk_score": 363276,
       "schema_version": 383458,
       "session_id": 372352,
-      "tcp": 1820418,
+      "tcp": 4201892,
       "time": 1852708
     },
     "lines_scanned": 20182
   },
-  "gzip_bytes": 424660,
-  "gzip_bytes_per_record": 21.041522148449115,
+  "gzip_bytes": 440030,
+  "gzip_bytes_per_record": 21.80309186403726,
   "gzip_level": 9,
   "gzip_method": "stdin 管道（gzip -9 -c，不含 FNAME/MTIME 头）",
-  "gzip_ratio": 50.66397588659163,
+  "gzip_ratio": 54.30638365565984,
   "gzip_roundtrip_verified": true,
   "gzip_tool": "Apple gzip 487.0.1",
   "inputs": [
     {
-      "bytes": 21514964,
-      "path": "/tmp/msr/bench.jsonl",
+      "bytes": 23896438,
+      "path": "/tmp/msr-v2/bench.jsonl",
       "records": 20182
     }
   ],
   "label": "同质压测语料（build/bench-pipeline/bench.pcap，914,254 帧；非版本库内，需先跑 cythsec-bench 生成）",
-  "raw_bytes": 21514964,
-  "raw_bytes_per_record": 1066.0471707462095,
+  "raw_bytes": 23896438,
+  "raw_bytes_per_record": 1184.047071648003,
   "record_rate_per_sec": 5000000,
   "records": 20182,
-  "tb_per_day_gzip": 9.089937568130017,
-  "tb_per_day_raw": 460.5323777623625
+  "tb_per_day_gzip": 9.418935685264096,
+  "tb_per_day_raw": 511.5083349519374
 }

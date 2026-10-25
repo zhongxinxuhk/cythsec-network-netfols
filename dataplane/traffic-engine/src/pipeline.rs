@@ -31,7 +31,7 @@ use crate::dpi::{self, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
 use crate::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
-use crate::record::{AppInfo, FlowRecord, RECORD_SCHEMA_VERSION};
+use crate::record::{AppInfo, FlowRecord, TcpSessionStats, RECORD_SCHEMA_VERSION};
 use crate::session::{ManagerStats, SessionConfig, SessionManager};
 use crate::tcp::{Side, TcpConfig, TcpObservation};
 
@@ -339,6 +339,21 @@ impl PipelineState {
                 initiator: s.initiator(),
                 adopted_midstream: s.adopted_midstream(),
                 illegal_tcp_events: s.tcp.illegal_events(),
+                // 会话级 TCP 统计（`CYS-TRF-015`）。非 TCP 会话整块 `None` ⇒ 六列全 NULL；
+                // TCP 但读不到序号（截断采集）⇒ `seq_judged = 0` 而计数为 NULL。
+                // 下游拿到的记录里“没重传”与“没得判”永远不共用一个字节。
+                tcp_stats: if s.is_tcp() {
+                    Some(TcpSessionStats {
+                        seq_judged: s.seq_judged(),
+                        retransmissions: s.retransmissions(),
+                        out_of_order: s.out_of_order(),
+                        handshake_rtt_us: s.handshake_rtt_us(),
+                        uplink_bytes: s.uplink_bytes(),
+                        downlink_bytes: s.downlink_bytes(),
+                    })
+                } else {
+                    None
+                },
                 first_seen_us: s.first_seen_us,
                 last_seen_us: s.last_seen_us,
                 packets: s.packets,

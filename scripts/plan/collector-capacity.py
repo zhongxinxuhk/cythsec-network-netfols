@@ -51,7 +51,7 @@ TB = 1_000_000_000_000  # 本脚本一律用十进制 TB（10^12 B），与磁�
 
 # **已被实测否掉的旧规划假设**（列式压缩后 40 B/记录）。保留它只有一个用途：
 # 反向注入 —— 让"假装读了测量产物、实际用回这个假设"的实现被自证判死。
-# 不要在报告或文档里再引用这个数当规划值（实测是 79.4 B/记录 gzip / 1066 B 未压缩）。
+# 不要在报告或文档里再引用这个数当规划值（实测是 84.1 B/记录 gzip / 1184 B 未压缩）。
 PLANNING_ASSUMPTION_BYTES = 40.0
 
 DEFAULTS = {
@@ -65,18 +65,22 @@ DEFAULTS = {
     # 报文/集合头按"一条报文装多条记录"摊薄，此处已含摊薄后的 1~2 B。
     "record_wire_bytes": 58.0,
     # 落盘每条记录字节数：**已实测**（CYS-INF-041，见 docs/planning/measurements/storage-ratio.json）。
-    # 实测规划值 79.4 B/记录 = gzip(JSONL) 两档测量取**较差端**（真实向量语料 79.4 / 同质压测语料 21.0）；
-    # 未压缩 JSONL 的实测上界是 1066 B/记录。旧的"40 B/记录列式压缩假设"实测不成立（低估约 2~27×）。
+    # 实测规划值 84.1 B/记录 = gzip(JSONL) 两档测量取**较差端**（真实向量语料 84.1 / 同质压测语料 21.8）；
+    # 未压缩 JSONL 的实测上界是 1184 B/记录。旧的"40 B/记录列式压缩假设"实测不成立（低估约 2~27×）。
+    # 2026-10-23 记录契约 v2（`CYS-STO-002`/`007`：tcp 块 +6 个可空列）后重测：79.4→84.1（+5.9%）、
+    # 1066→1184（+11.1%）。这两个数是**跟着列契约走的**，不是一劳永逸的物理常数。
     # 该值可被 --storage-measured 覆盖（默认就指向上面那份产物），也可用
     # --storage-bytes-per-record 直接给数。
-    "storage_bytes_per_record": 79.4,
+    "storage_bytes_per_record": 84.1,
     "storage_measured": "docs/planning/measurements/storage-ratio.json",
     # 列式（ClickHouse MergeTree + `001_flows.sql` 的按列 CODEC）实测规划值：
-    # 78.5 B/记录 = 两档**容量可用**的合成语料（20,182 / 20,000 条）取较差端
-    # （同质 5.11 / 多样 78.50），产物 `measurements/columnar.json`。
+    # 85.86 B/记录 = 两档**容量可用**的合成语料（20,182 / 20,000 条）取较差端
+    # （同质 5.91 / 多样 85.86），产物 `measurements/columnar.json`。
+    # 2026-10-23 记录契约 v2 后重测：78.50→85.86（多样档，+9.4%）、5.11→5.91（同质档，+15.7%）。
+    # 同质档看着没变是假的 —— 它同样涨了 15.7%，只是绝对值小到被 part 开销掩盖。
     # 引用它必须带上两条口径：① 它依赖这份 DDL 的 CODEC/LowCardinality 选择（换 DDL 要重测）
     # ② 语料是本仓生成器造的，现场字段分布必须现场重标定。
-    "columnar_bytes_per_record": 78.5,
+    "columnar_bytes_per_record": 85.86,
     "columnar_measured": "docs/planning/measurements/columnar.json",
     # 单台采集器解码能力：本机实测（cythsec-bench 用例 ipfix-collect-decode，
     # Apple M1 Pro / macOS 26 / release，2026-10-05 实测 4.62~4.69 Mrec/s）。
@@ -102,9 +106,10 @@ PROVENANCE = [
     ("平均包长 500 B", "IMIX 经典规划值；本仓样本实测 400~750 B", "经验"),
     ("IPFIX 记录 57 B", "本仓 v4 模板逐字段求和（src/ipfix/mod.rs）", "实测"),
     ("每台 4.7 Mrec/s", "cythsec-bench `ipfix-collect-decode`（M1 Pro release，2026-10-05）", "实测(机器相关)"),
-    ("落盘 79.4 B/记录", "实测（CYS-INF-041）：gzip(JSONL) 多次测量取**较差端**；产物见 measurements/", "实测"),
-    ("落盘 1066 B/记录（上界）", "实测：未压缩 JSONL（JSONL 就是当前真实落盘格式）", "实测"),
-    ("落盘 78.5 B/记录（列式）",
+    ("落盘 84.1 B/记录", "实测（CYS-INF-041）：gzip(JSONL) 多次测量取**较差端**；产物见 measurements/"
+     "（记录契约 v2 后重测；列数变了这个数就变）", "实测"),
+    ("落盘 1184 B/记录（上界）", "实测：未压缩 JSONL（JSONL 就是当前真实落盘格式；v2 加列后重测）", "实测"),
+    ("落盘 85.86 B/记录（列式）",
      "实测（CYS-INF-041 收尾）：ClickHouse MergeTree + 本仓 DDL 的按列 CODEC，"
      "两档合成语料取较差端；换 DDL 必须重测，语料是合成的 ⇒ 现场要重标定", "实测(合成语料)"),
     ("余量系数 0.6", "纯内存解码上界折到端到端（收包/写盘/指标）", "规划"),
@@ -235,7 +240,7 @@ def load_columnar_measurement(path, inject=None):
 
     与 gzip 档同一条红线：**字段缺失就抛错，不许退回默认值继续算**。
     列式这一档额外要求每条语料都带着 `plan_bpr` —— 它意味着"这一档真的落进过
-    真实 ClickHouse 并数过 part 目录的字节"。少了它，78.5 就又是一句假设。
+    真实 ClickHouse 并数过 part 目录的字节"。少了它，85.86 就又是一句假设。
     """
     with open(path, encoding="utf-8") as fh:
         m = json.load(fh)
@@ -535,16 +540,17 @@ def self_test():
     ok &= _check("F 覆盖率", m["coverage"], 0.4)
     ok &= _check("F 丢包 1000 ppm 后实收（Mrec/s）", m["delivered_records_per_sec"] / 1e6, 5.0 * 0.999)
 
-    # 算例 G：逐包全量对照（§2.11 那张表里 108 PB/天 的复算），落盘取**实测规划值 79.4 B**。
+    # 算例 G：逐包全量对照（§2.11 那张表里 108 PB/天 的复算），落盘取**实测规划值 84.1 B**
+    #   （记录契约 v2 后重测；这里**不沿用** v1 的 79.4 —— 沿用就等于把"实测"过期成"我记得"）。
     #   10 Tbps ÷ 8 × 86400 = 1.08e14 B = 108 PB/天；
-    #   流级 10 Tbps@1:1000 = 2.5 Mrec/s → 2.5e6 × 86400 × 79.4 = 1.71504e13 B
-    #     = 0.0171504 PB/天；
-    #   倍数 = 108 ÷ 0.0171504 = 6297.2（≈3.8 个数量级）—— 用它替代原来 40 B 假设下的
-    #   12500（4.1 个数量级）：**假设被实测替换后，宣传口径要跟着改小**。
-    m = model(_args_for_selftest(bandwidth_tbps=10.0, storage_bytes_per_record=79.4))
+    #   流级 10 Tbps@1:1000 = 2.5 Mrec/s → 2.5e6 × 86400 × 84.1 = 1.81656e13 B
+    #     = 0.0181656 PB/天；
+    #   倍数 = 108 ÷ 0.0181656 = 5945.3（≈3.8 个数量级）—— 比 40 B 假设下的 12500 小一半，
+    #   也**比 v1 实测的 6297 小**：字节数变大，宣传口径要跟着改小。
+    m = model(_args_for_selftest(bandwidth_tbps=10.0, storage_bytes_per_record=84.1))
     ok &= _check("G 逐包全量（PB/天）", m["raw_capture_pb_per_day"], 108.0)
-    ok &= _check("G 流级（PB/天，@79.4 B）", m["flow_pb_per_day"], 0.0171504)
-    ok &= _check("G 倍数（@79.4 B）", m["raw_over_flow_ratio"], 6297.23, tol=0.01)
+    ok &= _check("G 流级（PB/天，@84.1 B）", m["flow_pb_per_day"], 0.0181656)
+    ok &= _check("G 倍数（@84.1 B）", m["raw_over_flow_ratio"], 5945.30, tol=0.01)
 
     # 算例 H：读测量产物接线（CYS-INF-041）。**自造**一份测量产物，不依赖仓库文件，
     #   于是这一条在任何 cwd 下都能跑；期望值仍然是手算：
@@ -582,20 +588,21 @@ def self_test():
                 ok &= _check(f"H {_name} 抛错（不给伪数）", True, True)
 
     # 算例 I：列式实测产物接线（CYS-INF-041 收尾）。期望值仍是手算：
-    #   78.5 B/记录 × 5e6 记录/s × 86400 ÷ 1e12 = 33.912 TB/天。
+    #   85.86 B/记录 × 5e6 记录/s × 86400 ÷ 1e12 = 37.09152 TB/天。
+    #   （ fixture 用的就是当前列契约 v2 的产物值，不再拿 v1 的 78.5 当例子。）
     with _tf.TemporaryDirectory() as _d:
         cart = os.path.join(_d, "columnar.json")
         with open(cart, "w", encoding="utf-8") as fh:
-            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 78.5,
+            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 85.86,
                        "not_a_claim": "依赖 DDL 的 CODEC 选择",
                        "recalibrate_on_site": "语料是合成的",
-                       "corpora": [{"label": "多样", "records": 20000, "plan_bpr": 78.5},
-                                  {"label": "同质", "records": 20182, "plan_bpr": 5.11}]}, fh)
+                       "corpora": [{"label": "多样", "records": 20000, "plan_bpr": 85.86},
+                                  {"label": "同质", "records": 20182, "plan_bpr": 5.91}]}, fh)
         val_c, n_c, caveat = load_columnar_measurement(cart)
-        ok &= _check("I 读数（B/记录）", val_c, 78.5)
+        ok &= _check("I 读数（B/记录）", val_c, 85.86)
         ok &= _check("I 样本量（两档合计）", n_c, 40182)
         m = model(_args_for_selftest(storage_bytes_per_record=val_c))
-        ok &= _check("I 落盘（TB/天，@78.5 B 列式）", m["tb_per_day"], 33.912)
+        ok &= _check("I 落盘（TB/天，@85.86 B 列式）", m["tb_per_day"], 37.09152)
         ok &= _check("I 口径随数一起走", 1 if caveat else 0, 1)
         # 注入 1：读了产物却用回旧的"列式 40 B"假设 → 落盘量必须偏离手算
         bad_v, _ = load_columnar_measurement(cart, inject="columnar-trust-assumption")
@@ -604,9 +611,9 @@ def self_test():
         # 注入 2：某一档其实没落进真实 ClickHouse（没有 plan_bpr）⇒ 必须抛错，不许静默用另一档
         no_ch = os.path.join(_d, "no-ch.json")
         with open(no_ch, "w", encoding="utf-8") as fh:
-            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 5.11,
+            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 5.91,
                        "not_a_claim": "x", "corpora": [{"label": "同质", "records": 20182,
-                                                      "plan_bpr": 5.11},
+                                                      "plan_bpr": 5.91},
                                                      {"label": "没测 CH", "records": 20000,
                                                       "plan_bpr": None}]}, fh)
         try:
@@ -617,8 +624,8 @@ def self_test():
         # 注入 3：产物没带"这个数依赖 DDL 的 CODEC 选择"这句口径 ⇒ 拒绝裸引用
         no_caveat = os.path.join(_d, "no-caveat.json")
         with open(no_caveat, "w", encoding="utf-8") as fh:
-            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 78.5,
-                       "corpora": [{"label": "多样", "records": 20000, "plan_bpr": 78.5}]}, fh)
+            json.dump({"schema": "columnar-plan/1", "plan_bytes_per_record": 85.86,
+                       "corpora": [{"label": "多样", "records": 20000, "plan_bpr": 85.86}]}, fh)
         try:
             load_columnar_measurement(no_caveat)
             ok &= _check("I 缺口径字段必须抛错", False, True)

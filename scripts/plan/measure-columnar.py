@@ -616,7 +616,7 @@ def cmd_self_test(inject):
         if os.path.isfile(real):
             orig = open(real, encoding="utf-8").read()
             check(not check_baseline_ddl(orig, baseline_ddl(orig)),
-                  "仓库真源 DDL（50 列）的 baseline 自检同样合格")
+                  "仓库真源 DDL（56 列，记录契约 v2）的 baseline 自检同样合格")
         else:
             print("  ⚠ 仓库 DDL 不在位（生成物未产出）：这一项**未核验**，不算通过")
     if inject in (None, "staging-rename"):

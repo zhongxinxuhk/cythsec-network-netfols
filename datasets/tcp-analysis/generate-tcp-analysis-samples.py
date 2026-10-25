@@ -263,6 +263,31 @@ def build_flow_segments(flow, start_sec):
     return records
 
 
+def flow_record_truth(fl):
+    """每条流的**记录级真值**（v2 起 `FlowRecord.tcp.*` 六列的期望值）。
+
+    为什么单独派生而不是复用 `expect`：记录里多两样统计行没有的东西 —— 每会话的
+    `seq_judged` 与上下行字节。上下行由发起方定方向，发起方未知（本样本里就是那条
+    截断会话，三帧都读不到 flags）⇒ 必须是 `null` 而不是 0。这个区分正是本项要保住的
+    东西，所以它得在这里按构造算出来，而不是把实现的输出抄回来当期望。
+    """
+    e = fl["expect"]
+    segs = fl["segments"]
+    has_syn = any((f & FLAG_SYN) and not (f & FLAG_ACK) for _s, f, *_r in segs)
+    judged = e["judged"]
+    up = sum(TCP_HDR_LEN + d for s, _f, _q, _a, d, _t, _k in segs if s == "A")
+    down = sum(TCP_HDR_LEN + d for s, _f, _q, _a, d, _t, _k in segs if s == "B")
+    return {
+        # judged == 0 ⇒ 没有任何序号输入，计数列必须是 null（不是 0）。
+        "seq_judged": judged,
+        "retransmissions": e["retr"],
+        "out_of_order": e["ooo"],
+        "handshake_rtt_us": fl["rtt_us"],
+        "uplink_bytes": up if has_syn else None,
+        "downlink_bytes": down if has_syn else None,
+    }
+
+
 def derive_totals():
     """由构造参数直接累加出 CLI 统计行的真值（不跑被测实现）。"""
     tot = {
@@ -335,6 +360,7 @@ def main():
                 "name": fl["name"], "port": fl["port"], "note": fl["note"],
                 "rtt_us": fl["rtt_us"],
                 "expect": fl["expect"],
+                "record": flow_record_truth(fl),
                 "tshark": fl["tshark"],
                 **({"tshark_reason": fl["tshark_reason"]} if "tshark_reason" in fl else {}),
             }
