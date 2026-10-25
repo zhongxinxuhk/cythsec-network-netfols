@@ -1,0 +1,22 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "chore/cys-mlt-002-python-quality" ]
+  pull_request:
+    branches: [ "chore/cys-mlt-002-python-quality" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
