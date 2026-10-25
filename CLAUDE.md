@@ -4,7 +4,7 @@
 细节（钩子怎么装、例外怎么留、为什么这么定）看 `AGENTS.md`；接力上下文看
 `docs/planning/HANDOFF.md`；待办表看 `docs/planning/BACKLOG.md`。
 
-## 硬规则：一个问题一条分支，测绿才并入 master
+## 硬规则：一个问题一条分支，测绿才并入 main
 
 收到"改代码 / 修 bug / 加功能"的任务时，**第一个 git 动作是开分支，不是改文件**：
 
@@ -22,7 +22,7 @@ bash scripts/test/test-all.sh
 两条全绿才并入：
 
 ```bash
-git switch master && git merge --no-ff <type>/<topic>
+git switch main && git merge --no-ff <type>/<topic>
 ```
 
 - **不许直接 `git commit` 在 `master`/`main` 上**：`scripts/hooks/pre-commit` 会拒。

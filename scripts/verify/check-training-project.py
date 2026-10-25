@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """CYS-MLT-001: metadata/lock injections and an isolated installed-wheel smoke test."""
+
 import argparse
-import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -11,6 +10,7 @@ import sys
 import tempfile
 import tomllib
 import zipfile
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,19 +29,29 @@ def metadata(root):
     require(re.fullmatch(r'3\.11\.\d+', pin) is not None, 'Python pin must be an exact supported 3.11 patch')
     require(config['project']['requires-python'] == '>=3.11,<3.12', 'requires-python must match the pinned minor')
     require(config['project']['version'] == version, 'pyproject.toml version differs from root VERSION')
-    require(config['project']['scripts']['cythsec-features'] == 'cythsec_training.features.dataset:main', 'CLI entry point drift')
+    require(
+        config['project']['scripts']['cythsec-features'] == 'cythsec_training.features.dataset:main',
+        'CLI entry point drift',
+    )
     require(config['tool']['uv']['required-version'].startswith('=='), 'uv must have an exact version pin')
     backend = config['build-system']['requires']
-    require(len(backend) == 1 and re.fullmatch(r'setuptools==\d+\.\d+\.\d+', backend[0]) is not None,
-            'build backend must have an exact setuptools pin')
+    require(
+        len(backend) == 1 and re.fullmatch(r'setuptools==\d+\.\d+\.\d+', backend[0]) is not None,
+        'build backend must have an exact setuptools pin',
+    )
     require(config['dependency-groups']['build'] == backend, 'locked build group differs from the backend requirement')
     packages = {item['name']: item for item in lock['package']}
-    require(packages['cythsec-training']['version'] == version and
-            packages['cythsec-training']['source'] == {'editable': '.'}, 'local project lock metadata drift')
+    require(
+        packages['cythsec-training']['version'] == version
+        and packages['cythsec-training']['source'] == {'editable': '.'},
+        'local project lock metadata drift',
+    )
     require(packages['setuptools']['version'] == backend[0].split('==')[1], 'build backend lock version drift')
     archives = [packages['setuptools']['sdist'], *packages['setuptools']['wheels']]
-    require(all(re.fullmatch(r'sha256:[a-f0-9]{64}', item.get('hash', '')) is not None for item in archives),
-            'build backend archives must carry SHA-256 hashes')
+    require(
+        all(re.fullmatch(r'sha256:[a-f0-9]{64}', item.get('hash', '')) is not None for item in archives),
+        'build backend archives must carry SHA-256 hashes',
+    )
     return config, pin, version
 
 
@@ -59,8 +69,10 @@ def run(args, *, cwd=ROOT, offline=True, capture=False):
 
 
 def self_test(offline):
-    originals = {name: (ROOT / name).read_text() for name in
-                 ('VERSION', 'ml/training/pyproject.toml', 'ml/training/.python-version', 'ml/training/uv.lock')}
+    originals = {
+        name: (ROOT / name).read_text()
+        for name in ('VERSION', 'ml/training/pyproject.toml', 'ml/training/.python-version', 'ml/training/uv.lock')
+    }
     config, _, version = metadata(ROOT)
     backend_version = config['build-system']['requires'][0].split('==')[1]
     cases = [
@@ -86,20 +98,34 @@ def self_test(offline):
                 pass
             else:
                 raise ValueError(f'metadata injection escaped: {label}')
-        # Check the real uv freshness command, using an already cached dependency.
-        project = root / 'ml/training'
+        # Exercise uv's real freshness guard in an empty cache. Resolving an
+        # injected registry dependency would require index metadata that a
+        # successful --locked wheel install does not necessarily cache.
+        # A dependency-free probe isolates lock freshness from that setup.
         for name, value in originals.items():
             (root / name).write_text(value)
-        shutil.copyfile(ROOT / 'ml/training/README.md', project / 'README.md')
-        text = (project / 'pyproject.toml').read_text()
-        (project / 'pyproject.toml').write_text(text.replace('dependencies = []', f'dependencies = ["setuptools=={backend_version}"]'))
+        probe = root / 'lock-probe'
+        probe.mkdir()
+        (probe / '.python-version').write_text(originals['ml/training/.python-version'])
+        probe_config = probe / 'pyproject.toml'
+        probe_config.write_text(
+            '[project]\nname = "cythsec-lock-probe"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.11,<3.12"\ndependencies = []\n'
+        )
         env = os.environ.copy()
-        if offline:
-            env.update(UV_OFFLINE='1', UV_PYTHON_DOWNLOADS='never')
-        stale = subprocess.run(['uv', 'lock', '--project', str(project), '--check', '--offline', '--no-python-downloads'],
-                               cwd=tmp, env=env, capture_output=True, text=True)
-        require(stale.returncode != 0 and 'lockfile' in stale.stderr.lower(),
-                f'uv stale-lock injection escaped or failed for another reason: {stale.stderr}')
+        env.update(UV_CACHE_DIR=str(root / 'empty-uv-cache'), UV_OFFLINE='1', UV_PYTHON_DOWNLOADS='never')
+        command = ['uv', 'lock', '--project', str(probe), '--offline', '--no-python-downloads']
+        created = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
+        require(created.returncode == 0, f'uv cold-cache probe bootstrap failed: {created.stderr}')
+        command.append('--check')
+        fresh = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
+        require(fresh.returncode == 0, f'uv rejected a fresh probe lock: {fresh.stderr}')
+        probe_config.write_text(probe_config.read_text().replace('version = "0.1.0"', 'version = "9.9.9"'))
+        stale = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
+        require(
+            stale.returncode != 0 and 'lockfile' in stale.stderr.lower(),
+            f'uv stale-lock injection escaped or failed for another reason: {stale.stderr}',
+        )
         # The packaging-artifact whitelist must not hide real training sources.
         checker = root / 'scripts/verify/check-ignored-sources.sh'
         checker.parent.mkdir(parents=True)
@@ -107,8 +133,11 @@ def self_test(offline):
         run(['git', 'init', '-q', '-b', 'fixture', root], cwd=root, offline=offline, capture=True)
         ignore = root / '.gitignore'
         ignore.write_text('/ml/training/.venv/\n/ml/training/build/\n/ml/training/*.egg-info/\n')
-        for name in ('ml/training/.venv/dependency.py', 'ml/training/build/generated.py',
-                     'ml/training/cythsec_training.egg-info/SOURCES.txt'):
+        for name in (
+            'ml/training/.venv/dependency.py',
+            'ml/training/build/generated.py',
+            'ml/training/cythsec_training.egg-info/SOURCES.txt',
+        ):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('generated\n')
@@ -118,8 +147,10 @@ def self_test(offline):
         source.write_text('# real source\n')
         ignore.write_text(ignore.read_text() + '*.py\n')
         rejected = subprocess.run(['bash', str(checker)], cwd=root, text=True, capture_output=True)
-        require(rejected.returncode != 0 and 'features/real-source.py' in rejected.stdout + rejected.stderr,
-                'packaging whitelist hid a real ignored training source')
+        require(
+            rejected.returncode != 0 and 'features/real-source.py' in rejected.stdout + rejected.stderr,
+            'packaging whitelist hid a real ignored training source',
+        )
         # Exempt only this generated environment in the pre-commit scan, while
         # preserving real source detection and redaction of the matched value.
         scanner = ROOT / 'scripts/security/scan-secrets.sh'
@@ -128,10 +159,15 @@ def self_test(offline):
         run(['bash', scanner, root], cwd=root, offline=offline, capture=True)
         source.write_text(synthetic)
         scan = subprocess.run(['bash', str(scanner), str(root)], cwd=root, text=True, capture_output=True)
-        require(scan.returncode != 0 and 'features/real-source.py' in scan.stdout and
-                'regression-only-value' not in scan.stdout + scan.stderr,
-                'secret scan exemption hid a real source hit or leaked matched text')
-    print('✓ training project self-test: baseline + 6 metadata + 1 stale-lock injection; artifact whitelist and redacted source scan rejection passed')
+        require(
+            scan.returncode != 0
+            and 'features/real-source.py' in scan.stdout
+            and 'regression-only-value' not in scan.stdout + scan.stderr,
+            'secret scan exemption hid a real source hit or leaked matched text',
+        )
+    print(
+        '✓ training project self-test: baseline + 6 metadata + 1 stale-lock injection; artifact whitelist and redacted source scan rejection passed'
+    )
 
 
 def smoke(offline):
@@ -148,8 +184,10 @@ def smoke(offline):
         require(len(wheels) == 1, 'expected one training wheel')
         with zipfile.ZipFile(wheels[0]) as archive:
             names = set(archive.namelist())
-            require('cythsec_training/features/dataset.py' in names and
-                    'cythsec_training/features/schema_gen.py' in names, 'wheel misses runtime sources')
+            require(
+                'cythsec_training/features/dataset.py' in names and 'cythsec_training/features/schema_gen.py' in names,
+                'wheel misses runtime sources',
+            )
         run(['uv', 'venv', '--python', pin, tmp / 'venv'], offline=offline, capture=True)
         python = tmp / 'venv/bin/python'
         console = tmp / 'venv/bin/cythsec-features'
@@ -177,10 +215,26 @@ print(json.dumps({'installed_version': sys.argv[1], 'feature_count': len(vector)
 '''
         result = run([python, '-I', '-c', script, version], cwd=work, offline=offline, capture=True)
         print(result.stdout.strip())
-        run([console, 'build', '--input', work / 'mlt006-observations.jsonl', '--output', work / 'dataset',
-             '--source-id', 'synthetic-installed-wheel', '--format', 'observations',
-             '--labels', work / 'mlt006-labels.jsonl', '--label-source', 'synthetic smoke fixture only'],
-            cwd=work, offline=offline)
+        run(
+            [
+                console,
+                'build',
+                '--input',
+                work / 'mlt006-observations.jsonl',
+                '--output',
+                work / 'dataset',
+                '--source-id',
+                'synthetic-installed-wheel',
+                '--format',
+                'observations',
+                '--labels',
+                work / 'mlt006-labels.jsonl',
+                '--label-source',
+                'synthetic smoke fixture only',
+            ],
+            cwd=work,
+            offline=offline,
+        )
         run([console, 'validate', work / 'dataset'], cwd=work, offline=offline)
     print('✓ clean wheel: source-archive build, isolated import, installed CLI build/validate passed')
 

@@ -8,8 +8,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# Shared inventory for the actual C++ check and the Python quality self-test.
+cpp_sources() {
+  find . \( -path ./build -o -path ./target -o -path ./node_modules -o -path ./.git \
+    -o -path ./cmake-build-debug -o -path ./web -o -path ./ml/training/.venv \) -prune -o \
+    \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.c' \
+       -o -name '*.h' -o -name '*.hpp' \) -print
+}
+# Enumeration only: no compiler, uv or formatter is needed for this branch.
+[[ "${1:-}" == "--list-cpp" ]] && { cpp_sources; exit 0; }
+
 usage() { cat <<'EOF'
-用法: lint-all.sh
+用法: lint-all.sh [--list-cpp]
+
+  --list-cpp  只枚举 C/C++ 检查清单（门禁自证使用）
 
   依次运行：
     - clang-format --dry-run --Werror（C/C++，基于仓库 .clang-format）
@@ -22,6 +34,7 @@ usage() { cat <<'EOF'
     - 有没有源码被 .gitignore 静默忽略（scripts/verify/check-ignored-sources.sh）
     - 前端类型检查（web/console：src/tests + 构建配置两份 tsconfig）
     - npm run lint（前端 eslint，web/console）
+    - Ruff / Black / strict mypy + 检查器自证（scripts/verify/check-python-quality.sh）
   任一检查未通过则整体非 0 退出。
 EOF
 }
@@ -56,10 +69,7 @@ if [[ -z "$CF_BIN" ]]; then
   failed=$((failed+1))
 else
   echo "  (clang-format: $CF_BIN)"
-  cpp_files="$(find . \( -path ./build -o -path ./target -o -path ./node_modules -o -path ./.git \
-    -o -path ./cmake-build-debug -o -path ./web \) -prune -o \
-    \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.c' \
-       -o -name '*.h' -o -name '*.hpp' \) -print)"
+  cpp_files="$(cpp_sources)"
   if [[ -z "$cpp_files" ]]; then
     echo "  (无 C/C++ 源文件，跳过)"
   elif ! echo "$cpp_files" | xargs "$CF_BIN" --dry-run --Werror; then
@@ -183,6 +193,12 @@ if ! (cd web/console && npm run lint); then
   failed=$((failed+1))
 else
   echo "✓ [node] eslint 检查通过"
+fi
+
+echo "==> [python-quality] Ruff / Black / strict mypy（含反向注入）"
+if ! bash scripts/verify/check-python-quality.sh; then
+  echo "✗ [python-quality] 检查未通过" >&2
+  failed=$((failed+1))
 fi
 
 if [[ $failed -eq 0 ]]; then

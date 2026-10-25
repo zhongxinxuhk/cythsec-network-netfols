@@ -27,7 +27,7 @@ bash scripts/lint/lint-all.sh --help
 - cmake ≥ 3.20
 - go ≥ 1.22
 - rustc/cargo（稳定版）
-- node ≥ 18 + npm
+- Node.js ^22.12.0 或 ≥24 + npm；CI 精确版本由根 `.node-version` 指定
 
 脚本开头会做版本预检，不足时给出可读报错并非 0 退出。
 
@@ -51,16 +51,29 @@ bash scripts/lint/lint-all.sh --help
 
 提交前请运行 `bash scripts/release/check-version.sh` 校验四端一致（不一致非 0 退出）。
 
+## CI 格式化器版本
+
+C++ 静态检查与通道 ABI 生成器共用 PATH 中的 clang-format。CI 的精确版本保存在
+`.clang-format-version`，不能使用发行版的无版本 `apt install clang-format` 替代：不同版本
+会改变注释/对齐输出，产生本地通过而 CI 失败的结果。在开发环境中安装该版本后再运行门禁：
+
+```bash
+python3 -m pip install "clang-format==$(cat .clang-format-version)"
+clang-format --version
+```
+
+工作流运行数量、触发条件与安全扫描入口见 [Actions 说明](docs/deployment/actions-ci.md)。
+
 ## 分支与合并（硬规则，有钩子拦）
 
-**一个问题一条分支；两条门禁全绿才并入 `master`；提交只落本地。**
+**一个问题一条分支；两条门禁全绿才并入 `main`；提交只落本地。**
 
 ```bash
 make hooks                             # 每个新克隆先跑一次（见下方"为什么还要这条"）
 git switch -c <type>/<topic>           # type ∈ feat fix chore docs refactor test
 #   …改完在这个分支上提交…
 bash scripts/lint/lint-all.sh && bash scripts/test/test-all.sh   # 全绿才算"完成"
-git switch master && git merge --no-ff <type>/<topic>            # --no-ff：历史上看得见这条分支
+git switch main && git merge --no-ff <type>/<topic>            # --no-ff：历史上看得见这条分支
 ```
 
 - 直接 `git commit` 在 `master`/`main` 上会被 `scripts/hooks/pre-commit` 拒绝，并把上面这套

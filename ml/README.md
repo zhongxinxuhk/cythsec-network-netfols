@@ -17,6 +17,7 @@
 - 输入契约、命令、示例和限制见 [features/README.md](training/features/README.md)。
 - `training/pyproject.toml` / `.python-version` / `uv.lock`：Python 3.11.15 与 uv 0.12.1 钉扎，可安装包 `cythsec-training` 与命令 `cythsec-features`。构建工具有精确版本与锁文件摘要，wheel 无第三方运行时依赖；安装说明见 [training/README.md](training/README.md)。
 - Python 工程门禁：`bash scripts/verify/check-training-project.sh`，默认全量测试和独立 CI Python job 也调用；远端 CI 尚未触发。
+- Python 质量门禁：`bash scripts/verify/check-python-quality.sh`，Ruff/Black 检查 8 个手写文件，strict mypy 检查完整训练包 6 个文件；已挂 lint、默认测试与 CI，含实际工具反向注入。工具由独立 quality 分组锁定。
 - 统一多格式加载器、切分、预处理、训练与评估尚未实现，分别按 MLT-003/004/005/008/010 推进。
 
 验收：`bash scripts/test/test-all.sh --rust`（含既有特征 parity 与训练产物测试）；单独运行：`python3 -m unittest discover -s tests/ml -p 'test_feature_dataset.py' -v`。

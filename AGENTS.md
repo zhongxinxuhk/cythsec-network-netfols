@@ -5,7 +5,7 @@
 
 ## 分支纪律（不可违反）
 
-**一个问题一条分支；测绿了才并入 `master`；只落本地，不 push。**
+**一个问题一条分支；测绿了才并入 `main`；只落本地，不 push。**
 
 ```bash
 # 1) 动手之前先开分支（脏工作树会跟着 switch 走，改动不会丢）
@@ -19,7 +19,7 @@ bash scripts/lint/lint-all.sh
 bash scripts/test/test-all.sh       # 默认全集；缺工具的那几项会显式「未核验」，不算绿
 
 # 4) 全绿之后才并入（必须 --no-ff，让历史上看得见这条分支对应哪个问题）
-git switch master
+git switch main
 git merge --no-ff <type>/<topic>
 ```
 
@@ -46,7 +46,7 @@ make check-hooks    # 验证「真的会被执行」，没装会报「未核验�
 ### 例外（唯一一条，且必须看得见）
 
 ```bash
-CYTHSEC_ALLOW_MAIN_COMMIT=1 git commit …    # 直落 master：会打警告，理由必须写进提交说明
+CYTHSEC_ALLOW_MAIN_COMMIT=1 git commit …    # 直落 main：会打警告，理由必须写进提交说明
 CYTHSEC_ALLOW_PUSH=1 git push …             # push：只有用户明确授权时才用
 ```
 
@@ -55,7 +55,7 @@ CYTHSEC_ALLOW_PUSH=1 git push …             # push：只有用户明确授权�
 ### Agent 侧的行为要求
 
 1. 收到"改点什么"的任务，**第一个 git 动作是 `git switch -c`**，不是 `git add`。
-2. 不要为了"省事"在 `master` 上提交后再补分支（`git branch` + `reset` 那种改写别随手做，
+2. 不要为了"省事"在 `main` 上提交后再补分支（`git branch` + `reset` 那种改写别随手做，
    要改写先跟用户说清楚）。
-3. 并入 `master` 前必须贴出两条门禁的**实际退出码**；没跑过就说没跑过。
+3. 并入 `main` 前必须贴出两条门禁的**实际退出码**；没跑过就说没跑过。
 4. 门禁里出现「未核验 / SKIPPED」时如实转述，不许写成通过。

@@ -29,7 +29,7 @@ export default defineConfig({
     globals: false,
     setupFiles: ['./tests/setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}', 'tests/**/*.{test,spec}.{ts,tsx}'],
-    // 覆盖率：v8 provider，无需额外依赖。
+    // 覆盖率：v8 provider；显式运行 coverage 时需安装同版本 @vitest/coverage-v8。
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary'],
