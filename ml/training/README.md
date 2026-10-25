@@ -80,8 +80,42 @@ uv run --project ml/training --locked --offline python -m unittest \
 
 Generated environments, egg metadata and build directories are ignored using
 paths anchored specifically to this project. Runtime source, lockfiles and pins
-remain tracked. Ruff/Black/mypy (MLT-002), multi-format loaders and models are not
-included here.
+remain tracked. Multi-format loaders and models are not included here.
+
+## Python quality gate (MLT-002)
+
+The optional `quality` group pins Ruff 0.17.2, Black 26.10.1 and mypy 2.4.0.
+The regular build-only sync remains lean; the quality gate explicitly installs
+the locked quality group. After an initial online bootstrap:
+
+```bash
+uv sync --project ml/training --locked --group quality
+bash scripts/verify/check-python-quality.sh
+```
+
+The gate is read-only for source files and defaults to offline mode. `--online`
+allows initial downloads; `--self-test` runs real-tool acceptance/rejection
+fixtures. It runs from the repository root with an explicit config path, so
+configuration discovery cannot silently select a user's defaults.
+
+Ruff/Black cover hand-maintained training code, training tests and the feature,
+packaging and quality verifiers (currently 8 files). Black uses 120 columns and
+preserves existing quote style. Generated bindings are regenerated and checked,
+not hand-formatted. Strict mypy covers the entire runtime package (6 files,
+including both generated bindings); JSON decoding boundaries remain explicitly
+dynamic and are checked by the existing runtime validators.
+
+Exceptions are narrow: E402 is waived at standalone-script bootstrap imports;
+B905 is disabled because `zip(strict=...)` is unavailable to the retained Python
+3.9 source entry points. E501 is delegated to Black rather than enforcing a
+second, conflicting wrapping rule. No mypy error categories are disabled.
+
+The self-test proves each tool accepts a valid baseline and rejects a specific
+fault (unused import, wrong formatting, incompatible return type), then verifies
+new-module discovery and C++ inventory isolation from the training `.venv`.
+Both lint-all and the default test suite invoke the same gate, as do the lint
+workflow and the Python CI job. Do not run separate sync/check processes against
+the shared project environment concurrently.
 
 Official configuration references:
 [uv project sync](https://docs.astral.sh/uv/concepts/projects/sync/),
