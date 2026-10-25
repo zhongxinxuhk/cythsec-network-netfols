@@ -24,6 +24,22 @@ Python 质量门禁 `CYS-MLT-002`。其依赖的 `CYS-TRF-028`、`CYS-MLT-001/00
 最终 CI 结果以 PR #1 与 main 的对应提交为准；本记录保留实际发现过程，不把较早提交的成功冒充
 后续代码已经验证。Python 收口状态与实现/本记录同批进入主线。
 
+## 新增工作流整合复核
+
+整合期间 main 新增了未适配项目的 CMake/SLSA 模板。远端 Windows 构建因项目使用 POSIX API
+失败；密钥兜底扫描将 workflow 的 OIDC 权限枚举误判为明文赋值。模板的示例产物与摘要输出名也
+无法构成真实来源证明。本轮在独立修复分支处理：
+
+- CMake 由 CI 统一调用，覆盖 Linux GCC/Clang 与 macOS Clang；移除尚未实现移植的 Windows 声明。
+- 密钥扫描仅为 workflow 整行 `id-token` 的 `write`/`none` 枚举增加例外；字面值、拼接、同行注释、
+  普通 token 字段和非 workflow 文件继续拒绝，并有回归自证。
+- 来源证明工作流改为实际编译、CTest、四个 C++ CLI 打包与逐字节 SHA-256 摘要；修正 subjects 输出，
+  使用生成器 v2.1.0。私有仓库不自动向公共 Rekor 披露元数据。签名/发布本轮未执行，不能标记为通过。
+- macOS 本地 CMake Release 编译和 CTest 6/6 通过；工作流 actionlint、密钥扫描及其自证退出 0。
+- 最终隔离副本完整 lint/test 实际退出码均为 0。BPF 捕获 3,370 帧、错误 0，tshark 计数一致，
+  ICMP 60 帧；共享环前缀交付/消费 500 帧，Rust 得到 25 个 Flow，15 项断言通过。
+  首次副本缺 npm 安装与跨终端 sudo 认证失败均保留在日志，修正环境后重跑，未改宽判据。
+
 ## 仍未核验的边界
 
 - DPI 第三方对照跳过 14 项、TCP 重组跳过 2 项、FlowRecord 对照跳过 8 项；它们有既定的
@@ -51,7 +67,9 @@ Python 质量门禁 `CYS-MLT-002`。其依赖的 `CYS-TRF-028`、`CYS-MLT-001/00
 | 依赖安全修复 | `14388f8` |
 | Rust/安全组合审查 | `1babf93` |
 
-三个 Claude worktree 分支保留。`workbuddy/master-7f26623d` 存在尚未提交的 DPI 修改和 FTP/SMTP/SSH
+三个 Claude worktree 保留。其中 `chore/github-actions-complete` 的独立提交 `a00d992` 基于旧基线，
+其自身验收记录明确完整测试退出 1，且该方案仅阻断生产依赖 high/critical，会放宽本轮完整依赖审计。
+该分支尚未完成本轮安全和质量门禁适配，保留待独立整合，不覆盖本轮已验证配置。`workbuddy/master-7f26623d` 存在尚未提交的 DPI 修改和 FTP/SMTP/SSH
 解析文件，既不删除该分支/工作区，也不把这部分未完成代码带入 main。GitCode 的 origin 保留原样。
 已被统一依赖修复替代的 Dependabot PR 在默认分支告警复核后收口，其历史失败运行保留。
 
