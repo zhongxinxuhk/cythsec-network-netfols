@@ -12,7 +12,7 @@
 ## 门禁与跑法
 
 - **动手前第一个 git 动作是 `git switch -c <type>/<topic>`**（一个问题一条分支，测绿才
-  `git merge --no-ff` 回 `master`；直落 master 会被 `scripts/hooks/pre-commit` 拒）。
+  `git merge --no-ff` 回 `main`；直落 master 会被 `scripts/hooks/pre-commit` 拒）。
   每个新克隆/每台机器要跑一次 **`make hooks`** —— `core.hooksPath` 是本地配置、不随克隆走，
   不装的话钩子文件在仓库里躺着但一次都不执行。验证：`make check-hooks`
   （=`test-all.sh --branch-policy`，自证 S1–S7 + 2 项反向注入，未安装时报「未核验」不算绿）。
@@ -46,7 +46,7 @@
 6. 新增/修改门禁后必须做**反向注入验证**（绿色的「通过」与绿色的「没跑」长得一样）
 7. **状态标记与实现同批提交**；刷新滞后状态时逐项核对验收标准，不凭印象批量打勾
 8. **文档里的数字与结论当场复跑**；沿用的旧结论必须重新验证
-10. **分支纪律：一个问题一条分支，`lint-all` + `test-all` 全绿才 `git merge --no-ff` 并入 master；
+10. **分支纪律：一个问题一条分支，`lint-all` + `test-all` 全绿才 `git merge --no-ff` 并入 main；
     提交只落本地，push 需用户明确授权。** 立这条的理由不是洁癖：直落 master 的提交，
     "先测后合"在历史上**无法证明**（测的是当时的树，合的是后来又改过几处的树）—— 2026-10-22
     的 `a906c81` 就是这样落上去的，之后才有这条规则和它的机械层（`scripts/hooks/`）。

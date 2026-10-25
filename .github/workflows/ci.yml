@@ -22,18 +22,10 @@ jobs:
           bash scripts/test/test-all.sh --cpp
 
   rust:
-    name: Rust 构建、测试与特征双端契约
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: 缓存 Cargo registry + target
-        uses: Swatinem/rust-cache@v2
-      - name: 构建并测试 (Rust)
-        run: |
-          bash scripts/build/build-all.sh --rust
-          # Includes check-features.sh and tests/ml/test_feature_dataset.py: schema, parity, CLI and injections.
-          bash scripts/test/test-all.sh --rust
+    name: Rust 构建、测试与跨语言契约
+    uses: ./.github/workflows/rust.yml
+    permissions:
+      contents: read
 
   python:
     name: Python 锁定环境与隔离安装验收

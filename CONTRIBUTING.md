@@ -53,14 +53,14 @@ bash scripts/lint/lint-all.sh --help
 
 ## 分支与合并（硬规则，有钩子拦）
 
-**一个问题一条分支；两条门禁全绿才并入 `master`；提交只落本地。**
+**一个问题一条分支；两条门禁全绿才并入 `main`；提交只落本地。**
 
 ```bash
 make hooks                             # 每个新克隆先跑一次（见下方"为什么还要这条"）
 git switch -c <type>/<topic>           # type ∈ feat fix chore docs refactor test
 #   …改完在这个分支上提交…
 bash scripts/lint/lint-all.sh && bash scripts/test/test-all.sh   # 全绿才算"完成"
-git switch master && git merge --no-ff <type>/<topic>            # --no-ff：历史上看得见这条分支
+git switch main && git merge --no-ff <type>/<topic>            # --no-ff：历史上看得见这条分支
 ```
 
 - 直接 `git commit` 在 `master`/`main` 上会被 `scripts/hooks/pre-commit` 拒绝，并把上面这套

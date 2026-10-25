@@ -9,7 +9,7 @@ name: security
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
   schedule:
     # 每周一 04:17 UTC 定时全量扫描

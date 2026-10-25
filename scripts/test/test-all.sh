@@ -37,7 +37,7 @@ usage() {
   --columnar     只跑列式落盘（ClickHouse Native）的四道关口：生成物一致 / 独立解码逐格比对 /
                  7 项反向注入 / 真实 ClickHouse 逐字节 parity（CYS-STO-002、CYS-STO-007、CYS-TRF-033，
                  需 cargo + python3；D 组需要 clickhouse 二进制，缺则显式「未核验」）
-  --branch-policy 只跑分支纪律钩子的自证与安装状态检查（一个问题一条分支，测绿才并入 master）：
+  --branch-policy 只跑分支纪律钩子的自证与安装状态检查（一个问题一条分支，测绿才并入 main）：
                  pre-commit + Agent 侧 PreToolUse 钩子的 S1–S7 断言与 2 项反向注入（纯 git + python3，秒级）。
                  本克隆没装钩子（core.hooksPath 未设）时显式报「未核验」而不是通过 —— 装法：make hooks
   --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
@@ -67,15 +67,7 @@ need_cmd() {
 # 这一节负责在跑测试前补齐，让"克隆 → 跑测试"这条路径真的走得通。
 gen_datasets() {
   echo "==> [vectors] 生成测试向量（pcap / expected.json 均为生成物，不入库）"
-  local py="${PYTHON:-python3}"
-  if ! command -v "$py" >/dev/null 2>&1; then
-    echo "✗ [vectors] 未找到 python3（可用 PYTHON 环境变量指定解释器）" >&2
-    return 1
-  fi
-  "$py" datasets/pcap/generate-samples.py || return 1
-  "$py" datasets/dpi/generate-dpi-samples.py || return 1
-  "$py" datasets/reassembly/generate-reassembly-samples.py || return 1
-  "$py" datasets/tcp-analysis/generate-tcp-analysis-samples.py || return 1
+  bash scripts/test/prepare-rust-fixtures.sh || return 1
   echo "✓ [vectors] 向量已生成"
 }
 # 本次运行**实际需要**的工具链（纯函数：只读 ${ALL} 与 ${BUILD_*}，因此能被 --self-test 自证）。
@@ -152,9 +144,13 @@ test_cpp() {
 }
 
 test_rust() {
-  echo "==> [rust] cargo test --offline --workspace"
-  if ! cargo test --offline --workspace; then
+  echo "==> [rust] cargo test --frozen --workspace --all-targets --all-features"
+  if ! cargo test --frozen --workspace --all-targets --all-features; then
     echo "✗ [rust] 测试失败" >&2
+    return 1
+  fi
+  if ! cargo test --frozen --workspace --doc --all-features; then
+    echo "✗ [rust] 文档测试失败" >&2
     return 1
   fi
   echo "==> [features] Rust/Python 特征契约与逐维向量一致性（含反向注入）"
@@ -718,7 +714,7 @@ test_columnar() {
   return 0
 }
 
-# 分支纪律钩子关口：「一个问题一条分支，测绿才并入 master」这条规则**真的在被执行**吗。
+# 分支纪律钩子关口：「一个问题一条分支，测绿才并入 main」这条规则**真的在被执行**吗。
 #
 # 为什么它必须成组、还必须进默认集合：本仓库记过三次同一族的事故（§VERSION 检查器没人调用、
 # bench-pipeline.sh 没人调用、check-columnar.sh 入库次日仍没人调用）。这次的风险多一层：

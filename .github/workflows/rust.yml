@@ -1,22 +1,209 @@
 name: Rust
 
+# main push / PR 由 ci.yml 调用；手动运行也使用同一组检查，避免重复排队。
 on:
-  push:
-    branches: [ "chore/cys-mlt-002-python-quality" ]
-  pull_request:
-    branches: [ "chore/cys-mlt-002-python-quality" ]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
-
+  quality:
+    name: Rust 格式、Clippy 与文档
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          key: quality
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: 记录工具链并生成编译期测试向量
+        run: |
+          mkdir -p build/ci-rust
+          rustc --version --verbose | tee build/ci-rust/toolchain.log
+          cargo --version | tee -a build/ci-rust/toolchain.log
+          python3 --version | tee -a build/ci-rust/toolchain.log
+          bash scripts/test/prepare-rust-fixtures.sh
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: Clippy（correctness 阻断，历史风格警告保留在日志）
+        run: |
+          cargo clippy --frozen --workspace --all-targets --all-features -- -D clippy::correctness \
+            2>&1 | tee build/ci-rust/clippy.log
+      - name: rustdoc（链接或文档警告阻断）
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --frozen --workspace --all-features --no-deps
+      - name: 保存质量检查日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-quality-logs
+          path: build/ci-rust/
+          retention-days: 7
+          if-no-files-found: warn
+
+  build-test:
+    name: Rust 构建与测试 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # channel::region 使用 Unix mmap；Windows 当前不属于可编译平台。
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          key: build-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: 记录工具链并生成编译期测试向量
+        run: |
+          mkdir -p build/ci-rust
+          rustc --version --verbose | tee build/ci-rust/toolchain.log
+          cargo --version | tee -a build/ci-rust/toolchain.log
+          python3 --version | tee -a build/ci-rust/toolchain.log
+          bash scripts/test/prepare-rust-fixtures.sh
+      - name: Debug 构建（workspace / bins / examples / tests / features）
+        run: |
+          # build.rs 只跟踪 VERSION；清理工作区包，避免缓存带来旧 Git 版本戳。
+          # 保留第三方依赖缓存，不做全工作区 clean。
+          cargo clean --package traffic-engine
+          cargo build --frozen --workspace --all-targets --all-features
+      - name: Rust 单元、集成、文档测试与 Rust/Python 特征契约
+        run: bash scripts/test/test-all.sh --rust 2>&1 | tee build/ci-rust/tests.log
+      - name: Release 构建与测试（覆盖优化模式）
+        run: |
+          cargo build --frozen --release --workspace --all-targets --all-features
+          cargo test --frozen --release --workspace --all-targets --all-features \
+            2>&1 | tee build/ci-rust/release-tests.log
+      - name: 发布二进制冒烟与打包
+        run: |
+          target/release/traffic-engine --version | tee build/ci-rust/version.log
+          grep -Fx "traffic-engine version=$(tr -d '[:space:]' < VERSION)" build/ci-rust/version.log
+          grep -Fx "traffic-engine commit=$(git rev-parse --short HEAD)" build/ci-rust/version.log
+          target/release/cythsec-analyze --help
+          target/release/cythsec-dump-ddl --help
+          target/release/dump-abi > build/ci-rust/abi.txt
+          mkdir -p build/ci-rust/package
+          cp VERSION Cargo.lock build/ci-rust/package/
+          for bin in traffic-engine cythsec-analyze cythsec-ipfix-collect cythsec-bench cythsec-dump-ddl dump-abi ring-consume; do
+            cp "target/release/$bin" build/ci-rust/package/
+          done
+          tar -czf "build/ci-rust/rust-${{ runner.os }}-${{ runner.arch }}.tar.gz" -C build/ci-rust/package .
+      - name: 保存构建与测试日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-test-logs-${{ matrix.os }}
+          path: |
+            build/ci-rust/*.log
+            build/ci-rust/abi.txt
+          retention-days: 7
+          if-no-files-found: warn
+      - name: 保存已测试的 Release 二进制
+        if: success() && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-release-${{ matrix.os }}-${{ runner.arch }}
+          path: build/ci-rust/*.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+
+  interoperability:
+    name: Rust 与 C++ / tshark 互操作
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          key: interoperability
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: 安装第三方协议裁判与 C++ 工具链
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo --preserve-env=DEBIAN_FRONTEND apt-get install -y cmake g++ tshark
+          tshark --version
+      - name: ABI、共享环、DPI、TCP 重组、FlowRecord、IPFIX 与采样（含反向注入）
+        run: |
+          mkdir -p build/ci-rust
+          bash scripts/test/test-all.sh --cpp --rust --parity --e2e --dpi --reassembly --flows --ipfix --sampling \
+            2>&1 | tee build/ci-rust/interoperability.log
+          # 既有第三方裁判例外必须显示出来，不能算成已完成核验。
+          echo '### 第三方裁判例外（不计为已核验）' >> "$GITHUB_STEP_SUMMARY"
+          grep -aE 'SKIP\(|跳过 [0-9]+ 项' build/ci-rust/interoperability.log >> "$GITHUB_STEP_SUMMARY" || true
+          # 环境缺失不能冒充通过；协议裁判有明确登记的字段例外，见 Rust CI 文档。
+          if grep -aE '^[[:space:]]*⚠.*(SKIPPED|未核验|未验收)' build/ci-rust/interoperability.log; then
+            echo '::error::存在未完成的互操作检查，请查看日志'
+            exit 1
+          fi
+      - name: 失败时保留互操作诊断
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-interoperability-failure
+          path: |
+            build/ci-rust/
+            build/e2e/
+          retention-days: 7
+          if-no-files-found: warn
+
+  result:
+    name: Rust CI 必需检查
+    if: always()
+    needs: [quality, build-test, interoperability]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 任一检查失败或未执行均不通过
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          BUILD_TEST: ${{ needs.build-test.result }}
+          INTEROPERABILITY: ${{ needs.interoperability.result }}
+        run: |
+          printf 'quality=%s build-test=%s interoperability=%s\n' "$QUALITY" "$BUILD_TEST" "$INTEROPERABILITY"
+          [[ "$QUALITY" == success && "$BUILD_TEST" == success && "$INTEROPERABILITY" == success ]]
