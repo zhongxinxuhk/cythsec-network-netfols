@@ -14,6 +14,10 @@ dependencies = []
 
 [dependency-groups]
 build = ["setuptools==84.2.1"]
+# CYS-MLT-002: static-analysis toolchain. Deliberately **not** in `default-groups`:
+# `uv sync --locked` (the CYS-MLT-001 gate) must stay a lean, offline-capable
+# runtime install. Quality tools are only needed when running the quality gate.
+quality = ["black==26.10.1", "mypy==2.4.0", "ruff==0.17.2"]
 
 [project.scripts]
 cythsec-features = "cythsec_training.features.dataset:main"
@@ -27,3 +31,55 @@ include-package-data = false
 [tool.uv]
 required-version = "==0.12.1"
 default-groups = ["build"]
+
+# --- CYS-MLT-002: ruff / black / mypy -------------------------------------
+# 单一真源：三个工具都从本文件取配置。门禁
+# scripts/verify/check-python-quality.sh 显式传 --config/--config-file，
+# 因为从仓库根一次检查多个目录时工具**不会**自动向上找到本文件
+# （black 以输入文件的公共父目录为根，mypy 以 cwd 为根）——漏传就会静默
+# 退回默认配置（88/100 列、宽松 mypy），于是"本地看着过、CI 判红"。
+#
+# 生成的绑定（schema_gen.py / attributes_gen.py）不参与格式与 lint：它们是
+# tools/codegen/*.py 的产物，手改会被生成物一致性关口判红。类型检查仍然覆盖
+# 它们，这样生成器一旦产出 mypy 不接受的代码就会被当场发现。
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["**/schema_gen.py", "**/attributes_gen.py"]
+# 门禁按文件清单调用 ruff（而不是扫目录），因此必须让排除规则对**显式路径**
+# 也生效；否则"生成物不 lint"这条只对目录扫描成立，换个调用方式就漏。
+force-exclude = true
+
+[tool.ruff.lint]
+# 只选能真正判红、规则稳定的集合。E501 交给 black：两者同时开启会互相打架
+# （black 无法把长字符串/长注释拆到 120 以内），最后只能靠大量 noqa 维持绿灯。
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "SIM", "C4", "RET"]
+# B905 requires zip(strict=...), unavailable to the retained Python 3.9 source
+# entry points. Vector lengths are validated separately before pairing values.
+ignore = ["E501", "B905"]
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+# 本仓库 Python 统一用单引号；black 默认会全部改成双引号，产生纯噪声 diff。
+skip-string-normalization = true
+# 正则而非 glob；只匹配生成物文件名，不按目录前缀排除（tests/ 与 tools/ 里
+# 也有需要检查的文件）。force-exclude 让规则对显式传入的路径同样生效。
+force-exclude = '/(schema_gen|attributes_gen)\.py$'
+
+[tool.mypy]
+python_version = "3.11"
+# strict 而不是默认档：默认档对无标注函数几乎不检查，"零告警"会退化成
+# "什么都没查"。检查范围由门禁传入（ml/training，即可安装包的源码）。
+strict = true
+# 本包的导入名是 cythsec_training、目录名是 ml/training（package-dir 映射）；
+# 没有这一项时 mypy 会因相对导入解析失败而直接不检查。
+explicit_package_bases = true
+# 配置里写了但不生效的段落要报出来，避免"以为配了"。
+warn_unused_configs = true
+
+namespace_packages = true
+mypy_path = "$MYPY_CONFIG_FILE_DIR/../.."
+files = ["$MYPY_CONFIG_FILE_DIR"]
+exclude = ['(^|/)(\.venv|build|[^/]+\.egg-info)/']
+cache_dir = "$MYPY_CONFIG_FILE_DIR/../../build/python-quality/mypy"

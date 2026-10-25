@@ -1,22 +1,25 @@
 """CYS-MLT-006 acceptance: source observations -> exported, versioned feature bundles."""
+
 import copy
 import csv
 import hashlib
 import io
 import json
 import math
-from pathlib import Path
 import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from ml.training.features import dataset
-from ml.training.features.schema_gen import FEATURE_NAMES
+from ml.training.features import dataset  # noqa: E402
+from ml.training.features.schema_gen import (  # noqa: E402
+    FEATURE_NAMES,
+)
 
 
 class FeatureDatasetTests(unittest.TestCase):
@@ -25,14 +28,17 @@ class FeatureDatasetTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.input = self.root / 'input.jsonl'
-        self.rows = [{
-            'schema_version': 1, 'sample_id': 'hand-calculated',
-            'samples': [
-                {'side': 'A', 'payload_len': 0, 'timestamp_us': 0, 'payload_hex': ''},
-                {'side': 'B', 'payload_len': 2, 'timestamp_us': 1000, 'payload_hex': '0001'},
-                {'side': 'A', 'payload_len': 4, 'timestamp_us': 3000, 'payload_hex': '00010001'},
-            ],
-        }]
+        self.rows = [
+            {
+                'schema_version': 1,
+                'sample_id': 'hand-calculated',
+                'samples': [
+                    {'side': 'A', 'payload_len': 0, 'timestamp_us': 0, 'payload_hex': ''},
+                    {'side': 'B', 'payload_len': 2, 'timestamp_us': 1000, 'payload_hex': '0001'},
+                    {'side': 'A', 'payload_len': 4, 'timestamp_us': 3000, 'payload_hex': '00010001'},
+                ],
+            }
+        ]
         self.write_rows(self.rows)
 
     def write_rows(self, rows, path=None):
@@ -41,8 +47,13 @@ class FeatureDatasetTests(unittest.TestCase):
         return path
 
     def build(self, name='output', **kwargs):
-        return dataset.build_bundle(self.input, self.root / name, source_id='synthetic-fixture',
-                                    input_format=kwargs.pop('input_format', 'observations'), **kwargs)
+        return dataset.build_bundle(
+            self.input,
+            self.root / name,
+            source_id='synthetic-fixture',
+            input_format=kwargs.pop('input_format', 'observations'),
+            **kwargs,
+        )
 
     def matrix(self, name='output'):
         with (self.root / name / 'features.csv').open(newline='', encoding='utf-8') as stream:
@@ -51,12 +62,15 @@ class FeatureDatasetTests(unittest.TestCase):
     def record(self):
         # Hand-derived features for lengths [0,2,4], times [0,1000,3000],
         # canonical directions A/B/A and equally split captured bytes 0/1.
-        truth = [3, 6, 2, 4, 1, 2, 2/3, 3000, 16000, 1000, 2, 0, 4,
-                 (8/3)**0.5, 1500, 1000, 2000, 500, 2, 1, 1]
-        return {'schema_version': 2, 'session_id': 9,
-                'time': {'first_seen_us': 0, 'last_seen_us': 3000},
-                'features': {'schema_version': 1, **dict(zip(FEATURE_NAMES, truth))},
-                'app': {'app': 'http'}, 'risk_score': 0.99}
+        truth = [3, 6, 2, 4, 1, 2, 2 / 3, 3000, 16000, 1000, 2, 0, 4, (8 / 3) ** 0.5, 1500, 1000, 2000, 500, 2, 1, 1]
+        return {
+            'schema_version': 2,
+            'session_id': 9,
+            'time': {'first_seen_us': 0, 'last_seen_us': 3000},
+            'features': {'schema_version': 1, **dict(zip(FEATURE_NAMES, truth))},
+            'app': {'app': 'http'},
+            'risk_score': 0.99,
+        }
 
     def test_hand_derived_feature_matrix_and_source_fingerprint(self):
         manifest = self.build()
@@ -77,7 +91,9 @@ class FeatureDatasetTests(unittest.TestCase):
             self.assertEqual((self.root / 'first' / name).read_bytes(), (self.root / 'second' / name).read_bytes())
 
     def test_explicit_labels_have_provenance_and_complete_counts(self):
-        labels = self.write_rows([{'sample_id': 'hand-calculated', 'label': 'fixture-class'}], self.root / 'labels.jsonl')
+        labels = self.write_rows(
+            [{'sample_id': 'hand-calculated', 'label': 'fixture-class'}], self.root / 'labels.jsonl'
+        )
         manifest = self.build(labels_path=labels, label_source='synthetic test annotation; not ground truth')
         self.assertEqual(self.matrix()[0]['label'], 'fixture-class')
         self.assertEqual(manifest['labels']['class_counts'], {'fixture-class': 1})
@@ -98,7 +114,7 @@ class FeatureDatasetTests(unittest.TestCase):
         self.write_rows([row])
         self.build(input_format='flow-record')
         matrix = self.matrix()[0]
-        self.assertEqual(list(matrix)[len(dataset.METADATA_COLUMNS):], list(FEATURE_NAMES))
+        self.assertEqual(list(matrix)[len(dataset.METADATA_COLUMNS) :], list(FEATURE_NAMES))
         for name in FEATURE_NAMES:
             self.assertEqual(float(matrix[name]), row['features'][name])
 
@@ -176,15 +192,17 @@ class FeatureDatasetTests(unittest.TestCase):
                     self.build()
                 self.assertFalse((self.root / 'output').exists())
         self.write_rows(self.rows)
-        with mock.patch.object(dataset, 'MAX_LINE_BYTES', 32):
-            with self.assertRaisesRegex(ValueError, 'line exceeds'):
-                self.build()
+        with mock.patch.object(dataset, 'MAX_LINE_BYTES', 32), self.assertRaisesRegex(ValueError, 'line exceeds'):
+            self.build()
 
     def test_label_missing_extra_duplicate_or_no_provenance_is_rejected(self):
-        cases = [[], [{'sample_id': 'other', 'label': 'x'}],
-                 [{'sample_id': 'hand-calculated', 'label': 'x'}, {'sample_id': 'extra', 'label': 'x'}],
-                 [{'sample_id': 'hand-calculated', 'label': 'x'}] * 2,
-                 [{'sample_id': 'hand-calculated', 'label': ''}]]
+        cases = [
+            [],
+            [{'sample_id': 'other', 'label': 'x'}],
+            [{'sample_id': 'hand-calculated', 'label': 'x'}, {'sample_id': 'extra', 'label': 'x'}],
+            [{'sample_id': 'hand-calculated', 'label': 'x'}] * 2,
+            [{'sample_id': 'hand-calculated', 'label': ''}],
+        ]
         for rows in cases:
             with self.subTest(rows=rows):
                 labels = self.write_rows(rows, self.root / 'labels.jsonl')
@@ -195,8 +213,10 @@ class FeatureDatasetTests(unittest.TestCase):
             self.build(labels_path=self.root / 'labels.jsonl')
 
     def test_typed_class_counts_and_incomplete_bundles_are_rejected(self):
-        self.build(labels_path=self.write_rows([{'sample_id': 'hand-calculated', 'label': 'x'}], self.root / 'labels.jsonl'),
-                   label_source='explicit synthetic annotation')
+        self.build(
+            labels_path=self.write_rows([{'sample_id': 'hand-calculated', 'label': 'x'}], self.root / 'labels.jsonl'),
+            label_source='explicit synthetic annotation',
+        )
         bundle = self.root / 'output'
         manifest = json.loads((bundle / 'manifest.json').read_text())
         manifest['labels']['class_counts']['x'] = True
@@ -216,13 +236,14 @@ class FeatureDatasetTests(unittest.TestCase):
 
     def test_publication_failure_rolls_back_new_bundle(self):
         real_replace = dataset.os.replace
+
         def fail_manifest(src, dest):
             if Path(src).name == 'manifest.json':
                 raise OSError('injected manifest publication failure')
             return real_replace(src, dest)
-        with mock.patch.object(dataset.os, 'replace', side_effect=fail_manifest):
-            with self.assertRaises(OSError):
-                self.build()
+
+        with mock.patch.object(dataset.os, 'replace', side_effect=fail_manifest), self.assertRaises(OSError):
+            self.build()
         self.assertFalse((self.root / 'output').exists())
         self.assertEqual(list(self.root.glob('.cythsec-features-*')), [])
 
@@ -231,8 +252,10 @@ class FeatureDatasetTests(unittest.TestCase):
         bundle = self.root / 'output'
         manifest = json.loads((bundle / 'manifest.json').read_text())
         original_csv = (bundle / 'features.csv').read_text()
+
         def save_manifest(value):
             (bundle / 'manifest.json').write_text(dataset.canonical_json(value) + '\n')
+
         for label, mutate in [
             ('wrong contract', lambda m: m['feature_schema'].update(version=999)),
             ('boolean contract version', lambda m: m['feature_schema'].update(version=True)),
@@ -259,7 +282,8 @@ class FeatureDatasetTests(unittest.TestCase):
                 if mode == 'swapped header':
                     rows[0][-1], rows[0][-2] = rows[0][-2], rows[0][-1]
                 elif mode == 'duplicate row':
-                    rows.append(rows[1]); changed['matrix']['rows'] = 2
+                    rows.append(rows[1])
+                    changed['matrix']['rows'] = 2
                 elif mode == 'wrong dimension':
                     rows[1].pop()
                 else:
@@ -274,9 +298,23 @@ class FeatureDatasetTests(unittest.TestCase):
 
     def test_cli_build_validate_and_failure_exit_codes(self):
         base = [sys.executable, '-m', 'ml.training.features.dataset']
-        result = subprocess.run(base + ['build', '--input', str(self.input), '--output', str(self.root / 'cli'),
-                                       '--source-id', 'synthetic-cli', '--format', 'observations'],
-                                cwd=ROOT, capture_output=True, text=True)
+        result = subprocess.run(
+            base
+            + [
+                'build',
+                '--input',
+                str(self.input),
+                '--output',
+                str(self.root / 'cli'),
+                '--source-id',
+                'synthetic-cli',
+                '--format',
+                'observations',
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         result = subprocess.run(base + ['validate', str(self.root / 'cli')], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -291,26 +329,62 @@ class FeatureDatasetTests(unittest.TestCase):
         rows = []
         for name, samples in cases.items():
             if samples:  # Empty observations are explicitly rejected as training rows.
-                rows.append({'schema_version': 1, 'sample_id': name, 'samples': [
-                    {'side': s.side, 'payload_len': s.payload_len, 'timestamp_us': s.timestamp_us,
-                     'payload_hex': s.payload.hex()} for s in samples]})
+                rows.append(
+                    {
+                        'schema_version': 1,
+                        'sample_id': name,
+                        'samples': [
+                            {
+                                'side': s.side,
+                                'payload_len': s.payload_len,
+                                'timestamp_us': s.timestamp_us,
+                                'payload_hex': s.payload.hex(),
+                            }
+                            for s in samples
+                        ],
+                    }
+                )
         self.write_rows(rows)
         self.build()
-        result = subprocess.run(['cargo', 'run', '--offline', '--quiet', '--example', 'feature_vectors'],
-                                cwd=ROOT, capture_output=True, text=True)
+        result = subprocess.run(
+            ['cargo', 'run', '--offline', '--quiet', '--example', 'feature_vectors'],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         rust = {row['case']: row for row in map(json.loads, result.stdout.splitlines())}
         matrix = self.matrix()
         self.assertEqual(len(matrix), 25)
         for row in matrix:
             for name, expected in zip(FEATURE_NAMES, rust[row['sample_id']]['values']):
-                self.assertTrue(math.isclose(float(row[name]), expected, rel_tol=1e-12, abs_tol=1e-9), (row['sample_id'], name))
-        print(f'  dataset/Rust parity: {len(matrix)} rows × {len(FEATURE_NAMES)} dimensions = {len(matrix)*len(FEATURE_NAMES)} values')
+                self.assertTrue(
+                    math.isclose(float(row[name]), expected, rel_tol=1e-12, abs_tol=1e-9), (row['sample_id'], name)
+                )
+        print(
+            f'  dataset/Rust parity: {len(matrix)} rows × {len(FEATURE_NAMES)} dimensions = {len(matrix)*len(FEATURE_NAMES)} values'
+        )
 
     def test_real_analyzer_flow_records_export_with_the_same_feature_order(self):
-        result = subprocess.run(['cargo', 'run', '--offline', '--quiet', '--bin', 'cythsec-analyze', '--',
-                                 '-r', str(ROOT / 'datasets/pcap/sample-session-tcp.pcap'), '-o', str(self.input), '-q'],
-                                cwd=ROOT, capture_output=True, text=True)
+        result = subprocess.run(
+            [
+                'cargo',
+                'run',
+                '--offline',
+                '--quiet',
+                '--bin',
+                'cythsec-analyze',
+                '--',
+                '-r',
+                str(ROOT / 'datasets/pcap/sample-session-tcp.pcap'),
+                '-o',
+                str(self.input),
+                '-q',
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in self.input.read_text().splitlines()]
         self.build(input_format='flow-record')
@@ -321,7 +395,6 @@ class FeatureDatasetTests(unittest.TestCase):
             self.assertEqual(row['sample_id'], str(record['session_id']))
             for name in FEATURE_NAMES:
                 self.assertEqual(float(row[name]), float(record['features'][name]))
-
 
 
 if __name__ == '__main__':

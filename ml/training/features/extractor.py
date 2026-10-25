@@ -5,9 +5,12 @@ consumes the same observations as Rust; it does not parse pcap or infer directio
 Only the schema layout is generated. The numerical implementation is independent,
 so the parity gate can detect a formula or observation-semantics drift.
 """
-from dataclasses import dataclass
+
+from __future__ import annotations
+
 import math
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from .schema_gen import FEATURE_COUNT, FEATURE_NAMES, FEATURE_SCHEMA_VERSION, SMALL_PACKET_MAX_LEN, idx
 
@@ -19,7 +22,7 @@ class FlowSample:
     timestamp_us: int
     payload: bytes = b''
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.side not in ('A', 'B'):
             raise ValueError('side must be canonical A or B, not initiator direction')
         if type(self.payload_len) is not int or not 0 <= self.payload_len < 2**32:
@@ -35,17 +38,19 @@ class FeatureVector:
     schema_version: int
     values: tuple[float, ...]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != FEATURE_SCHEMA_VERSION:
             raise ValueError('unsupported feature schema version')
-        if len(self.values) != FEATURE_COUNT or not all(type(v) in (int, float) and math.isfinite(v) for v in self.values):
+        if len(self.values) != FEATURE_COUNT or not all(
+            type(v) in (int, float) and math.isfinite(v) for v in self.values
+        ):
             raise ValueError('feature vector must have the schema dimension and finite values')
 
-    def by_name(self):
+    def by_name(self) -> dict[str, float]:
         return dict(zip(FEATURE_NAMES, self.values))
 
 
-def _stddev(count, total, squares):
+def _stddev(count: int, total: int, squares: int) -> float:
     if count < 2:
         return 0.0
     return math.sqrt(max(0.0, float(squares) / count - (float(total) / count) ** 2))
@@ -54,9 +59,15 @@ def _stddev(count, total, squares):
 def extract(samples: Iterable[FlowSample]) -> FeatureVector:
     """Single-pass, bounded-memory extraction; all IATs contribute to aggregates."""
     packets = total = squares = fwd_packets = fwd_bytes = small = switches = 0
-    first = last = prev = prev_side = min_len = max_len = None
+    first: int | None = None
+    last: int | None = None
+    prev: int | None = None
+    prev_side: str | None = None
+    min_len: int | None = None
+    max_len: int | None = None
     iat_count = iat_sum = iat_squares = 0
-    iat_min = iat_max = None
+    iat_min: int | None = None
+    iat_max: int | None = None
     hist = [0] * 256
     for sample in samples:
         length, ts = sample.payload_len, sample.timestamp_us
@@ -84,7 +95,7 @@ def extract(samples: Iterable[FlowSample]) -> FeatureVector:
         prev, prev_side = ts, sample.side
         for byte in sample.payload:
             hist[byte] += 1
-    duration = max(0, last - first) if packets else 0
+    duration = max(0, last - first) if last is not None and first is not None else 0
     seconds = duration / 1_000_000.0
     entropy_bytes = sum(hist)
     entropy = 0.0
@@ -94,7 +105,7 @@ def extract(samples: Iterable[FlowSample]) -> FeatureVector:
                 p = count / entropy_bytes
                 entropy -= p * math.log2(p)
     # A newly declared dimension must get an implementation; never silently zero-fill it.
-    values = [None] * FEATURE_COUNT
+    values: list[float | None] = [None] * FEATURE_COUNT
     values[idx.PACKETS] = float(packets)
     values[idx.BYTES] = float(total)
     values[idx.FWD_PACKETS] = float(fwd_packets)
@@ -116,4 +127,9 @@ def extract(samples: Iterable[FlowSample]) -> FeatureVector:
     values[idx.DIRECTION_SWITCHES] = float(switches)
     values[idx.SMALL_PACKET_RATIO] = small / packets if packets else 0.0
     values[idx.PAYLOAD_ENTROPY_BITS] = entropy
-    return FeatureVector(FEATURE_SCHEMA_VERSION, tuple(values))
+    complete: list[float] = []
+    for value in values:
+        if value is None:
+            raise ValueError('feature dimension has no implementation')
+        complete.append(value)
+    return FeatureVector(FEATURE_SCHEMA_VERSION, tuple(complete))

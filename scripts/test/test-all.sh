@@ -852,6 +852,8 @@ failed=0
 if [[ ${ALL} -eq 1 ]]; then
   echo "==> [training-project] 锁定环境与隔离安装包验收（CYS-MLT-001）"
   bash scripts/verify/check-training-project.sh || failed=$((failed+1))
+  echo "==> [python-quality] 静态检查与故障注入（CYS-MLT-002）"
+  bash scripts/verify/check-python-quality.sh || failed=$((failed+1))
 fi
 [[ $BUILD_GO -eq 1 ]]    && { test_go    || failed=$((failed+1)); }
 [[ $BUILD_NODE -eq 1 ]]  && { test_selftest || failed=$((failed+1)); }

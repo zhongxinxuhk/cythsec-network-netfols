@@ -41,7 +41,9 @@ jobs:
       - name: 安装钉扎的 Python 并同步锁定环境
         run: |
           uv python install "$(cat ml/training/.python-version)"
-          uv sync --project ml/training --locked
+          uv sync --project ml/training --locked --group quality
+      - name: Ruff / Black / strict mypy 与反向注入
+        run: bash scripts/verify/check-python-quality.sh
       - name: 离线验证锁文件、自证与仓库外安装包
         run: bash scripts/verify/check-training-project.sh
 
