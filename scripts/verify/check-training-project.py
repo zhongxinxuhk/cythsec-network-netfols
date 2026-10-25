@@ -98,25 +98,30 @@ def self_test(offline):
                 pass
             else:
                 raise ValueError(f'metadata injection escaped: {label}')
-        # Check the real uv freshness command, using an already cached dependency.
-        project = root / 'ml/training'
+        # Exercise uv's real freshness guard in an empty cache. Resolving an
+        # injected registry dependency would require index metadata that a
+        # successful --locked wheel install does not necessarily cache.
+        # A dependency-free probe isolates lock freshness from that setup.
         for name, value in originals.items():
             (root / name).write_text(value)
-        shutil.copyfile(ROOT / 'ml/training/README.md', project / 'README.md')
-        text = (project / 'pyproject.toml').read_text()
-        (project / 'pyproject.toml').write_text(
-            text.replace('dependencies = []', f'dependencies = ["setuptools=={backend_version}"]')
+        probe = root / 'lock-probe'
+        probe.mkdir()
+        (probe / '.python-version').write_text(originals['ml/training/.python-version'])
+        probe_config = probe / 'pyproject.toml'
+        probe_config.write_text(
+            '[project]\nname = "cythsec-lock-probe"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.11,<3.12"\ndependencies = []\n'
         )
         env = os.environ.copy()
-        if offline:
-            env.update(UV_OFFLINE='1', UV_PYTHON_DOWNLOADS='never')
-        stale = subprocess.run(
-            ['uv', 'lock', '--project', str(project), '--check', '--offline', '--no-python-downloads'],
-            cwd=tmp,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+        env.update(UV_CACHE_DIR=str(root / 'empty-uv-cache'), UV_OFFLINE='1', UV_PYTHON_DOWNLOADS='never')
+        command = ['uv', 'lock', '--project', str(probe), '--offline', '--no-python-downloads']
+        created = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
+        require(created.returncode == 0, f'uv cold-cache probe bootstrap failed: {created.stderr}')
+        command.append('--check')
+        fresh = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
+        require(fresh.returncode == 0, f'uv rejected a fresh probe lock: {fresh.stderr}')
+        probe_config.write_text(probe_config.read_text().replace('version = "0.1.0"', 'version = "9.9.9"'))
+        stale = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
         require(
             stale.returncode != 0 and 'lockfile' in stale.stderr.lower(),
             f'uv stale-lock injection escaped or failed for another reason: {stale.stderr}',
