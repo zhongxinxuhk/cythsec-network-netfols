@@ -32,7 +32,7 @@ jobs:
           cache: false # 当前 Go 模块没有外部依赖，也没有 go.sum
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "18"
+          node-version-file: .node-version
           cache: "npm"
           cache-dependency-path: web/console/package-lock.json
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

@@ -6,19 +6,23 @@
 
 ## 技术栈（刻意极简）
 
-- React ^18.3.1 + react-router-dom ^6.26.0 —— **runtime 依赖仅 3 个**
-- TypeScript ^5.5 / Vite ^5.4 / Vitest ^2.0 / ESLint ^8.57
+- React ^18.3.1 + react-router-dom ^7.18.4 —— **runtime 依赖仅 3 个**
+- TypeScript ^5.5 / Vite ^6.4.5 / Vitest ^4.1.12 / ESLint ^8.57
 - **无状态管理库**：`src/stores/` 目前是占位，实际状态就是 React `useState` + 自研 `useApi` hook
+
+Node 版本使用根 `.node-version`（24.15.0）；package.json engines 为兼容边界。
 
 ## 命令
 
 ```bash
-npm install
+cd console
+npm ci
 npm run dev          # 开发（/api 代理到 http://localhost:8080，可用 VITE_ROUTERD_TARGET 覆盖，见 .env.example）
 npm run build        # tsc && vite build
 npm run typecheck    # tsc --noEmit
-npm run test         # vitest（jsdom + v8 coverage）
+npm run test         # vitest（jsdom；coverage 需额外安装同版本 provider）
 npm run lint
+npm audit --package-lock-only --audit-level=low # 包含开发依赖的安全门禁
 ```
 
 ## 结构
