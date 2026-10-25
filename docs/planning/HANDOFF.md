@@ -1,5 +1,7 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-10-25 续批**：从 `0aeb5ff` 开立 `fix/iat-square-sum-overflow`，修复 IAT 二阶矩溢出与空摘要重复计数；统计 debug/release 均 20/20，特征核验 26 样本/546 值。lint/test 实际退出均 0，但真实抓包仍 SKIPPED，未合 master。见 [IAT-OVERFLOW-20261025.md](IAT-OVERFLOW-20261025.md)。
+
 > **2026-10-25 当前增量**：从 `956febb` 核对开发进度并推进 `CYS-TRF-028`（单一特征 schema + Rust/Python 绑定 + 23 样本/483 维值 parity）。本批验收与分支状态以 [PROGRESS-20261025.md](PROGRESS-20261025.md) 为准；下方历史统计未全部刷新。
 
 > 状态点：`b9f850d` · 2026-10-22 —— 列式落盘（ClickHouse `Native`）字节实测收口（§2.17）

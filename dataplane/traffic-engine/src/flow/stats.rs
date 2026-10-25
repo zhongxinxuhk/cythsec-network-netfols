@@ -73,9 +73,12 @@ pub struct IatRing {
     /// 累计推入过的 IAT 个数（含已被覆盖的）。
     count: u64,
     sum_us: u64,
-    /// 平方和。用 u128：u64 的平方和在高包数下会溢出 u64，而溢出后的标准差
-    /// 会算成一个"看起来正常"的小值 —— 这种错最难发现，故不放任它回绕。
+    /// 平方和的低 128 位与高 64 位（精确 192 位，无逐样本分配）。
+    /// 一个 u64 的平方放得下 u128，两个 u64::MAX 的平方之和就放不下。
+    /// count ≤ u64::MAX 时，总和 ≤ (2^64-1)^3 < 2^192，因此三字足够。
+    /// 不能饱和平方和：它会把溢出藏成偏小的标准差。
     sum_sq_us: u128,
+    sum_sq_us_high: u64,
     min_us: u64,
     max_us: u64,
 }
@@ -90,6 +93,7 @@ impl IatRing {
             count: 0,
             sum_us: 0,
             sum_sq_us: 0,
+            sum_sq_us_high: 0,
             min_us: 0,
             max_us: 0,
         }
@@ -99,13 +103,18 @@ impl IatRing {
         self.buf.len()
     }
 
-    pub fn push(&mut self, delta_us: u64) {
+    // 仅维护保留窗口，不更新全历史摘要。merge 复制窗口也走这里，避免重复计数。
+    fn retain(&mut self, delta_us: u64) {
         let cap = self.buf.len();
         self.buf[self.next] = delta_us;
         self.next = (self.next + 1) % cap;
         if self.len < cap {
             self.len += 1;
         }
+    }
+
+    pub fn push(&mut self, delta_us: u64) {
+        self.retain(delta_us);
         if self.count == 0 {
             self.min_us = delta_us;
             self.max_us = delta_us;
@@ -116,7 +125,10 @@ impl IatRing {
         // sum 用 saturating：一条跑满 10G 的长流其 IAT 总和在 u64 下仍然安全，
         // 但饱和加法保证任何输入都不会回绕成一个小值（回绕会把均值算成 0）。
         self.sum_us = self.sum_us.saturating_add(delta_us);
-        self.sum_sq_us += u128::from(delta_us) * u128::from(delta_us);
+        let square = u128::from(delta_us) * u128::from(delta_us);
+        let (low, carry) = self.sum_sq_us.overflowing_add(square);
+        self.sum_sq_us = low;
+        self.sum_sq_us_high += u64::from(carry);
         self.count += 1;
     }
 
@@ -157,13 +169,18 @@ impl IatRing {
     /// 实际发生的全部包间隔"，不是从更大总体里抽的样，所以没有自由度损失可言。
     /// 方差用 `E[x²] - E[x]²` 展开式直接算，避免为了求均值再遍历一遍缓冲 ——
     /// 但要注意该式在数值上可能给出极小负数（浮点误差），故钳到 0。
+    /// 兼容限制：一阶矩 sum_us 保留 v1 的 u64 饱和规则；饱和后这里只能解释为
+    /// “以饱和一阶矩计算的离散度”，不再等于精确总体标准差。平方和仍保持精确。
     pub fn stddev_us(&self) -> f64 {
         if self.count < 2 {
             return 0.0;
         }
         let n = self.count as f64;
         let mean = self.sum_us as f64 / n;
-        let mean_sq = self.sum_sq_us as f64 / n;
+        // 2^128 is exactly representable in f64. Convert only when rendering;
+        // the increment/merge paths retain the full integer second moment.
+        const HIGH_SCALE: f64 = 340282366920938463463374607431768211456.0;
+        let mean_sq = (self.sum_sq_us as f64 + self.sum_sq_us_high as f64 * HIGH_SCALE) / n;
         let var = mean_sq - mean * mean;
         if var <= 0.0 {
             0.0
@@ -195,13 +212,15 @@ impl IatRing {
             self.max_us = self.max_us.max(other.max_us);
         }
         self.sum_us = self.sum_us.saturating_add(other.sum_us);
-        self.sum_sq_us += other.sum_sq_us;
+        let (low, carry) = self.sum_sq_us.overflowing_add(other.sum_sq_us);
+        self.sum_sq_us = low;
+        self.sum_sq_us_high += other.sum_sq_us_high + u64::from(carry);
         self.count += other.count;
         // 环形缓冲只保留"最近"的语义：合并时以本对象的最近样本为准，
         // 仅在本对象为空时采纳对方的缓冲。
         if self.len == 0 {
             for v in other.iter() {
-                self.push(v);
+                self.retain(v);
             }
         }
     }
@@ -225,7 +244,7 @@ pub struct FlowStats {
     pub iat: IatRing,
     /// 上一个包的到达时间（`None` 表示还没见过包）。
     last_ts_us: Option<u64>,
-    /// 载荷长度平方和（u128，理由同 `IatRing::sum_sq_us`）。
+    /// 载荷长度平方和。u32 长度的平方 × u64 包数至多需要 128 位，与 u64 IAT 不同。
     sum_payload_sq: u128,
 }
 
@@ -584,5 +603,78 @@ mod tests {
         assert_eq!(r.mean_us(), 400);
         assert!((r.stddev_us() - (560000f64 / 3.0).sqrt()).abs() < 1e-9);
         assert!(r.stddev_us() > 100.0, "合并必须把方差并进来而不是取平均");
+    }
+
+    #[test]
+    fn iat_square_sum_push_carries_past_u128_without_wrapping() {
+        let mut ring = IatRing::new(1);
+        ring.push(u64::MAX);
+        ring.push(u64::MAX);
+        assert_eq!(ring.count(), 2);
+        assert_eq!(ring.retained(), 1);
+        // The legacy first moment saturates at u64::MAX. Preserve that contract;
+        // exact second moment is 2*M², so variance = M² - (M/2)² = 3*M²/4.
+        let expected = u64::MAX as f64 * 3f64.sqrt() / 2.0;
+        assert!((ring.stddev_us() / expected - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn iat_square_sum_merge_carries_past_u128_without_wrapping() {
+        let mut left = IatRing::new(1);
+        left.push(u64::MAX);
+        let right = left.clone();
+        left.merge(&right);
+        assert_eq!(left.count(), 2);
+        let expected = u64::MAX as f64 * 3f64.sqrt() / 2.0;
+        assert!((left.stddev_us() / expected - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn iat_merge_into_empty_does_not_replay_retained_samples_into_summary() {
+        let mut source = IatRing::new(2);
+        for delta in [10, 20, 30, 40] {
+            source.push(delta);
+        }
+        let mut target = IatRing::new(1);
+        target.merge(&source);
+        assert_eq!(target.capacity(), 1);
+        assert_eq!(target.iter().collect::<Vec<_>>(), vec![40]);
+        assert_eq!(
+            target.count(),
+            4,
+            "adopting the buffer must not count it twice"
+        );
+        assert_eq!(target.mean_us(), 25);
+        assert_eq!(target.extremes_us(), Some((10, 40)));
+        assert!((target.stddev_us() - 125f64.sqrt()).abs() < 1e-12);
+        target.push(50);
+        assert_eq!(target.count(), 5);
+        assert_eq!(target.mean_us(), 30);
+        assert!((target.stddev_us() - 200f64.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn iat_square_sum_is_exact_through_the_full_u64_count_range() {
+        let mut total = IatRing::new(1);
+        let mut block = IatRing::new(1);
+        block.push(u64::MAX);
+        // Build 1+2+4+...+2^63 samples in 64 merges, without storing the samples.
+        for bit in 0..64 {
+            total.merge(&block);
+            if bit < 63 {
+                let copy = block.clone();
+                block.merge(&copy);
+            }
+        }
+        assert_eq!(total.count(), u64::MAX);
+        // Hand algebra: (2^64-1)^3 = 2^192 - 3*2^128 + 3*2^64 - 1.
+        assert_eq!(total.sum_sq_us_high, u64::MAX - 2);
+        assert_eq!(total.sum_sq_us, 3 * (1u128 << 64) - 1);
+        assert!(total.stddev_us().is_finite());
+        assert_eq!(
+            total.retained(),
+            1,
+            "aggregate capacity is independent of count"
+        );
     }
 }

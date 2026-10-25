@@ -1101,3 +1101,24 @@ B 1 70687 45
 A 1 70887 76
 B 0 70887 -
 end
+# Previously panicked: two maximal timestamp deltas overflow a u128 square sum.
+case square_sum_overflow 1
+A 0 0 -
+B 0 18446744073709551615 -
+A 0 0 -
+B 0 18446744073709551615 -
+end
+case reverse_only_square_sum_overflow 2
+B 0 0 -
+B 0 18446744073709551615 -
+B 0 0 -
+B 0 18446744073709551615 -
+end
+case square_sum_multiple_carries 1
+A 0 0 -
+B 0 18446744073709551615 -
+A 0 0 -
+B 0 18446744073709551615 -
+A 0 0 -
+B 0 18446744073709551615 -
+end

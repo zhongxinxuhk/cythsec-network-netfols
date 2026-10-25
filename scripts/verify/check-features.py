@@ -79,10 +79,16 @@ def analytical_truth(expected):
                                ('ring_overwrite', 'stddev_iat_us', 360),
                                ('threshold', 'small_packet_ratio', 0.5),
                                ('single_truncated', 'bytes', 1500),
-                               ('single_truncated', 'payload_entropy_bits', 2)]:
+                               ('single_truncated', 'payload_entropy_bits', 2),
+                               # The v1 first moment saturates at M=2^64-1. Preserve it:
+                               # [M,0,M] => variance 2*M²/3-(M/3)² = 5*M²/9.
+                               ('square_sum_overflow', 'stddev_iat_us', (2**64-1)*math.sqrt(5)/3),
+                               ('reverse_only_square_sum_overflow', 'stddev_iat_us', (2**64-1)*math.sqrt(5)/3),
+                               # [M,0,M,0,M] => variance 3*M²/5-(M/5)² = 14*M²/25.
+                               ('square_sum_multiple_carries', 'stddev_iat_us', (2**64-1)*math.sqrt(14)/5)]:
         require(math.isclose(named[key][feature], want, abs_tol=1e-9), f'hand truth: {key}.{feature}')
     require(all(v == 0 for v in expected['empty'].values), 'empty input must be all zeros')
-    print('✓ hand-derived truth: 21 dimensions + 10 boundary checks')
+    print('✓ hand-derived truth: 21 dimensions + 13 boundary checks')
 
 
 def generator_selftest():

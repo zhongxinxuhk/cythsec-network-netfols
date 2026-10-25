@@ -194,3 +194,7 @@ python3 scripts/plan/collector-capacity.py --storage-format columnar
    ⇒ `INSERT INTO flows_default` 报 UNKNOWN_TABLE。现在 `rename_table()` 只认 CREATE 语句那一处，
    且 `_looks_like_our_sql_defect()` 把 UNKNOWN_TABLE/SYNTAX_ERROR 归为**缺陷**（判红），
    只有"二进制找不到"这类才算未核验。两条都在 `measure-columnar.py --self-test` 里有反向注入。
+
+## IAT 平方和修复的局部成本（2026-10-25）
+
+`iat-overflow-bench.json`：基线 `0aeb5ff` 与 `fix/iat-square-sum-overflow` 同机交替测量，**每档 7 轮，每轮 1000 万次** `IatRing::push`。中位 1.4804 → 1.5125 ns/push（约 +2.17%）；本机结构体仍为 96 B。产物包含全部原始值、编译器/平台与源码。仅局部微基准，不作为端到端吞吐或跨平台内存布局承诺；修复与验收边界见 `../IAT-OVERFLOW-20261025.md`。
