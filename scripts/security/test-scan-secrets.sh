@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/.github/workflows"
+fixture="$scratch/.github/workflows/check.yml"
+key="$(printf '%s%s' GITHUB_ TOKEN)"
+
+check_case() {
+  local label="$1" value="$2" expected="$3" rc=0
+  printf '  %s: %s\n' "$key" "$value" > "$fixture"
+  bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
+  [[ "$rc" == "$expected" ]] || { echo "✗ secret scan self-test: $label" >&2; exit 1; }
+  if [[ "$expected" == 1 ]]; then
+    grep -q GENERIC_SECRET_ASSIGN "$scratch/output"
+    if grep -Fq -- "$value" "$scratch/output"; then
+      echo '✗ secret scan self-test: matched text exposed' >&2; exit 1
+    fi
+  fi
+}
+check_case reference '${{ secrets.GITHUB_TOKEN }}' 0
+check_case context '${{ github.token }}' 0
+check_case literal 'literal-value' 1
+check_case suffix '${{ secrets.GITHUB_TOKEN }}-literal-value' 1
+check_case conditional "\${{ secrets.GITHUB_TOKEN || 'literal-value' }}" 1
+check_case comment '${{ github.token }} # literal-value' 1
+# 相同文本在非 workflow 文件中不享受这条窄范围放行。
+printf '%s: %s\n' "$key" '${{ secrets.GITHUB_TOKEN }}' > "$scratch/config.yml"
+rm "$fixture"
+rc=0
+bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
+[[ "$rc" == 1 ]]
+echo '✓ 密钥扫描自证：2 项纯运行时引用 / 4 项字面值或拼接拒绝 / 非 workflow 路径拒绝 / 原文脱敏'

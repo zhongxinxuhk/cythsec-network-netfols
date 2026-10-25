@@ -1,4 +1,5 @@
 name: CI
+run-name: "CI · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}"
 
 # 触发条件：推送到 main 或开启/更新 PR 时运行。
 on:

@@ -71,6 +71,14 @@ scan_rule() {
       [ -z "$line" ] && continue
       content="${line#*:}"
       content="${content#*:}"
+      # GitHub 的纯运行时引用不是明文值。仅放行 workflow 中整行、无拼接的
+      # secrets.NAME / github.token 引用；后缀、条件表达式或同一行其他赋值仍扫描。
+      local runtime_ref='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:[[:space:]]*\$\{\{[[:space:]]*(secrets\.[A-Za-z_][A-Za-z0-9_]*|github\.token)[[:space:]]*\}\}[[:space:]]*$'
+      if [[ "$name" == GENERIC_SECRET_ASSIGN && "$content" =~ $runtime_ref ]]; then
+        case "${line%%:*}" in
+          "$REPO"/.github/workflows/*.yml | "$REPO"/.github/workflows/*.yaml) continue ;;
+        esac
+      fi
       if [[ "$content" =~ $neg ]]; then
         continue
       fi

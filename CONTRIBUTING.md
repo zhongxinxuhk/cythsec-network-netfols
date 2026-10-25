@@ -51,6 +51,19 @@ bash scripts/lint/lint-all.sh --help
 
 提交前请运行 `bash scripts/release/check-version.sh` 校验四端一致（不一致非 0 退出）。
 
+## CI 格式化器版本
+
+C++ 静态检查与通道 ABI 生成器共用 PATH 中的 clang-format。CI 的精确版本保存在
+`.clang-format-version`，不能使用发行版的无版本 `apt install clang-format` 替代：不同版本
+会改变注释/对齐输出，产生本地通过而 CI 失败的结果。在开发环境中安装该版本后再运行门禁：
+
+```bash
+python3 -m pip install "clang-format==$(cat .clang-format-version)"
+clang-format --version
+```
+
+工作流运行数量、触发条件与安全扫描入口见 [Actions 说明](docs/deployment/actions-ci.md)。
+
 ## 分支与合并（硬规则，有钩子拦）
 
 **一个问题一条分支；两条门禁全绿才并入 `main`；提交只落本地。**
