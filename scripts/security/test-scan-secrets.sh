@@ -25,10 +25,23 @@ check_case literal 'literal-value' 1
 check_case suffix '${{ secrets.GITHUB_TOKEN }}-literal-value' 1
 check_case conditional "\${{ secrets.GITHUB_TOKEN || 'literal-value' }}" 1
 check_case comment '${{ github.token }} # literal-value' 1
+# 只有明确的 OIDC 权限枚举可放行，其他 token 字段和任意值仍拒绝。
+key='id-token'
+check_case oidc-write write 0
+check_case oidc-none none 0
+check_case oidc-literal literal-value 1
+check_case oidc-comment 'write # literal-value' 1
+key='token'
+check_case ordinary-token write 1
+key="$(printf '%s%s' GITHUB_ TOKEN)"
 # 相同文本在非 workflow 文件中不享受这条窄范围放行。
 printf '%s: %s\n' "$key" '${{ secrets.GITHUB_TOKEN }}' > "$scratch/config.yml"
 rm "$fixture"
 rc=0
 bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
 [[ "$rc" == 1 ]]
-echo '✓ 密钥扫描自证：2 项纯运行时引用 / 4 项字面值或拼接拒绝 / 非 workflow 路径拒绝 / 原文脱敏'
+printf '%s: %s\n' 'id-token' write > "$scratch/config.yml"
+rc=0
+bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
+[[ "$rc" == 1 ]]
+echo '✓ 密钥扫描自证：运行时引用/OIDC权限枚举/字面值与拼接拒绝/非workflow路径拒绝/原文脱敏'

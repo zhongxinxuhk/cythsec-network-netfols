@@ -1,66 +1,75 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+name: C++ package provenance
+run-name: "C++ provenance · ${{ github.event_name }} · ${{ github.ref_name }}"
 
-# This workflow lets you generate SLSA provenance file for your project.
-# The generation satisfies level 3 for the provenance requirements - see https://slsa.dev/spec/v0.1/requirements
-# The project is an initiative of the OpenSSF (openssf.org) and is developed at
-# https://github.com/slsa-framework/slsa-github-generator.
-# The provenance file can be verified using https://github.com/slsa-framework/slsa-verifier.
-# For more information about SLSA and how it improves the supply-chain, visit slsa.dev.
-
-name: SLSA generic generator
 on:
   workflow_dispatch:
   release:
-    types: [created]
+    types: [published]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: 构建、测试并计算真实 C++ 包摘要
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     outputs:
       digests: ${{ steps.hash.outputs.digests }}
-
     steps:
-      - uses: actions/checkout@v4
-
-      # ========================================================
-      #
-      # Step 1: Build your artifacts.
-      #
-      # ========================================================
-      - name: Build artifacts
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: 构建与测试
         run: |
-            # These are some amazing artifacts.
-            echo "artifact1" > artifact1
-            echo "artifact2" > artifact2
-
-      # ========================================================
-      #
-      # Step 2: Add a step to generate the provenance subjects
-      #         as shown below. Update the sha256 sum arguments
-      #         to include all binaries that you generate
-      #         provenance for.
-      #
-      # ========================================================
-      - name: Generate subject for provenance
+          bash scripts/test/prepare-rust-fixtures.sh
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: 打包真实产物
+        run: |
+          mkdir -p dist/cythsec-cpp
+          cp VERSION dist/cythsec-cpp/
+          for bin in cythsec-capture cythsec-parse cythsec-dump-abi cythsec-ring-feed; do
+            cp "build/dataplane/packet-engine/$bin" dist/cythsec-cpp/
+          done
+          tar -czf dist/cythsec-cpp-linux-amd64.tar.gz -C dist/cythsec-cpp .
+      - name: 生成与构建包逐字节对应的 subjects
         id: hash
+        working-directory: dist
         run: |
-          set -euo pipefail
-
-          # List the artifacts the provenance will refer to.
-          files=$(ls artifact*)
-          # Generate the subjects (base64 encoded).
-          echo "hashes=$(sha256sum $files | base64 -w0)" >> "${GITHUB_OUTPUT}"
+          sha256sum cythsec-cpp-linux-amd64.tar.gz > SHA256SUMS
+          echo "digests=$(base64 -w0 SHA256SUMS)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cythsec-cpp-linux-amd64
+          path: |
+            dist/cythsec-cpp-linux-amd64.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+      - name: 私有仓库的来源证明边界
+        if: github.event.repository.private
+        run: echo '本次仅保存已测试构建包与摘要；未启用向公共 Rekor 日志披露私有仓库名称的签名。' >> "$GITHUB_STEP_SUMMARY"
 
   provenance:
-    needs: [build]
+    # 该生成器会写公共 Rekor 日志；私有仓库不自动 opt in。
+    if: ${{ !github.event.repository.private }}
+    needs: build
     permissions:
-      actions: read   # To read the workflow path.
-      id-token: write # To sign the provenance.
-      contents: write # To add assets to a release.
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.4.0
+      actions: read
+      # OIDC 权限枚举，不是凭据赋值。
+      id-token: write
+      contents: write
+    # SLSA verifier 要求完整版本标签，不能用 SHA 替代该 reusable workflow 的版本。
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
-      base64-subjects: "${{ needs.build.outputs.digests }}"
-      upload-assets: true # Optional: Upload to a new release
+      base64-subjects: ${{ needs.build.outputs.digests }}
+      upload-assets: ${{ github.event_name == 'release' }}

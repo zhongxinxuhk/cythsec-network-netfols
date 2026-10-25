@@ -11,16 +11,10 @@ on:
 # 构建与测试逻辑全部收敛在 scripts/ 下，本 workflow 只负责环境准备与调用（CYS-INF-007）。
 jobs:
   cpp:
-    name: C++ 构建与测试
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: 安装 CMake
-        uses: lukka/get-cmake@latest
-      - name: 构建并测试 (C++)
-        run: |
-          bash scripts/build/build-all.sh --cpp
-          bash scripts/test/test-all.sh --cpp
+    name: C++ 多平台编译与测试
+    uses: ./.github/workflows/cmake-multi-platform.yml
+    permissions:
+      contents: read
 
   rust:
     name: Rust 构建、测试与跨语言契约
