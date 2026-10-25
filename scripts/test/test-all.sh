@@ -21,7 +21,7 @@ usage() {
               [--columnar] [--branch-policy] [--self-test] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
-  --rust         只跑 Rust 测试（cargo test --offline）+ Rust/Python 特征 parity 与反向注入
+  --rust         只跑 Rust 测试（cargo test --offline）+ Rust/Python 特征 parity、训练特征产物验收与反向注入
   --go           只跑 Go 测试（go test ./...）
   --node         只跑前端测试（npm test = vitest run）
   --parity       只跑通道 ABI 跨语言 parity（需同时能构建 C++ 与 Rust）
@@ -161,7 +161,12 @@ test_rust() {
     echo "✗ [features] 特征契约或双端数值不一致" >&2
     return 1
   fi
-  echo "✓ [rust] 测试通过（含 CYS-TRF-028 特征 parity）"
+  echo "==> [training-features] 训练特征产物验收（CYS-MLT-006，含 CLI/反向注入/Rust parity）"
+  if ! "${PYTHON:-python3}" -m unittest discover -s tests/ml -p 'test_feature_dataset.py' -v; then
+    echo "✗ [training-features] 训练特征产物验收失败" >&2
+    return 1
+  fi
+  echo "✓ [rust] 测试通过（含 CYS-TRF-028 / CYS-MLT-006 特征 parity）"
 }
 
 test_go() {

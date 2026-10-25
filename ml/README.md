@@ -1,47 +1,34 @@
 # ml/ — AI / ML
 
-> 模型训练（Python）与生产推理（C++）闭环。**当前处于早期：大部分是占位骨架**（规划见 `docs/planning/BACKLOG.md` M7，37 任务）。
+> 当前已有数据面/训练侧的特征契约与训练特征产物实现；训练、评估、模型注册与推理仍待开发。全量验收与合并状态见 `docs/planning/BACKLOG.md` M7。
 
 | 子模块 | 语言 | 状态 |
 | --- | --- | --- |
-| `training/` | Python | ◐ 属性字典绑定 + 特征 schema 绑定与独立提取器（CYS-TRF-028）；训练流水线待建 |
-| `inference/` | C++ | 🚧 纯构建骨架，无源码 |
-| `model-registry/` | — | 🚧 空 |
+| `training/` | Python | ◐ 属性字典、21 维特征绑定与独立提取器；训练特征 CSV/清单构建与校验（CYS-MLT-006）已实现 |
+| `inference/` | C++ | 纯构建骨架，无推理源码 |
+| `model-registry/` | — | 仅 `.gitkeep` |
 
----
+## training/
 
-## training/（Python）
+- `features/attributes_gen.py`：属性字典生成绑定。
+- `features/schema_gen.py`：由 `configs/registry/features.json` 生成的特征版本、下标、名字、单位、定义与阈值；不得手抄布局。
+- `features/extractor.py`：标准库独立 Python 提取器，对齐 Rust 的同一 21 维特征契约。
+- `features/dataset.py`：从包观测 JSONL 提取，或从 FlowRecord v2 投影，产出严格定序的 CSV 与来源/版本/完整性清单；外部标签显式连接，无标签时明确标记，支持发布前/读取前校验。
+- 输入契约、命令、示例和限制见 [features/README.md](training/features/README.md)。
+- `pyproject.toml`、依赖锁定、统一多格式加载器、切分、预处理、训练与评估尚未实现，分别按 MLT-001/003/004/005/008/010 推进。
 
-- **已有属性绑定**：`features/attributes_gen.py`（1051 行，codegen 生成）
-  - 属性字典 Python 绑定，头注释要求：**训练侧必须从本模块导入常量，不得写字面量**
-- `features/schema_gen.py`：由 `configs/registry/features.json` 生成的 21 维布局、版本、名字与阈值，禁止手抄下标。
-- `features/extractor.py`：`extract(Iterable[FlowSample])` 单遍提取同一 v1 向量；输入为规范端点 A/B 的四层包观测，不含 pcap 解析。空流返回零向量，新维度未赋值/非法版本/非有限值拒绝。
-- 验证：`bash scripts/verify/check-features.sh`（包含生成物检查、双端逐维比对、手算真值与反向注入），也由 `test-all.sh --rust` 和 CI Rust job 执行。
-- 占位目录：`datasets/` `preprocessing/` `models/` `experiments/` `evaluation/` `scripts/`
-- ⚠️ 暂无 `pyproject.toml` / `requirements.txt`，依赖管理待补
+验收：`bash scripts/test/test-all.sh --rust`（含既有特征 parity 与训练产物测试）；单独运行：`python3 -m unittest discover -s tests/ml -p 'test_feature_dataset.py' -v`。
 
-## inference/（C++）
+## inference/
 
-- `CMakeLists.txt` 用 `file(GLOB_RECURSE src/*.cpp)`：无源码时自动落 **INTERFACE 占位库**，保证根 CMake 聚合不断链
-- CMake 选项 `ENABLE_ONNXRUNTIME` 默认 **OFF**，ONNX Runtime 尚未实际接入
-- `features/schema_gen.py`：由 `configs/registry/features.json` 生成的 21 维布局、版本、名字与阈值，禁止手抄下标。
-- `features/extractor.py`：`extract(Iterable[FlowSample])` 单遍提取同一 v1 向量；输入为规范端点 A/B 的四层包观测，不含 pcap 解析。空流返回零向量，新维度未赋值/非法版本/非有限值拒绝。
-- 验证：`bash scripts/verify/check-features.sh`（包含生成物检查、双端逐维比对、手算真值与反向注入），也由 `test-all.sh --rust` 和 CI Rust job 执行。
-- 占位目录：`include/` `src/` `onnx/` `runtime/`
+- 无源码时 CMake 落为 INTERFACE 占位库，`ENABLE_ONNXRUNTIME` 默认 OFF。
+- ONNX Runtime、特征张量转换、推理 API 与热更新尚未实现。
 
-## model-registry/
+## 数据链当前边界
 
-- 仅 `.gitkeep`。规划承载：模型版本、指标、来源元数据。
-
-## 数据流（规划态）
-
-```
-traffic-engine 特征提取 ──► datasets/features ──► training 训练 ──► model-registry 登记
-                                                                      │
-                                                  inference (ONNX Runtime) ◄──┘
+```text
+Rust 特征 / Python 包观测提取 → CSV + manifest（本批）
+                              → 切分/预处理 → 训练/评估 → ONNX/推理（后续）
 ```
 
-## 相关
-
-- 属性字典真源：`configs/README.md`（98 条属性定义训练/推理侧共同词汇）
-- 绑定再生成：`tools/codegen/gen-attributes.py` → `python3 ml/training/features/attributes_gen.py` 所依赖的真源
+仓库示例与分组标签是合成测试数据，不代表真实标注数据集或模型效果。

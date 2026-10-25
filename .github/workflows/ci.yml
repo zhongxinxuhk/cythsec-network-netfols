@@ -32,7 +32,7 @@ jobs:
       - name: 构建并测试 (Rust)
         run: |
           bash scripts/build/build-all.sh --rust
-          # Includes scripts/verify/check-features.sh: schema freshness, parity and injections.
+          # Includes check-features.sh and tests/ml/test_feature_dataset.py: schema, parity, CLI and injections.
           bash scripts/test/test-all.sh --rust
 
   go:
