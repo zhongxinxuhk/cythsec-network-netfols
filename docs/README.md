@@ -55,3 +55,5 @@ CLion 开发环境：[编译、启动、测试与监测](development/clion.md)�
 控制台依赖安全：[2026-10-27 修复与验证](development/dependency-remediation.md)。
 
 防火墙字段目录与技术层级：[透明串联与旁路镜像](防火墙分析识别属性清单_透明串联与旁路镜像.md)。
+
+前端控制台完整设计：[总览、36页规格、布局、数据权限与验收](console-design/README.md)。
