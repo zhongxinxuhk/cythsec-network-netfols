@@ -283,11 +283,25 @@ impl PipelineState {
             payload: payload_bytes,
         });
 
-        let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false);
+        // For native tunnels the IP payload starts at l4_offset; there is no TCP/UDP header.
+        // Keep feature bytes unchanged: this is only the protocol inspection view.
+        let native_tunnel = matches!(d.key.proto.number(), 4 | 41 | 47 | 50 | 51 | 97);
+        let inspect_payload = if native_tunnel {
+            let end = d
+                .l4_offset
+                .saturating_add(d.ip_payload_len as usize)
+                .min(pkt.data.len());
+            pkt.data.get(d.l4_offset..end).unwrap_or(&[])
+        } else {
+            payload_bytes
+        };
+        let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false)
+            || native_tunnel && inspect_payload.len() < d.ip_payload_len as usize;
         let probe = self.probes.entry(key).or_default();
-        if !probe.is_done(obs.side) && !payload_bytes.is_empty() {
-            let n = payload_bytes.len().min(opts.inspect_bytes);
-            let outcome = dpi::identify(&payload_bytes[..n], d.key.proto.number(), d.key.dst_port);
+        if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
+            let n = inspect_payload.len().min(opts.inspect_bytes);
+            let outcome =
+                dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port);
             // 截断捕获必须导向「还需要更多字节」：我们自己少拷了字节，不能算「不认识」。
             let info = if truncated && matches!(outcome, Outcome::Unknown) {
                 AppInfo::from_outcome(&Outcome::NeedMore, n)

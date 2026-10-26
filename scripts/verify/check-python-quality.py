@@ -132,6 +132,9 @@ def self_test() -> None:
         shutil.copyfile(ROOT / 'scripts/lint/lint-all.sh', lint)
         vendor_cpp = root / 'ml/training/.venv/vendor.cpp'
         vendor_cpp.write_text('generated vendor code\n')
+        nested_cpp = root / '.claude/worktrees/other/build/vendor.cpp'
+        nested_cpp.parent.mkdir(parents=True)
+        nested_cpp.write_text('different checkout generated C++\n')
         real_cpp = root / 'dataplane/real.cpp'
         real_cpp.parent.mkdir()
         real_cpp.write_text('real source\n')
@@ -139,7 +142,8 @@ def self_test() -> None:
         require(
             listed.returncode == 0
             and './dataplane/real.cpp' in listed.stdout
-            and './ml/training/.venv/vendor.cpp' not in listed.stdout,
+            and './ml/training/.venv/vendor.cpp' not in listed.stdout
+            and './.claude/worktrees/other/build/vendor.cpp' not in listed.stdout,
             'C++ inventory hid source or included the venv',
         )
     print(

@@ -1,5 +1,12 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-10-26 VPN/ZTNA识别专项**：新增268项独立算法文档、版本化目录、基础隧道结构检测、
+> 双向标识/时间窗、TCP有界重组、可信上下文关联和无网络副作用的ProbePlanner；
+> 运行入口为cythsec-identify。最终lint/build/test均退出0，BPF15项通过。
+> 目录覆盖不等于真实产品精度，QUIC解密、SMTP/FTP接收与私有样本仍未完成；详见
+> [专项验收](VPN-ZTNA-20261026.md)、[协议目录](../protocols/README.md)、[引擎契约](../architecture/vpn-ztna-identification.md)。
+
+
 > **2026-10-26 主线整合收口**：Rust CI/安全修复与 MLT-002 共同整合候选 `01160d7`；完整 lint/build/test 均退出 0，BPF 15 项断言通过。CYS-TRF-028、CYS-MLT-001/002/006 收口；376 项中 304 未开始 / 20 进行中 / 52 完成。用户本轮指示整合 main，既有裁判例外仍为未核验。WorkBuddy 工作区的未提交 FTP/SMTP/SSH 不在本批内。见 [INTEGRATION-20261026.md](INTEGRATION-20261026.md)。下文为历史记录。
 
 > **2026-10-25 MLT-002**：基线 `a805169`，分支 `chore/cys-mlt-002-python-quality`；三工具锁定与零告警、类型标注、生成绑定类型、门禁自证及 CI 接线已实现。lint/test 实际退出均 0，真实抓包仍 SKIPPED、未合 master。任务登记 376（304 未开始 / 24 进行中 / 48 完成）。见 [MLT002-20261025.md](MLT002-20261025.md)。

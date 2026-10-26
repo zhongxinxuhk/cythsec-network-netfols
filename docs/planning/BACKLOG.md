@@ -1,5 +1,9 @@
 # cythsec 项目超级任务待办表（Master Backlog）
 
+> 2026-10-26 VPN/ZTNA专项：[268项逐对象算法](../protocols/README.md) 与
+> [实际实现/验收边界](VPN-ZTNA-20261026.md)；CYS-TRF-024/025仅转进行中，真实产品覆盖和统计模型仍待验收。
+
+
 > 版本：v0.1.0 基线 · 生成日期：2026-09-14（AEST）
 > 基线提交：`eaaa575` feat(console): add Dashboard and Traffic pages (5-page console)
 > 范围：覆盖 README 蓝图全部 13 层，含工程基座、技术债、测试、安全、部署与文档。
@@ -294,8 +298,8 @@
 | ◐ | CYS-TRF-021 | TLS ClientHello 解析 | 版本、SNI、密码套件、扩展；JA3 指纹计算。**已落地**：记录层/握手层逐层 checked 解析（握手长度为 **3 字节**，从偏移 6 起）、GREASE 剔除、`supported_versions` 修正 TLS 1.3 版本判定、ECH 扩展识别（真实 SNI 不可见是预期而非故障）；MD5 自实现（零第三方依赖）并用 RFC 1321 向量锁定。**未落地**：证书解析（CYS-TRF-022） | 已达成：JA3 与 **tshark 4.6.7 独立实现**逐条一致（该门禁当前共比对 92 项，含 DNS/HTTP 侧字段）。**已知例外**：ECH 向量 `tls-ech-no-outer-sni` 无法用 tshark 交叉核验（其 ECH 解析器认不出手工构造的 ECH 体，会连整包 JA3 一起抑制），已在 `expected.json` 显式标注 `tshark.verified=false` 并有测试守门，不冒充「已核验」 | CYS-TRF-019 | P1/L |
 | ⬜ | CYS-TRF-022 | TLS 证书解析 | 服务端证书链中的 CN/SAN/签发者/有效期（明文可见部分） | 从样本中提取 SNI 与 CN | CYS-TRF-021 | P2/M |
 | ☑ | CYS-TRF-023 | DNS 解析器 | 查询/响应、QTYPE、QNAME、RCODE、EDNS0。**已落地**：标签序列（≤63 / 总长 ≤255）、`0xC0` 压缩指针（**跳数上限 128** 破环，同时天然限制每次解析的 work 量）、指针越界判畸形、QNAME 小写归一；「查询报文 qdcount ≠ 1」判"不是 DNS"而非"解析失败"；**RCODE 只在响应上产出**（查询报文的该段是保留位，产出 0 等于凭空造出一批"正常"样本）；QCLASS 查询/响应都产出；**应答地址集合**（A/AAAA，按报文顺序，上限 8 条）+ **指针跳数**（0 = 未用压缩指针，是"确实没跳"这个测量结果而非"没测"）；**EDNS0**（OPT 的 CLASS 复用为 UDP 载荷上限，双 OPT 按 RFC 6891 §6.1.1 判畸形）。资源记录段按**尽力而为**扫描：三层 work 上限（名字跳数 / 记录条数 ≤32 / rdlength 必须落在报文内），首包被截断时仍凭 QUESTION 段判 identified —— 该段的证据强度与应答段无关。**修掉一个真实缺陷**：`parse_name` 原先把"跟随指针读完后的位置"当作"名字之后的下一个字节"，答名字用压缩指针（DNS 常态）时会让调用方错位读资源记录。 | 已达成：15 条 DNS 向量（查询/响应、压缩指针、NXDOMAIN、多应答含 AAAA、应答截断、EDNS0、双 OPT、指针成环、垃圾负例）覆盖四态裁决；tshark 三方一致（每条 6 个字段逐项比对，合计 60 项）。**未达成**：大样本覆盖率指标 | CYS-TRF-019 | P1/M |
-| ⬜ | CYS-TRF-024 | QUIC 解析 | Initial 包解密后的 SNI / 版本协商（需密钥派生） | 对 QUIC 样本提取 SNI | CYS-TRF-021 | P3/XL |
-| ⬜ | CYS-TRF-025 | SSH / SMTP / FTP 识别 | 版本 banner 与命令识别 | 样本验证通过 | CYS-TRF-019 | P2/M |
+| ◐ | CYS-TRF-024 | QUIC 解析 | 已补v1/v2 Long Header、CID、Initial类型/varint边界的结构候选；**未完成**Initial AEAD、CRYPTO重组与SNI，不能将候选当已解密 | 结构/变异测试通过；对QUIC样本提取SNI仍未达成，见[专项](VPN-ZTNA-20261026.md) | CYS-TRF-021 | P3/XL |
+| ◐ | CYS-TRF-025 | SSH / SMTP / FTP 识别 | SSH2/1.99 banner长度/字符/CRLF及TCP重组已接入；SMTP/FTP独立工作树尚未纳入，SSH加密命令不声称外侧可读 | SSH合成/重组/反例通过，真实全协议样本仍未达成，见[专项](VPN-ZTNA-20261026.md) | CYS-TRF-019 | P2/M |
 | ⬜ | CYS-TRF-026 | 协议解析模糊测试 | `cargo-fuzz` 对 HTTP/TLS/DNS 解析器 | 24h 无崩溃 | CYS-TRF-020 | P1/M |
 
 #### 3.3.4 特征·行为·风险（`TRF`）
@@ -917,8 +921,8 @@ CYS-TRF-043（属性字典 owner/弃用周期）与 CYS-TIP-011（签名注册�
 
 | 状态 | 任务数 |
 | --- | --- |
-| 未开始 | 304 |
-| 进行中 | 20 |
+| 未开始 | 302 |
+| 进行中 | 22 |
 | 已完成 | 52 |
 
 ### 6.6 里程碑完成度

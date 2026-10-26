@@ -70,3 +70,8 @@ path = "src/bin/dump_ddl.rs"
 
 # 零第三方依赖，保持最小工程可离线构建、便于工具链验证。
 [dev-dependencies]
+
+# Optional deeper VPN/ZTNA attribution host, separate from the per-packet fast path.
+[[bin]]
+name = "cythsec-identify"
+path = "src/bin/identify.rs"

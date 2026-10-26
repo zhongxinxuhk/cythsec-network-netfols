@@ -27,6 +27,7 @@ pub mod hash;
 // ipfix 是 IPFIX 线路格式与采集侧（M11 / CYS-TRF-051/054）：**编码器与采集器共用同一份
 // IE 编号与模板定义**，免得"两侧各自定义一次、一起写错还互相验证通过"。
 // 它只依赖 flow/record/feature 的类型，不依赖 pipeline/channel。
+pub mod identification;
 pub mod ipfix;
 pub mod pcapfile;
 pub mod pipeline;
