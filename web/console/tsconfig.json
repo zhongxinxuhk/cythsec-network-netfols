@@ -34,7 +34,8 @@
   },
   "include": [
     "src",
-    "tests"
+    "tests",
+    "compat/**/*.d.ts"
   ],
   "extends": "./src/.umi/tsconfig.json"
 }

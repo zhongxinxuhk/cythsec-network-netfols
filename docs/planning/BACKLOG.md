@@ -1028,3 +1028,7 @@ CYS-RTD-014 / CYS-SEC-002 / CYS-CON-028 部分完成：routerd 与 telemetryd �
 ### 2026-10-26 CLion 开发环境增量
 
 新增 36 个共享运行配置，复用四栈构建、完整门禁、四服务与 Pro 控制台启动、本机健康监测。配置自证接入 lint，运行证据与真实退出码保存到 build/clion/runs。MCP 加载与实测结果见 [CLion 开发说明](../development/clion.md)；既有依赖审计与 tshark 未核验项继续保留，本轮不据此改变核心模块完成状态。
+
+### 2026-10-27 控制台依赖安全修复
+
+处理 decode-uri-component、React Router 和 elliptic 依赖链，保留 Umi Max + Ant Design Pro；安装、构建与审计的实际结果见 [依赖修复记录](../development/dependency-remediation.md)。tshark 未核验项与其他生产前置不改为完成。

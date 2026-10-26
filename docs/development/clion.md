@@ -111,3 +111,5 @@ MCP 并非完全稳定：本轮复合/长驻进程启动反馈曾报失败或传
 （11 low、10 moderate），与 Build All 的 npm ci 报告一致；本次未由 MCP 观察到退出码，
 没有标为通过。DPI 14、TCP 重组 2、FlowRecord 8 项
 仍跳过或未核验。所有这些边界继续保留，本轮仅提交本地开发分支，未合入 main、未推送。
+
+后续依赖状态更新：见 [2026-10-27 控制台依赖修复](../development/dependency-remediation.md)，本页保留该批次实际审计结果。
