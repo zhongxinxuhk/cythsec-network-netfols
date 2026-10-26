@@ -75,3 +75,8 @@ path = "src/bin/dump_ddl.rs"
 [[bin]]
 name = "cythsec-identify"
 path = "src/bin/identify.rs"
+
+# Aggregate-only operational telemetry; no application or domain attribution.
+[[bin]]
+name = "cythsec-observe"
+path = "src/bin/observe.rs"

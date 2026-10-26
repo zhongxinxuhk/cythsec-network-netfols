@@ -29,6 +29,7 @@ pub mod hash;
 // 它只依赖 flow/record/feature 的类型，不依赖 pipeline/channel。
 pub mod identification;
 pub mod ipfix;
+pub mod observability;
 pub mod pcapfile;
 pub mod pipeline;
 pub mod reassembly;

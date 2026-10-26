@@ -213,6 +213,9 @@ pub struct DecodedFrame {
     pub ip_payload_len: u32,
     /// 是否为分片首片（含未分片的普通报文）。首片带四层头，故能够解出五元组。
     pub is_initial_fragment: bool,
+    /// IP 数据报实际分片（IPv4 MF/偏移，IPv6 Fragment 的 M/偏移）。
+    /// 与 is_initial_fragment 区分：普通报文也是 initial，但不 fragmented。
+    pub is_fragmented: bool,
     /// 四层头在**帧内**的绝对偏移（含以太头与所有 VLAN 标签）。
     ///
     /// 暴露它是为了让调用方能取到标志位与载荷，而**不必自己重走一遍**
@@ -418,6 +421,7 @@ fn decode_ipv4(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
         vlan_tags,
         ip_payload_len: payload_len,
         is_initial_fragment: more_fragments || frag_offset_units == 0,
+        is_fragmented: more_fragments || frag_offset_units != 0,
         l4_offset,
         l4_header_len: l4_header_len(frame, l4_offset, l4),
     })
@@ -447,6 +451,7 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
     let mut cursor = offset + 40;
     let mut hops = 0u8;
     let mut is_initial_fragment = true;
+    let mut is_fragmented = false;
     loop {
         match next_header {
             IPPROTO_TCP | IPPROTO_UDP | IPPROTO_ICMPV6 | IPPROTO_ICMP => break,
@@ -461,6 +466,7 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
                 }
                 let frag_field = be16(&frame[cursor + 2..cursor + 4]);
                 let frag_offset_units = frag_field >> 3;
+                is_fragmented |= frag_field & 1 != 0 || frag_offset_units != 0;
                 if frag_offset_units != 0 {
                     return Err(DecodeError::NonInitialFragment {
                         offset_units: frag_offset_units,
@@ -537,6 +543,7 @@ fn decode_ipv6(frame: &[u8], offset: usize, vlan_tags: u8) -> Result<DecodedFram
         // IPv6 载荷长度字段已含扩展头，减去已走过的扩展头字节即四层段长度。
         ip_payload_len: payload_len.saturating_sub((cursor - (offset + 40)) as u32),
         is_initial_fragment,
+        is_fragmented,
         l4_offset: cursor,
         l4_header_len: l4_header_len(frame, cursor, l4),
     })

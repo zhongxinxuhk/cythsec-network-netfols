@@ -10,6 +10,8 @@
 | [逐项协议算法目录](protocols/README.md) | 268项独立MD：90个V/P/O项及承载、认证、产品和组合拆分 |
 | [识别引擎架构](architecture/vpn-ztna-identification.md) | 标准解析、会话确认、可信上下文、主动计划、资源与CLI契约 |
 | [本轮开发与验收](planning/VPN-ZTNA-20261026.md) | 适配范围、实际验证和真实样本限制 |
+| [聚合观测契约](observability/aggregate-stats.md) | TCP/UDP 总量、TLS/QUIC 头候选、TCP 质量与采集完整性；独立离线入口 |
+| [聚合观测验收](planning/AGGREGATE-20261026.md) | 本批范围、实际退出码和未核验边界 |
 | [BACKLOG](planning/BACKLOG.md) | 376项任务；完成状态以登记和验收证据为准 |
 | [接力文档](planning/HANDOFF.md) | 既有数据链、第三方裁判、性能与工程约定 |
 | [分层与插件化](architecture/layered-plugin-architecture.md) | L0契约、核心与宿主边界，M10计划尚未整体完成 |

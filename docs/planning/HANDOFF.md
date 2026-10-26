@@ -1,5 +1,7 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-10-26 聚合观测增量**：`feat/aggregate-observability` 新增离线 `cythsec-observe`；分钟窗承载统计、TCP质量与采集完整性，不调用应用/VPN分类器。lint/build/test 实际退出均 0；新增 17 项测试、tshark 对照和本机回读通过，BPF 14 项通过但无 ICMP 注入目标；既有裁判 14/2/8 项仍未核验，保留本地分支，见 [本批记录](AGGREGATE-20261026.md) 和 [字段契约](../observability/aggregate-stats.md)。
+
 > **2026-10-26 VPN/ZTNA识别专项**：新增268项独立算法文档、版本化目录、基础隧道结构检测、
 > 双向标识/时间窗、TCP有界重组、可信上下文关联和无网络副作用的ProbePlanner；
 > 运行入口为cythsec-identify。最终lint/build/test均退出0，BPF15项通过。

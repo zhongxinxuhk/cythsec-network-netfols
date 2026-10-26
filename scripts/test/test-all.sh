@@ -167,7 +167,11 @@ test_rust() {
     echo "✗ [vpn-identification] CLI、目录或证据裁决验收失败" >&2
     return 1
   fi
-  echo "✓ [rust] 测试通过（含特征 parity 与 VPN/ZTNA CLI）"
+  if ! bash scripts/verify/check-aggregate-observability.sh; then
+    echo "✗ [aggregate-observability] 聚合统计或完整性验收失败" >&2
+    return 1
+  fi
+  echo "✓ [rust] 测试通过（含特征 parity、识别 CLI 与独立聚合观测）"
 }
 
 test_go() {
@@ -855,6 +859,7 @@ failed=0
 # CYS-MLT-001: isolated packaging gate runs in the default suite; standalone entry below.
 if [[ ${ALL} -eq 1 ]]; then
   bash scripts/verify/check-vpn-identification.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-aggregate-observability.sh --tshark || failed=$((failed+1))
   echo "==> [training-project] 锁定环境与隔离安装包验收（CYS-MLT-001）"
   bash scripts/verify/check-training-project.sh || failed=$((failed+1))
   echo "==> [python-quality] 静态检查与故障注入（CYS-MLT-002）"
