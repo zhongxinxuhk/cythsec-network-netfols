@@ -81,6 +81,14 @@ jobs:
         env:
           WORK_DIR: ${{ runner.temp }}/e2e-work
         run: bash scripts/verify/e2e-control-plane.sh
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: 聚合结果持久化与重启查询
+        run: bash scripts/verify/check-aggregate-storage.sh
       - name: 失败时上传四服务日志与指标
         if: failure()
         uses: actions/upload-artifact@v4

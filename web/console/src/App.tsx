@@ -1,5 +1,6 @@
 // App.tsx - 路由根组件。
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { AnalyticsPage } from '@/pages/AnalyticsPage';
 import { Layout } from '@/components/Layout';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { InterfacesPage } from '@/pages/InterfacesPage';
@@ -15,6 +16,7 @@ export function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/interfaces" element={<InterfacesPage />} />
           <Route path="/routes" element={<RoutesPage />} />
+          <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/traffic" element={<TrafficPage />} />
           <Route path="/system" element={<SystemPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

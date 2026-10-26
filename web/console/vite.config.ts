@@ -31,6 +31,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // 开发期代理到 routerd（默认 :8080，可用 VITE_ROUTERD_TARGET 覆盖）
+      '/telemetry': {
+        target: process.env.VITE_TELEMETRYD_TARGET || 'http://127.0.0.1:8083',
+        rewrite: (path) => path.replace(/^\/telemetry/, ''),
+      },
       '/api': process.env.VITE_ROUTERD_TARGET || 'http://localhost:8080',
       '/healthz': process.env.VITE_ROUTERD_TARGET || 'http://localhost:8080',
     },

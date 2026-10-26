@@ -344,3 +344,18 @@ body {
 .ok-text {
   color: var(--ok);
 }
+
+/* 聚合历史：保留现有控制台样式，长表在容器内滚动。 */
+.analytics-page { max-width: 1280px; }
+.analytics-toolbar { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-top: 16px; }
+.analytics-page label { display: flex; flex-direction: column; gap: 6px; }
+.analytics-page input, .analytics-page select { max-width: 100%; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-solid); color: var(--text); }
+.analytics-page .btn { margin-top: 0; }
+.analytics-page .btn:disabled { opacity: 0.45; cursor: default; }
+.analytics-batch { margin-top: 16px; }
+.analytics-table { overflow-x: auto; }
+.analytics-table .tbl { min-width: 850px; }
+.analytics-histogram { padding-left: 20px; min-width: 260px; }
+.analytics-histogram li { display: flex; gap: 8px; align-items: center; }
+.analytics-histogram span { min-width: 110px; }
+.analytics-page :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

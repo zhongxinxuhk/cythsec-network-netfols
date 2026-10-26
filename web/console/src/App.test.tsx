@@ -7,6 +7,7 @@ vi.mock('@/pages/DashboardPage', () => ({ DashboardPage: () => <h1>Dashboard con
 vi.mock('@/pages/InterfacesPage', () => ({ InterfacesPage: () => <h1>Interfaces content</h1> }));
 vi.mock('@/pages/RoutesPage', () => ({ RoutesPage: () => <h1>Routes content</h1> }));
 vi.mock('@/pages/TrafficPage', () => ({ TrafficPage: () => <h1>Traffic content</h1> }));
+vi.mock('@/pages/AnalyticsPage', () => ({ AnalyticsPage: () => <h1>聚合分析 content</h1> }));
 vi.mock('@/pages/SystemPage', () => ({ SystemPage: () => <h1>System content</h1> }));
 
 describe('Router 升级后的正常导航契约', () => {
@@ -26,6 +27,7 @@ describe('Router 升级后的正常导航契约', () => {
     ['/routes', 'Routes'],
     ['/traffic', 'Traffic'],
     ['/system', 'System'],
+    ['/analytics', '聚合分析'],
   ])('直接打开 %s 时展示对应页面并仅高亮当前导航', async (path, name) => {
     window.history.replaceState({}, '', path);
     const { container } = render(<App />);

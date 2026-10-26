@@ -16,6 +16,7 @@ import (
 	"cythsec/services/pkg/apiresp"
 	"cythsec/services/pkg/controlplane"
 	"cythsec/services/pkg/metrics"
+	"cythsec/services/telemetryd/internal/aggregate"
 	"cythsec/services/telemetryd/internal/target"
 )
 
@@ -26,6 +27,8 @@ const ServiceName = "telemetryd"
 //
 // 所有字段均为可选：零值即使用默认行为，便于测试与最小化启动。
 type ServerOptions struct {
+	// Aggregates 是可选的本机聚合持久化存储；nil 时返回 503。
+	Aggregates *aggregate.Store
 	// Store 是抓取目标注册表；为 nil 时使用一个空注册表。
 	Store *target.Store
 	// TargetCount 是目标总数仪表；为 nil 时不更新该指标。
@@ -73,6 +76,9 @@ func NewMetrics(reg *metrics.Registry) ObservabilityMetrics {
 // 必须使用 controlplane.Handle（内部套 httpx.Route），使 route 保持为模板，
 // 避免 /api/v1/targets/routerd 之类路径把指标标签基数打散。
 func RegisterRoutes(mux *http.ServeMux, opts ServerOptions) {
+	controlplane.Handle(mux, "GET /api/v1/analytics/imports", listImports(opts))
+	controlplane.Handle(mux, "POST /api/v1/analytics/imports", importAggregates(opts))
+	controlplane.Handle(mux, "GET /api/v1/analytics/imports/{id}", queryAggregates(opts))
 	controlplane.Handle(mux, "GET /api/v1/targets", listTargets(opts))
 	controlplane.Handle(mux, "GET /api/v1/targets/{name}", getTarget(opts))
 }

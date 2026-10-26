@@ -159,3 +159,25 @@ func TestEnvPrefixIsolation(t *testing.T) {
 		t.Errorf("他服务环境变量污染了 telemetryd 配置: %q", c.ListenAddr)
 	}
 }
+
+func TestAggregateDirectoryConfiguration(t *testing.T) {
+	c := Default()
+	if c.AggregateDir != "" {
+		t.Fatal("persistence must be explicit")
+	}
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("aggregate_dir: /local/aggregate\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.LoadYAML(p); err != nil {
+		t.Fatal(err)
+	}
+	if c.AggregateDir != "/local/aggregate" {
+		t.Fatal(c.AggregateDir)
+	}
+	t.Setenv("TELEMETRYD_AGGREGATE_DIR", "/env/aggregate")
+	c.ApplyEnv()
+	if c.AggregateDir != "/env/aggregate" {
+		t.Fatal(c.AggregateDir)
+	}
+}

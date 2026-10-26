@@ -37,6 +37,7 @@ export function Layout() {
     { to: '/interfaces', label: 'Interfaces' },
     { to: '/routes', label: 'Routes' },
     { to: '/traffic', label: 'Traffic' },
+    { to: '/analytics', label: '聚合分析' },
     { to: '/system', label: 'System' },
   ];
 

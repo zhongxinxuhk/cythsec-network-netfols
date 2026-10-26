@@ -9,7 +9,7 @@
 | `routerd/` | :8080 | ✅ 可用 | **只读网络信息采集 API**（网卡/路由/系统/流量），不含转发控制 |
 | `policyd/` | :8081 | ✅ 可用 | 策略引擎：规则 IR + 编译期诊断 + allow 优先判定 |
 | `dnsd/` | :8082 | 🚧 骨架 | 仅区域内存存储；**无 DNS 报文收发**（RFC 1035 解析/递归/转发属 M5） |
-| `telemetryd/` | :8083 | 🚧 骨架 | 抓取目标注册表；**无实际抓取与调度循环** |
+| `telemetryd/` | :8083 | ◐ 部分实现 | 目标注册表；可选本机聚合持久化和历史查询；**无实际抓取与调度循环** |
 | `pkg/` | — | ✅ 可用 | 四服务共享底座（无 bin） |
 
 ---
@@ -47,7 +47,7 @@ internal/*           # 业务实现
 
 ### dnsd / telemetryd
 
-控制面骨架，分别对应 backlog 里程碑 M5（服务化）后续任务（CYS-TEL-003+）。
+dnsd 的网络 DNS 服务、telemetryd 的抓取调度仍属后续任务。telemetryd 新增可选 `-aggregate-dir`，提供严格聚合 JSONL 导入、同步落盘、重复导入去重和历史分页；必须绑定回环 IP。见 [持久化契约](../docs/observability/persistence.md)，它不等于 ClickHouse 常驻写入或生产鉴权。
 
 ---
 

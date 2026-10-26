@@ -22,6 +22,7 @@ type Config struct {
 	MetricsEnabled  bool          // 是否暴露 GET /metrics
 	TargetFile      string        // 抓取目标文件路径（空表示不载入，从空注册表启动）
 	MaxTargets      int           // 允许载入的最大目标数（0 表示不限制）
+	AggregateDir    string        // 聚合持久化目录；空表示未启用，仅本机服务可用
 	ConfigPath      string        // YAML 配置文件路径
 }
 
@@ -56,6 +57,7 @@ func (c *Config) LoadYAML(path string) error {
 	c.MetricsEnabled = m.Bool("metrics_enabled", c.MetricsEnabled)
 	c.TargetFile = m.Get("target_file", c.TargetFile)
 	c.MaxTargets = m.Int("max_targets", c.MaxTargets)
+	c.AggregateDir = m.Get("aggregate_dir", c.AggregateDir)
 	return nil
 }
 
@@ -68,6 +70,7 @@ func (c *Config) ApplyEnv() {
 	c.MetricsEnabled = configutil.EnvBool(envPrefix, "metrics_enabled", c.MetricsEnabled)
 	c.TargetFile = configutil.EnvString(envPrefix, "target_file", c.TargetFile)
 	c.MaxTargets = configutil.EnvInt(envPrefix, "max_targets", c.MaxTargets)
+	c.AggregateDir = configutil.EnvString(envPrefix, "aggregate_dir", c.AggregateDir)
 	if v, ok := configutil.FromEnv(envPrefix, "config"); ok {
 		c.ConfigPath = v
 	}
