@@ -1032,3 +1032,7 @@ CYS-RTD-014 / CYS-SEC-002 / CYS-CON-028 部分完成：routerd 与 telemetryd �
 ### 2026-10-27 控制台依赖安全修复
 
 处理 decode-uri-component、React Router 和 elliptic 依赖链，保留 Umi Max + Ant Design Pro；安装、构建与审计的实际结果见 [依赖修复记录](../development/dependency-remediation.md)。tshark 未核验项与其他生产前置不改为完成。
+
+### 2026-10-27 转发与分析技术层级整理
+
+属性清单新增T0—T7工程映射，明确生产转发、观测分析、管理数据三条链路；收发抽象不等于已实现发送，AF_PACKET/BPF的tx_burst仍不可用，原第1—23节字段目录保持原样。见 [技术层级与字段目录](../防火墙分析识别属性清单_透明串联与旁路镜像.md)。本轮为文档整理，不将透明转发或用户画像标为已实现。
