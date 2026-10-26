@@ -57,7 +57,8 @@ EOF
   exit 0
 fi
 
-for cmd in cmake; do
+PYTHON="${PYTHON:-python3}"
+for cmd in cmake "$PYTHON"; do
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     echo "环境检查失败：未找到 ${cmd}" >&2
     exit 4
@@ -350,7 +351,6 @@ fi
 
 # ---------- C. 自家解析器回读：三方对同一批字节的计数一致 ----------
 echo "==> [live] C. cythsec-parse 回读计数核对"
-parse_cnt=""; unsupported_l2=""
 if [[ -s "${PCAP}" ]]; then
   "${PARSE_BIN}" -r "${PCAP}" >"${OUT_DIR}/parse.txt" 2>&1 || true
   magic="$(head -c4 "${PCAP}" | od -An -tx1 | tr -d ' \n')"
@@ -361,16 +361,20 @@ if [[ -s "${PCAP}" ]]; then
     echo "  ✗ C pcap 魔数异常: ${magic}" >&2
     failed=$((failed + 1))
   fi
-  # 计数口径：可解 IP 帧 = IPv4+IPv6；不可解 = 「不支持L2」（ARP/LLDP 等非 IP 链路帧）。
-  # 两者相加必须等于采集写盘数：写盘/读盘/计数三方对同一批字节的共识。
-  counts="$(awk '/^L3:/ {for(i=1;i<=NF;i++){if($i~/^IPv4=/){split($i,a,"=");v4=a[2]}if($i~/^IPv6=/){split($i,a,"=");v6=a[2]}}} /不支持L2/ {u=$NF} END {print v4+v6, u+0}' "${OUT_DIR}/parse.txt" 2>/dev/null || true)"
-  parse_cnt="${counts%% *}"
-  unsupported_l2="${counts##* }"
+  # All three parser outcomes must account for the independent capture count.
+  # Rejected packets remain rejected; conservation does not certify protocol accuracy.
   total=$((total + 1))
-  if [[ -n "${parse_cnt}" && "$((parse_cnt + unsupported_l2))" == "${written}" ]]; then
-    echo "  ✓ C 可解 IP 帧(${parse_cnt}) + 不支持 L2 帧(${unsupported_l2}) == written(${written})"
+  if "$PYTHON" scripts/verify/check-pcap-readback.py --summary "${OUT_DIR}/parse.txt" --expected "${written}"; then
+    echo "  ✓ C 解析成功 + 不支持 + 解析失败 == written（失败类别未改写为成功）"
   else
-    echo "  ✗ C 计数不闭合：可解=${parse_cnt:-<空>} 非IP=${unsupported_l2:-<空>} written=${written:-<空>}" >&2
+    echo "  ✗ C 采集与回读结果计数不闭合" >&2
+    failed=$((failed + 1))
+  fi
+  total=$((total + 1))
+  if "$PYTHON" scripts/verify/check-pcap-readback.py --self-test --parser "$PARSE_BIN"; then
+    echo "  ✓ C 完整回读自证（含非首片与 5 项计数注入）"
+  else
+    echo "  ✗ C 回读计数自证失败" >&2
     failed=$((failed + 1))
   fi
 else
@@ -476,7 +480,7 @@ if [[ "${RUST_READY}" == "1" && -s "${PCAP}" ]]; then
       prefix_bad="$(undecodable_count "${PCAP}" "${LIMIT}" || true)"
       if [[ "${dfail}" != "${prefix_bad}" ]]; then
         # 不一致要能一眼归因：把三方计数、裁判分项与错误码明细都摊开，而不是只报一个数。
-        echo "  · 归因：Rust decode_fail=${dfail} / tshark 不可解=${prefix_bad}（$(undecodable_breakdown "${PCAP}" "${LIMIT}")） / C++ 不支持 L2=${unsupported_l2:-<空>}" >&2
+        echo "  · 归因：Rust decode_fail=${dfail} / tshark 不可解=${prefix_bad}（$(undecodable_breakdown "${PCAP}" "${LIMIT}")） / C++ 分类结果见 C 段摘要" >&2
         grep -E '^ring-consume decode_fail code=' "${CONS_OUT}" | sed 's/^/    /' >&2 || true
       fi
       check "D Rust decode_fail == tshark 前缀「解不出五元组」帧数（两实现判定一致）" "${dfail}" "${prefix_bad}"

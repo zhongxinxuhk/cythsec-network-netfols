@@ -16,6 +16,7 @@
 | [聚合持久化与查询](observability/persistence.md) | 本地同步存储、导入契约、查询 API 和第六页控制台 |
 | [聚合持续写入队列](observability/ingest-worker.md) | 磁盘接收确认、恢复、退避和控制台积压状态 |
 | [本批队列验收](planning/INGEST-20261026.md) | 实际命令结果和阶段限制 |
+| [真实采集回读守恒](planning/LIVE-READBACK-20261026.md) | 失败类别保留、真实解析器自证及计数故障注入 |
 | [BACKLOG](planning/BACKLOG.md) | 376项任务；完成状态以登记和验收证据为准 |
 | [接力文档](planning/HANDOFF.md) | 既有数据链、第三方裁判、性能与工程约定 |
 | [分层与插件化](architecture/layered-plugin-architecture.md) | L0契约、核心与宿主边界，M10计划尚未整体完成 |
