@@ -1024,3 +1024,7 @@ CYS-TRF-043（属性字典 owner/弃用周期）与 CYS-TIP-011（签名注册�
 ### 2026-10-26 管理服务访问认证增量
 
 CYS-RTD-014 / CYS-SEC-002 / CYS-CON-028 部分完成：routerd 与 telemetryd 静态 Bearer 摘要策略、端点授权、Pro 认证抽屉与内存凭据；mTLS、完整账号与持久会话、其他服务接入仍未核验。实现与边界见 [控制访问说明](../development/control-access.md)，验收见 [本轮记录](ACCESS-20261026.md)。
+
+### 2026-10-26 CLion 开发环境增量
+
+新增 36 个共享运行配置，复用四栈构建、完整门禁、四服务与 Pro 控制台启动、本机健康监测。配置自证接入 lint，运行证据与真实退出码保存到 build/clion/runs。MCP 加载与实测结果见 [CLion 开发说明](../development/clion.md)；既有依赖审计与 tshark 未核验项继续保留，本轮不据此改变核心模块完成状态。

@@ -49,3 +49,5 @@
 > 各模块速览请直接看模块内 README（`dataplane/` `services/` `web/` `ml/` `platform/` `storage/` `threat-intelligence/` `capture/` `tests/` `datasets/` `tools/` `configs/` `deploy/` `scripts/`）。
 
 管理中后台访问认证：[设计与操作](development/control-access.md)、[本轮验收](planning/ACCESS-20261026.md)。
+
+CLion 开发环境：[编译、启动、测试与监测](development/clion.md)。

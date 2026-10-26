@@ -207,6 +207,12 @@ if ! bash scripts/verify/check-python-quality.sh; then
   failed=$((failed+1))
 fi
 
+echo "==> [clion] 共享运行配置、失败退出码与本机监测自证"
+if ! bash scripts/verify/check-clion-configs.sh; then
+  echo "✗ [clion] 检查未通过" >&2
+  failed=$((failed+1))
+fi
+
 if [[ $failed -eq 0 ]]; then
   echo "lint 汇总：全部通过 ✓"
   exit 0
