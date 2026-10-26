@@ -1,27 +1,12 @@
-// App.tsx - 路由根组件。
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
-import { AnalyticsPage } from '@/pages/AnalyticsPage';
-import { Layout } from '@/components/Layout';
-import { DashboardPage } from '@/pages/DashboardPage';
-import { InterfacesPage } from '@/pages/InterfacesPage';
-import { RoutesPage } from '@/pages/RoutesPage';
-import { SystemPage } from '@/pages/SystemPage';
-import { TrafficPage } from '@/pages/TrafficPage';
+import type { RunTimeLayoutConfig } from '@umijs/max';
+import { HeaderStatus } from '@/components/HeaderStatus';
+import { versionLabel } from '@/utils/version';
 
-export function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/interfaces" element={<InterfacesPage />} />
-          <Route path="/routes" element={<RoutesPage />} />
-          <Route path="/analytics" element={<AnalyticsPage />} />
-          <Route path="/traffic" element={<TrafficPage />} />
-          <Route path="/system" element={<SystemPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  );
-}
+// 没有身份服务时不伪造登录用户、管理员角色或授权结果。
+export const layout: RunTimeLayoutConfig = () => ({
+  logo: '/logo.svg',
+  avatarProps: undefined,
+  actionsRender: () => [<HeaderStatus key="services" />],
+  footerRender: () => <footer className="console-footer">CythSec · {versionLabel()} · 聚合运行监测</footer>,
+  menu: { locale: false },
+});

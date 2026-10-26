@@ -45,25 +45,31 @@ describe('聚合历史分析', () => {
   });
   it('校验时间范围并将查询限定在选中批次', async () => {
     render(<AnalyticsPage />); await screen.findByText(/文件读取：不完整/);
-    fireEvent.change(screen.getByLabelText('起始时间'), { target: { value: '2026-10-26T12:00' } });
-    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-10-26T11:00' } });
+    fireEvent.change(screen.getByLabelText('起始时间'), { target: { value: '2026-10-26 12:00:00' } });
+    expect(fireEvent.keyDown(screen.getByLabelText('起始时间'), { key: 'Enter', code: 'Enter' })).toBe(false);
+    fireEvent.blur(screen.getByLabelText('起始时间'));
+    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-10-26 11:00:00' } });
+    fireEvent.keyDown(screen.getByLabelText('结束时间'), { key: 'Enter', code: 'Enter' });
+    fireEvent.blur(screen.getByLabelText('结束时间'));
     fireEvent.click(screen.getByText('查询窗口'));
-    expect(screen.getByRole('alert')).toHaveTextContent('请选择有效的起止时间');
+    expect(await screen.findByText('请选择有效的起止时间')).toBeInTheDocument();
     expect(analytics.windows).toHaveBeenCalledTimes(1);
-    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-10-26T13:00' } });
+    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-10-26 13:00:00' } });
+    fireEvent.keyDown(screen.getByLabelText('结束时间'), { key: 'Enter', code: 'Enter' });
+    fireEvent.blur(screen.getByLabelText('结束时间'));
     fireEvent.click(screen.getByText('查询窗口'));
     await waitFor(() => expect(analytics.windows).toHaveBeenCalledTimes(2));
     expect(vi.mocked(analytics.windows).mock.calls[1][0]).toBe(item.id);
-    expect(vi.mocked(analytics.windows).mock.calls[1][1]).toMatchObject({ from: new Date('2026-10-26T12:00').getTime() / 1000, offset: 0, limit: 100 });
+    expect(vi.mocked(analytics.windows).mock.calls[1][1]).toMatchObject({ from: new Date('2026-10-26 12:00:00').getTime() / 1000, offset: 0, limit: 100 });
   });
   it('历史分页有边界，重复导入提示不重复写入', async () => {
     vi.mocked(analytics.windows).mockResolvedValue({ ...page, total: 101 });
     vi.mocked(analytics.upload).mockResolvedValue({ import: item, duplicate: true, durable: true });
     render(<AnalyticsPage />); await screen.findByText(/文件读取：不完整/);
-    expect(screen.getByText('上一页')).toBeDisabled();
-    fireEvent.click(screen.getByText('下一页'));
+    expect(screen.getByTitle('上一页')).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(screen.getByTitle('下一页'));
     await waitFor(() => expect(analytics.windows).toHaveBeenCalledWith(item.id, expect.objectContaining({ offset: 100 }), expect.any(AbortSignal)));
-    fireEvent.change(screen.getByLabelText('导入聚合 JSONL'), { target: { files: [new File(['x'], 'aggregate.jsonl')] } });
+    fireEvent.change(document.querySelector('input[type=file]') as HTMLInputElement, { target: { files: [new File(['x'], 'aggregate.jsonl')] } });
     expect(await screen.findByText('该批次已存在，未重复写入')).toBeInTheDocument();
   });
   it('较早批次请求晚返回时不覆盖当前批次', async () => {
@@ -72,7 +78,8 @@ describe('聚合历史分析', () => {
     vi.mocked(analytics.windows).mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }));
     render(<AnalyticsPage />);
     await waitFor(() => expect(analytics.windows).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByLabelText('采集批次'), { target: { value: 'b'.repeat(64) } });
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '采集批次' }));
+    fireEvent.click(await screen.findByText(/窗 · bbbbbbbbbb$/));
     await screen.findByText(/文件读取：不完整/);
     resolveOld({ ...page, items: [], total: 999 });
     await waitFor(() => expect(screen.getByText(/匹配 2 窗/)).toBeInTheDocument());
@@ -84,7 +91,7 @@ it('启用队列时上传只确认待写，不走同步导入', async () => {
   vi.mocked(analytics.ingest).mockResolvedValue({ enabled: true, running: true, state: 'idle', pending_batches: 0, pending_bytes: 0, max_batches: 1024, max_bytes: 67108864, oldest_queued_at: null, next_retry_at: null, last_error: null, completed_this_process: 0, duplicates_this_process: 0, failures_this_process: 0, consecutive_failures: 0 });
   vi.mocked(analytics.enqueue).mockResolvedValue({ id: 'c'.repeat(64), durable: true, duplicate: false, acknowledged_stage: 'queue' });
   render(<AnalyticsPage />); await screen.findByText(/工作进程运行中/);
-  fireEvent.change(screen.getByLabelText('导入聚合 JSONL'), { target: { files: [new File(['x'], 'aggregate.jsonl')] } });
+  fireEvent.change(document.querySelector('input[type=file]') as HTMLInputElement, { target: { files: [new File(['x'], 'aggregate.jsonl')] } });
   expect(await screen.findByText('已进入持久化待写队列，历史写入尚未确认')).toBeInTheDocument();
   expect(analytics.enqueue).toHaveBeenCalledTimes(1);
   expect(analytics.upload).not.toHaveBeenCalled();
@@ -92,7 +99,7 @@ it('启用队列时上传只确认待写，不走同步导入', async () => {
 it('队列状态失败不静默绕过队列，仍可读取历史', async () => {
   vi.mocked(analytics.ingest).mockRejectedValue(new Error('服务不可用'));
   render(<AnalyticsPage />); await screen.findByText(/队列状态不可用/);
-  expect(screen.getByLabelText('导入聚合 JSONL')).toBeDisabled();
+  expect(document.querySelector('input[type=file]') as HTMLInputElement).toBeDisabled();
   expect(await screen.findByText(/文件读取：不完整/)).toBeInTheDocument();
   expect(analytics.upload).not.toHaveBeenCalled();
 });

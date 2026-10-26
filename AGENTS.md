@@ -59,3 +59,26 @@ CYTHSEC_ALLOW_PUSH=1 git push …             # push：只有用户明确授权�
    要改写先跟用户说清楚）。
 3. 并入 `main` 前必须贴出两条门禁的**实际退出码**；没跑过就说没跑过。
 4. 门禁里出现「未核验 / SKIPPED」时如实转述，不许写成通过。
+
+## 前端开发标准（强制）
+
+前端控制台统一采用 **Ant Design Pro 官方工程体系**（Umi Max + React + TypeScript +
+Ant Design + ProComponents），参考 <https://github.com/ant-design/ant-design-pro>。
+所有新增页面和现有页面的维护均遵循此标准；禁止另建视觉体系或只用 CSS 模仿 Pro。
+
+1. `web/console/config/routes.ts` 是路由、菜单与面包屑的唯一真源；Umi Max 负责路由与构建，
+   ProLayout 负责标准中后台外壳，业务页用 PageContainer。
+2. 表格、描述列表和面板优先使用 ProTable、ProDescriptions、ProCard；基础表单、日期、上传、
+   按钮、反馈使用 Ant Design；图标使用 `@ant-design/icons`。不得手绘同类原生控件。
+3. 主题通过 ConfigProvider / Design Token 和 Pro 布局配置修改；业务 CSS 仅负责布局，
+   不覆盖 `.ant-*` 内部选择器，不添加第二套颜色、阴影和控件样式。
+4. 页面必须区分加载、空数据、失败、未知、未发布与成功。请求失败不得回落成零或空列表成功；
+   只呈现实际后端能力，不复制官方脚手架的演示身份、模拟数据、假权限或占位业务操作。
+5. 保留键盘可用性、表单标签、错误说明、响应式布局与表格横向滚动。查询和上传必须保留
+   后端约束、超时及旧响应隔离；接收确认不能冒充持久化完成。
+6. 依赖版本与锁文件一同维护，遵守 peerDependencies；禁止 `--force` / `--legacy-peer-deps`
+   掩盖冲突。升级 Pro 预发布组件须记录版本与兼容性验证。当前采用官方主线的 ProComponents 3。
+7. 前端修改运行类型检查、ESLint、组件/接口测试及生产构建；布局或交互调整还须浏览器实测。
+   两条仓库级合入门禁仍按上文执行；单项前端通过不能替代完整门禁。
+
+工程结构、页面映射、开发命令与验收清单见 [前端工程说明](docs/development/frontend-standard.md)。

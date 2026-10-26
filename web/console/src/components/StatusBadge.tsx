@@ -1,16 +1,6 @@
-// StatusBadge.tsx - 语义化状态徽标（ok / error / warn / muted）。
-interface Props {
-  tone: 'ok' | 'err' | 'warn' | 'muted';
-  label: string;
-}
-
+import { Badge } from 'antd';
+interface Props { tone: 'ok' | 'err' | 'warn' | 'muted'; label: string }
+const statuses = { ok: 'success', err: 'error', warn: 'warning', muted: 'default' } as const;
 export function StatusBadge({ tone, label }: Props) {
-  const cls =
-    tone === 'ok' ? 'badge-ok' : tone === 'err' ? 'badge-err' : tone === 'warn' ? 'badge-warn' : 'badge-muted';
-  return (
-    <span className={`status-badge ${cls}`}>
-      <span className="dot" />
-      {label}
-    </span>
-  );
+  return <Badge status={statuses[tone]} text={label} />;
 }

@@ -21,7 +21,12 @@ module.exports = {
     'eslint:recommended',
     'plugin:@typescript-eslint/recommended',
   ],
-  ignorePatterns: ['dist', 'node_modules', '*.cjs', 'vite.config.ts', 'vitest.config.ts', 'coverage'],
+  ignorePatterns: ['dist', 'node_modules', '*.cjs', 'vite.config.ts', 'vitest.config.ts', 'coverage', 'src/.umi', 'src/.umi-production'],
+  overrides: [{ files: ['config/**/*.ts', '*.config.ts', 'version-source.ts'], env: { node: true } }, {
+    files: ['src/pages/**/*.tsx', 'src/components/**/*.tsx'],
+    excludedFiles: ['**/*.test.tsx'],
+    rules: { 'no-restricted-syntax': ['error', { selector: 'JSXOpeningElement[name.name=/^(button|input|select|textarea|table|meter)$/]', message: '前端标准：使用 Ant Design / ProComponents 控件，规则见 AGENTS.md。' }] },
+  }],
   rules: {
     // React Hooks 规则：条件调用、依赖数组遗漏会直接导致运行时 bug，必须拦截。
     'react-hooks/rules-of-hooks': 'error',

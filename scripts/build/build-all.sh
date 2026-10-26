@@ -23,7 +23,7 @@ usage() {
   --cpp    只构建 C/C++ 栈（CMake）
   --rust   只构建 Rust 栈（cargo, --offline）
   --go     只构建 Go 服务（routerd/policyd/dnsd/telemetryd）
-  --node   只构建前端（web/console: npm ci + vite build）
+  --node   只构建前端（web/console: npm ci + Umi Max build）
   --help   显示本帮助
 
 不带参数则构建全部四栈。
@@ -144,13 +144,13 @@ build_go() {
 }
 
 build_node() {
-  echo "==> [node] web/console: npm ci + vite build"
+  echo "==> [node] web/console: npm ci + Umi Max build"
   if ! (cd web/console && npm ci); then
     echo "✗ [node] npm ci 失败（可能需要网络或 npm registry 缓存）" >&2
     return 1
   fi
   if ! (cd web/console && npm run build); then
-    echo "✗ [node] vite build 失败" >&2
+    echo "✗ [node] Umi Max build 失败" >&2
     return 1
   fi
   echo "✓ [node] 构建完成"

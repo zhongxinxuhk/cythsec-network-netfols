@@ -1,53 +1,21 @@
-// TrafficPage.tsx - 网卡流量统计（累计计数器）。
+import { PageContainer, ProTable, type ProColumns } from '@ant-design/pro-components';
+import { Alert } from 'antd';
 import { api } from '@/api/client';
 import type { TrafficCounters } from '@/api/types';
-import { Card } from '@/components/Card';
 import { useApi } from '@/hooks/useApi';
 import { fmtBytes, fmtInt } from '@/utils/format';
-
+const columns: ProColumns<TrafficCounters>[] = [
+  { title: '接口', dataIndex: 'interface', fixed: 'left' },
+  ...(['rx_bytes', 'tx_bytes', 'rx_packets', 'tx_packets', 'rx_dropped', 'tx_dropped', 'rx_errors', 'tx_errors'] as const).map((key) => ({
+    title: { rx_bytes: 'RX 字节', tx_bytes: 'TX 字节', rx_packets: 'RX 包', tx_packets: 'TX 包', rx_dropped: 'RX 丢弃', tx_dropped: 'TX 丢弃', rx_errors: 'RX 错误', tx_errors: 'TX 错误' }[key],
+    dataIndex: key, renderText: (value: number) => key.endsWith('bytes') ? fmtBytes(value) : fmtInt(value), sorter: (a: TrafficCounters, b: TrafficCounters) => a[key] - b[key],
+  })),
+];
 export function TrafficPage() {
-  const { data, loading, error } = useApi<TrafficCounters[]>(() => api.traffic(), 3000);
-
-  return (
-    <div className="page">
-      <Card
-        title="Traffic"
-        subtitle="网卡累计流量计数（rx/tx 字节与包，3s 轮询）"
-        loading={loading}
-        error={error}
-      >
-        {data && data.length === 0 && (
-          <p className="muted">当前无流量统计（Linux 通过 /sys/class/net 读取，openEuler 上应有数据）</p>
-        )}
-        {data && data.length > 0 && (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>接口</th>
-                <th>RX 字节</th>
-                <th>TX 字节</th>
-                <th>RX 包</th>
-                <th>TX 包</th>
-                <th>RX 丢弃</th>
-                <th>TX 丢弃</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((t) => (
-                <tr key={t.interface}>
-                  <td>{t.interface}</td>
-                  <td className="mono">{fmtBytes(t.rx_bytes)}</td>
-                  <td className="mono">{fmtBytes(t.tx_bytes)}</td>
-                  <td className="mono">{fmtInt(t.rx_packets)}</td>
-                  <td className="mono">{fmtInt(t.tx_packets)}</td>
-                  <td className="mono">{t.rx_dropped}</td>
-                  <td className="mono">{t.tx_dropped}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
-    </div>
-  );
+  const { data, loading, error, reload } = useApi(api.traffic, 3000);
+  return <PageContainer content="网卡累计 RX / TX 计数，每 3 秒刷新；累计量不作为实时速率。">
+    {error && <Alert type="error" title={error} showIcon role="alert" />}
+    <ProTable<TrafficCounters> headerTitle="接口流量" rowKey="interface" columns={columns} dataSource={data ?? []} loading={loading} search={false} pagination={{ pageSize: 20 }} options={{ density: false, reload }} scroll={{ x: 1200 }} locale={{ emptyText: '当前无流量统计，接口计数取决于运行平台支持。' }} />
+  </PageContainer>;
 }
+export default TrafficPage;

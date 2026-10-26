@@ -47,7 +47,7 @@ bash scripts/lint/lint-all.sh --help
 - **C++**：根 `CMakeLists.txt` 读取 `VERSION` 注入 `${CYTHSEC_VERSION}`（子工程应改用此变量，勿硬编码）。
 - **Rust**：根 `Cargo.toml` 的 `[workspace.package] version` 为工作区单一来源。
 - **Go**：构建脚本用 `-ldflags "-X main.version=<VER>"` 注入 `main.version`（见 `scripts/build/build-all.sh`）。
-- **前端**：`web/console/vite.config.ts` 读取根 `VERSION` 注入全局常量 `__APP_VERSION__`。
+- **前端**：`web/console/config/config.ts` 读取根 `VERSION` 注入全局常量 `__APP_VERSION__`。
 
 提交前请运行 `bash scripts/release/check-version.sh` 校验四端一致（不一致非 0 退出）。
 
@@ -96,4 +96,6 @@ bash scripts/lint/lint-all.sh
 bash scripts/test/test-all.sh --go   # Go 服务必须有测试且通过
 ```
 
-> 注意：C++ / 前端源文件由对应负责人维护（dataplane/、web/src/），请勿越权修改。
+> 注意：C++ / 前端源文件由对应负责人维护（dataplane/、web/console/），请勿越权修改。
+
+前端统一采用 Ant Design Pro，强制规则见 [AGENTS.md](AGENTS.md#前端开发标准强制)，工程说明见 [前端开发标准](docs/development/frontend-standard.md)。

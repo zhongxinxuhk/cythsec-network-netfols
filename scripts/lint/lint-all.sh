@@ -175,7 +175,7 @@ fi
 # ---------- 前端 : 类型检查 ----------
 # 两份配置都必须查：
 #   tsconfig.json      覆盖 src/ 与 tests/
-#   tsconfig.node.json 覆盖构建配置文件（vite.config.ts / vitest.config.ts / version-source.ts）
+#   tsconfig.node.json 覆盖构建配置文件（config/*.ts / vitest.config.ts / version-source.ts）
 # 后者此前不被任何门禁覆盖 —— `tsc --noEmit` 不解析 project references，所以构建配置里的
 # 类型错误（例如 @types/node 缺失导致 __dirname / process 未定义）可以长期无人发现，
 # 而这类缺失同时也会让 `npm run build` 挂掉。

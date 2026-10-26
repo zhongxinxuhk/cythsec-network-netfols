@@ -1,56 +1,33 @@
-// DashboardPage.tsx - 概览仪表盘（第一阶段：聚合各端点摘要，不做复杂可视化）。
+import { PageContainer, ProCard } from '@ant-design/pro-components';
+import { Alert, Col, Row, Statistic, Table, Typography } from 'antd';
+import type { InterfaceInfo } from '@/api/types';
 import { api } from '@/api/client';
-import type { InterfaceInfo, Route, SystemInfo } from '@/api/types';
-import { Card } from '@/components/Card';
 import { useApi } from '@/hooks/useApi';
-
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="stat">
-      <span className="stat-v">{value}</span>
-      <span className="stat-k">{label}</span>
-      {hint && <span className="stat-h">{hint}</span>}
-    </div>
-  );
-}
-
+import { StatusBadge } from '@/components/StatusBadge';
 export function DashboardPage() {
-  const sys = useApi<SystemInfo>(() => api.system());
-  const ifaces = useApi<InterfaceInfo[]>(() => api.interfaces());
-  const routes = useApi<Route[]>(() => api.routes());
-
-  const upCount = (ifaces.data ?? []).filter((i) => i.up && i.running).length;
-  const ifaceCount = (ifaces.data ?? []).length;
-  const routeCount = (routes.data ?? []).length;
-
-  return (
-    <div className="page">
-      <Card title="Dashboard" subtitle="cythsec 概览" loading={sys.loading} error={sys.error}>
-        {sys.data && (
-          <div className="stat-row">
-            <Stat label="主机" value={sys.data.hostname} hint={sys.data.os} />
-            <Stat label="路由" value={String(routeCount)} hint="IPv4 路由数" />
-            <Stat label="接口" value={String(ifaceCount)} hint={`${upCount} up`} />
-          </div>
-        )}
-      </Card>
-
-      <Card
-        title="接口状态"
-        loading={ifaces.loading}
-        error={ifaces.error}
-      >
-        {ifaces.data && ifaces.data.length === 0 && <p className="muted">无接口</p>}
-        {ifaces.data && ifaces.data.map((i) => (
-          <div className="iface" key={i.name}>
-            <div className="iface-row">
-              <strong>{i.name}</strong>
-              <span className={i.up ? 'ok-text small' : 'muted small'}>{i.up ? 'up' : 'down'}</span>
-              <span className="muted small">{i.addresses.find((a) => a.scope === 'global')?.ip ?? '—'}</span>
-            </div>
-          </div>
-        ))}
-      </Card>
-    </div>
-  );
+  const sys = useApi(api.system);
+  const ifaces = useApi(api.interfaces);
+  const routes = useApi(api.routes);
+  return <PageContainer content="控制面服务与网络资源概览"><div className="page-stack">
+    <Row gutter={[24, 24]}>
+      {[
+        { title: '运行主机', value: sys.data?.hostname, error: sys.error },
+        { title: 'IPv4 路由', value: routes.data?.length, error: routes.error },
+        { title: '网络接口', value: ifaces.data?.length, error: ifaces.error },
+        { title: '运行中接口', value: ifaces.data?.filter((item) => item.up && item.running).length, error: ifaces.error },
+      ].map((item) => <Col key={item.title} xs={24} sm={12} xl={6}><ProCard variant="outlined">
+        <Statistic title={item.title} value={item.value ?? '未获取'} />
+        {item.error && <Alert type="error" title={item.error} showIcon />}
+      </ProCard></Col>)}
+    </Row>
+    <ProCard title="接口状态" variant="outlined" loading={ifaces.loading}>
+      {ifaces.error ? <Alert type="error" title={ifaces.error} showIcon /> : <Table<InterfaceInfo> size="small" rowKey="name" dataSource={ifaces.data ?? []} pagination={false} scroll={{ x: 600 }} locale={{ emptyText: '未发现接口' }} columns={[
+        { title: '接口', dataIndex: 'name' },
+        { title: '绑定地址', key: 'addresses', render: (_, item) => item.addresses.map((address) => address.cidr).join(' · ') || '未绑定地址' },
+        { title: '状态', key: 'state', render: (_, item) => <StatusBadge tone={item.up && item.running ? 'ok' : 'muted'} label={item.up && item.running ? 'up / running' : 'down'} /> },
+      ]} />}
+    </ProCard>
+    <Typography.Paragraph type="secondary">仅展示服务实际返回的数据。接口计数来自系统累计值，聚合分析按采集批次独立查询。</Typography.Paragraph>
+  </div></PageContainer>;
 }
+export default DashboardPage;

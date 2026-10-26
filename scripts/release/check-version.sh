@@ -17,7 +17,7 @@
 #      - dataplane/traffic-engine/Cargo.toml 的 version
 #        走 workspace 继承（version.workspace = true）
 #      - Go 四服务：构建期由 -ldflags 注入（scripts/build/build-all.sh）
-#      - 前端：vite.config.ts 构建期读取根 VERSION
+#      - 前端：config/config.ts 构建期读取根 VERSION
 #      这些位置**一旦出现版本字面量即为回归** —— 它意味着又多了一份要手工
 #      同步的副本，而「忘了同步」的表现只是版本号悄悄不一致，极难察觉。
 #
@@ -58,7 +58,7 @@ st_bad() { printf '  \033[31m✗\033[0m %s\n' "$1" >&2; }
 # 搭一份最小仓库树：只放检查器真正读的 9 个文件，内容恰好满足全部检查。
 build_fixture() {
   local t="$1"
-  mkdir -p "${t}/web/console" "${t}/dataplane/packet-engine" \
+  mkdir -p "${t}/web/console/config" "${t}/dataplane/packet-engine" \
            "${t}/dataplane/traffic-engine" "${t}/scripts/build" "${t}/ml/training"
   printf '0.1.0\n' > "${t}/VERSION"
   printf '[project]\nversion = "0.1.0"\n' > "${t}/ml/training/pyproject.toml"
@@ -72,8 +72,8 @@ build_fixture() {
     > "${t}/dataplane/traffic-engine/build.rs"
   printf 'ldflags="-X cythsec/services/pkg/versioninfo.Version=${ver}"\n' \
     > "${t}/scripts/build/build-all.sh"
-  printf 'export default { define: { __VERSION__: JSON.stringify(readFileSync("VERSION")) } }\n' \
-    > "${t}/web/console/vite.config.ts"
+  printf 'export default { define: { __APP_VERSION__: JSON.stringify(readRootVersion()) } }\n' \
+    > "${t}/web/console/config/config.ts"
 }
 
 run_self_test() {
@@ -154,8 +154,18 @@ run_self_test() {
     st_bad "S6 Python 包元数据缺失未被检出"; failures=$((failures+1))
   fi
 
+  build_fixture "${ST_TMP}"
+  printf '// VERSION is mentioned but not injected\nexport default {}\n' > "${ST_TMP}/web/console/config/config.ts"
+  rc=0
+  out="$(CYTHSEC_VERSION_ROOT="${ST_TMP}" bash "${SELF}" 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q 'web/console/config/config.ts'; then
+    st_ok "S7 Umi 版本注入缺失（只有 VERSION 注释）→ 判红且指出位置"
+  else
+    st_bad "S7 Umi 注入缺失未被检出"; failures=$((failures+1))
+  fi
+
   if [[ ${failures} -eq 0 ]]; then
-    echo "自证通过：6 个场景（1 通过 + 5 注入判红）全部符合预期"
+    echo "自证通过：7 个场景（1 通过 + 6 注入判红）全部符合预期"
     return 0
   fi
   echo "自证失败：${failures} 个场景不符预期 —— 检查器不可信" >&2
@@ -258,10 +268,10 @@ else
   bad "scripts/build/build-all.sh 未注入 Go 版本（-X ...versioninfo.Version）"
 fi
 
-if grep -q 'VERSION' web/console/vite.config.ts; then
-  ok "web/console/vite.config.ts 构建期读取 VERSION"
+if grep -q '__APP_VERSION__.*readRootVersion' web/console/config/config.ts; then
+  ok "web/console/config/config.ts 构建期读取 VERSION"
 else
-  bad "web/console/vite.config.ts 未读取 VERSION"
+  bad "web/console/config/config.ts 未读取 VERSION"
 fi
 
 # ---------- 汇总 ----------

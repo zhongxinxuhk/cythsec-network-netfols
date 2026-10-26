@@ -65,7 +65,7 @@ export interface IngestStatus {
   completed_this_process: number; duplicates_this_process: number;
   failures_this_process: number; consecutive_failures: number;
 }
-const BASE = (import.meta.env.VITE_TELEMETRYD_BASE as string) || '/telemetry/api/v1';
+const BASE = __TELEMETRYD_BASE__;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;

@@ -102,3 +102,7 @@ secrets/
 # --- 日志 ---
 *.log
 logs/
+
+# Umi Max generated files
+web/console/src/.umi/
+web/console/src/.umi-production/

@@ -17,6 +17,8 @@
 | [聚合持续写入队列](observability/ingest-worker.md) | 磁盘接收确认、恢复、退避和控制台积压状态 |
 | [本批队列验收](planning/INGEST-20261026.md) | 实际命令结果和阶段限制 |
 | [真实采集回读守恒](planning/LIVE-READBACK-20261026.md) | 失败类别保留、真实解析器自证及计数故障注入 |
+| [Ant Design Pro 前端工程](development/frontend-standard.md) | 强制开发标准入口、Umi Max 架构、六个管理页面与验收方式 |
+| [Pro 迁移验收](planning/ANT-PRO-20261026.md) | 最终本地验证、兼容基线与依赖安全阻断 |
 | [BACKLOG](planning/BACKLOG.md) | 376项任务；完成状态以登记和验收证据为准 |
 | [接力文档](planning/HANDOFF.md) | 既有数据链、第三方裁判、性能与工程约定 |
 | [分层与插件化](architecture/layered-plugin-architecture.md) | L0契约、核心与宿主边界，M10计划尚未整体完成 |

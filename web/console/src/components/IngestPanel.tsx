@@ -1,3 +1,4 @@
+import { Alert, Col, Row, Statistic } from 'antd';
 import type { IngestStatus } from '@/api/analytics';
 import { Card } from './Card';
 import { fmtBytes } from '@/utils/format';
@@ -11,14 +12,14 @@ const errors: Record<string, string> = {
 };
 export function IngestPanel({ status, error }: { status: IngestStatus | null; error: string | null }) {
   return <Card title="持续写入队列" subtitle="状态每 3 秒刷新；接收确认与历史保存分别显示">
-    {error ? <p role="status" className="error-text">队列状态不可用：{error}；上传暂不可用，已有历史仍可查询</p> : !status ? <p>正在读取队列状态…</p> : !status.enabled ?
+    {error ? <Alert type="error" title={`队列状态不可用：${error}；上传暂不可用，已有历史仍可查询`} showIcon role="status" /> : !status ? <p>正在读取队列状态…</p> : !status.enabled ?
       <p className="muted">未启用磁盘队列，文件仍通过同步导入保存。</p> : <>
         <p>{states[status.state]} · {status.running ? '工作进程运行中' : '工作进程未运行'}</p>
-        <div className="stat-row">
-          <div className="stat"><span className="stat-v">{status.pending_batches}</span><span>待写批次 / {status.max_batches}</span></div>
-          <div className="stat"><span className="stat-v">{fmtBytes(status.pending_bytes)}</span><span>待写数据 / {fmtBytes(status.max_bytes)}</span></div>
-          <div className="stat"><span className="stat-v">{status.completed_this_process}</span><span>本次进程已确认批次</span></div>
-        </div>
+        <Row gutter={[24, 16]}>
+          <Col xs={24} md={8}><Statistic title={`待写批次 / ${status.max_batches}`} value={status.pending_batches} /></Col>
+          <Col xs={24} md={8}><Statistic title={`待写数据 / ${fmtBytes(status.max_bytes)}`} value={fmtBytes(status.pending_bytes)} /></Col>
+          <Col xs={24} md={8}><Statistic title="本次进程已确认批次" value={status.completed_this_process} /></Col>
+        </Row>
         {status.oldest_queued_at && <p>最早待写：{new Date(status.oldest_queued_at).toLocaleString()}</p>}
         {status.last_error && <p role="status" className="error-text">{errors[status.last_error] || '写入状态异常，请检查服务'}</p>}
         {status.next_retry_at && <p>下次重试：{new Date(status.next_retry_at).toLocaleString()}</p>}

@@ -1,14 +1,14 @@
 # web/ — Web 控制面
 
-> `console/`：React + TypeScript + Vite 可视化控制台，消费 routerd 和 telemetryd 的 API。
+> `console/`：Ant Design Pro + Umi Max + React + TypeScript 可视化控制台，消费 routerd 和 telemetryd 的 API。
 
 **状态**：部分实现，现有 6 个页面、API 客户端与组件测试；聚合历史已接真实本机持久化 API，生产鉴权与其他业务闭环仍未完成。
 
-## 技术栈（刻意极简）
+## 技术栈
 
-- React ^18.3.1 + react-router-dom ^7.18.4 —— **runtime 依赖仅 3 个**
-- TypeScript ^5.5 / Vite ^6.4.5 / Vitest ^4.1.12 / ESLint ^8.57
-- **无状态管理库**：`src/stores/` 目前是占位，实际状态就是 React `useState` + 自研 `useApi` hook
+- Ant Design Pro 官方体系：Umi Max 4.7.27、ProComponents 3.1.14-2、Ant Design 6.6.8。
+- React 18.3.1 + TypeScript；Vitest + Testing Library 验证真实组件交互。
+- ProLayout 管理外壳，PageContainer 页面，ProTable / ProDescriptions / ProCard 承载业务。
 
 Node 版本使用根 `.node-version`（24.15.0）；package.json engines 为兼容边界。
 
@@ -18,7 +18,7 @@ Node 版本使用根 `.node-version`（24.15.0）；package.json engines 为兼�
 cd console
 npm ci
 npm run dev          # 开发（/api 代理到 http://localhost:8080，可用 VITE_ROUTERD_TARGET 覆盖，见 .env.example）
-npm run build        # tsc && vite build
+npm run build        # Umi Max setup + 类型检查 + 生产构建
 npm run typecheck    # tsc --noEmit
 npm run test         # vitest（jsdom；coverage 需额外安装同版本 provider）
 npm run lint
@@ -28,12 +28,13 @@ npm audit --package-lock-only --audit-level=low # 包含开发依赖的安全门
 ## 结构
 
 ```
-src/main.tsx                 # 入口 → BrowserRouter
-src/App.tsx                  # 6 个页面路由：/ /interfaces /routes /traffic /system /analytics
+config/config.ts             # Umi Max、Ant Design 与 ProLayout 配置
+config/routes.ts             # 六个页面与404，菜单、路由、面包屑同源
+src/app.tsx                  # Pro 运行时布局与真实服务状态
 src/api/client.ts            # fetch 客户端：envelope 解包 + ApiError
-src/hooks/useApi.ts          # loading/error/data + 可选轮询
-src/pages/                   # Dashboard / Interfaces / Routes / Traffic / System / Analytics 共 6 页
-src/components/              # Layout、Card、StatusBadge（含测试）
+src/hooks/useApi.ts          # loading/error/data + 轮询与旧请求隔离
+src/pages/                   # 六个 PageContainer 页面
+src/components/              # ProCard、Ant Badge、服务状态与队列状态
 src/constants/attributes.gen.ts   # 属性字典 TS 绑定（codegen 生成，勿手改）
 version-source.ts            # 版本注入链：根 VERSION → __APP_VERSION__
 tests/                       # api-client 等测试 + vitest setup
@@ -55,3 +56,5 @@ tests/                       # api-client 等测试 + vitest setup
 控制台现有第六页 `/analytics`：导入经过校验的聚合 JSONL，查询持久化批次、时间范围、TCP/UDP 计数、TLS/QUIC 头候选与采集状态。开发代理 `/telemetry` 指向 telemetryd（默认 `127.0.0.1:8083`，`VITE_TELEMETRYD_TARGET` 可覆盖）；既有 `/api` 仍指向 routerd。先启动启用 `-aggregate-dir` 的本机 telemetryd，页面数据才来自真实存储；未启用显示错误，不回退假数据。完整命令见 [聚合持久化](../docs/observability/persistence.md)。
 
 聚合分析页新增持续写入队列面板：积压、失败原因、退避和进程计数每三秒刷新。队列启用时上传只先确认入队；状态不可用则暂停上传，仍可查历史。见 [队列契约](../docs/observability/ingest-worker.md)。
+
+前端开发标准与代理配置见 [前端工程说明](../docs/development/frontend-standard.md)。

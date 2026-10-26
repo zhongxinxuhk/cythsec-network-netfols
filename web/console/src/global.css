@@ -1,0 +1,9 @@
+/* Ant Design Pro 负责视觉系统；这里只保留业务布局，不覆盖 .ant-* 私有结构。 */
+body { margin: 0; }
+.console-footer { padding: 20px; text-align: center; color: var(--ant-color-text-tertiary); }
+.page-stack { display: flex; flex-direction: column; gap: 24px; }
+.muted { color: var(--ant-color-text-tertiary); }
+.small { font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.error-text { color: var(--ant-color-error); }
+.analytics-batch { width: 100%; max-width: 680px; min-width: 0; }

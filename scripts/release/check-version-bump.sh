@@ -5,7 +5,7 @@
 #   源码级检查只能回答"四处副本/派生点是否与真源一致"，
 #   它无法回答"改了真源，产物报告的版本号**真的会跟着变**吗" ——
 #   两者是不同的问题。历史上恰恰出现过派生点看似存在、实际从未从 VERSION 取值
-#   的情况（见 web/console/vite.config.ts 里记的那次三级上溯事故），
+#   的情况（见 web/console/version-source.ts 里记的那次三级上溯事故），
 #   那种缺陷在源码级检查下完全可以全绿。
 #
 # 本脚本做两件事：
@@ -108,15 +108,15 @@ else
   echo "✗ [cpp] 构建失败" >&2; tail -5 "${WORK}/cmake.log" >&2; fails=$((fails+1))
 fi
 
-echo "==> [5/5] 前端：vite 构建期 define 注入 __APP_VERSION__（产物里应有该字面量）"
-if (cd web/console && npx vite build --outDir "${WORK}/dist" --logLevel error) >"${WORK}/vite.log" 2>&1; then
+echo "==> [5/5] 前端：Umi Max 构建期 define 注入 __APP_VERSION__（产物里应有该字面量）"
+if (cd web/console && CONSOLE_OUTPUT_PATH="${WORK}/dist" npx max build) >"${WORK}/frontend.log" 2>&1; then
   if grep -rq "${TO}" "${WORK}/dist"; then
     echo "✓ [frontend] 构建产物内含 ${TO}（$(grep -rl "${TO}" "${WORK}/dist" | head -1 | sed "s|${WORK}/dist/||")）"
   else
     echo "✗ [frontend] 产物里找不到 ${TO}" >&2; fails=$((fails+1))
   fi
 else
-  echo "✗ [frontend] 构建失败" >&2; tail -5 "${WORK}/vite.log" >&2; fails=$((fails+1))
+  echo "✗ [frontend] 构建失败" >&2; tail -5 "${WORK}/frontend.log" >&2; fails=$((fails+1))
 fi
 
 echo "==> 复原真源并复核"
