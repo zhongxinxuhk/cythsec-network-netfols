@@ -15,15 +15,16 @@ const envPrefix = "TELEMETRYD"
 
 // Config 是 telemetryd 的运行时配置。
 type Config struct {
-	ListenAddr      string        // HTTP 监听地址
-	ShutdownTimeout time.Duration // 优雅关闭超时
-	LogLevel        string        // 日志级别：debug/info/warn/error
-	LogFormat       string        // 日志格式：json/text
-	MetricsEnabled  bool          // 是否暴露 GET /metrics
-	TargetFile      string        // 抓取目标文件路径（空表示不载入，从空注册表启动）
-	MaxTargets      int           // 允许载入的最大目标数（0 表示不限制）
-	AggregateDir    string        // 聚合持久化目录；空表示未启用，仅本机服务可用
-	ConfigPath      string        // YAML 配置文件路径
+	ListenAddr        string        // HTTP 监听地址
+	ShutdownTimeout   time.Duration // 优雅关闭超时
+	LogLevel          string        // 日志级别：debug/info/warn/error
+	LogFormat         string        // 日志格式：json/text
+	MetricsEnabled    bool          // 是否暴露 GET /metrics
+	TargetFile        string        // 抓取目标文件路径（空表示不载入，从空注册表启动）
+	MaxTargets        int           // 允许载入的最大目标数（0 表示不限制）
+	AggregateQueueDir string        // 可选的聚合磁盘队列目录；依赖 AggregateDir
+	AggregateDir      string        // 聚合持久化目录；空表示未启用，仅本机服务可用
+	ConfigPath        string        // YAML 配置文件路径
 }
 
 // Default 返回内置默认值。
@@ -58,6 +59,7 @@ func (c *Config) LoadYAML(path string) error {
 	c.TargetFile = m.Get("target_file", c.TargetFile)
 	c.MaxTargets = m.Int("max_targets", c.MaxTargets)
 	c.AggregateDir = m.Get("aggregate_dir", c.AggregateDir)
+	c.AggregateQueueDir = m.Get("aggregate_queue_dir", c.AggregateQueueDir)
 	return nil
 }
 
@@ -71,6 +73,7 @@ func (c *Config) ApplyEnv() {
 	c.TargetFile = configutil.EnvString(envPrefix, "target_file", c.TargetFile)
 	c.MaxTargets = configutil.EnvInt(envPrefix, "max_targets", c.MaxTargets)
 	c.AggregateDir = configutil.EnvString(envPrefix, "aggregate_dir", c.AggregateDir)
+	c.AggregateQueueDir = configutil.EnvString(envPrefix, "aggregate_queue_dir", c.AggregateQueueDir)
 	if v, ok := configutil.FromEnv(envPrefix, "config"); ok {
 		c.ConfigPath = v
 	}

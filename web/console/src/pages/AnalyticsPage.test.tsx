@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { analytics } from '@/api/analytics';
 import type { AggregateImport, AggregatePage } from '@/api/analytics';
 import { AnalyticsPage } from './AnalyticsPage';
-vi.mock('@/api/analytics', () => ({ analytics: { imports: vi.fn(), windows: vi.fn(), upload: vi.fn() } }));
+vi.mock('@/api/analytics', () => ({ analytics: { imports: vi.fn(), windows: vi.fn(), upload: vi.fn(), enqueue: vi.fn(), ingest: vi.fn() } }));
 const item: AggregateImport = {
   id: 'a'.repeat(64), stored_at: '2026-10-26T00:00:00Z', bytes: 2048, windows: 2,
   first_window_seconds: 0, last_window_seconds: 60,
@@ -20,6 +20,7 @@ const page: AggregatePage = { import: item, total: 2, offset: 0, limit: 100, ite
   } },
 ] };
 beforeEach(() => {
+  vi.mocked(analytics.ingest).mockResolvedValue({ enabled: false, running: false, state: 'disabled', pending_batches: 0, pending_bytes: 0, max_batches: 0, max_bytes: 0, oldest_queued_at: null, next_retry_at: null, last_error: null, completed_this_process: 0, duplicates_this_process: 0, failures_this_process: 0, consecutive_failures: 0 });
   vi.mocked(analytics.imports).mockResolvedValue({ items: [item], total: 1 });
   vi.mocked(analytics.windows).mockResolvedValue(page);
 });
@@ -77,4 +78,21 @@ describe('聚合历史分析', () => {
     await waitFor(() => expect(screen.getByText(/匹配 2 窗/)).toBeInTheDocument());
     expect(screen.queryByText(/匹配 999 窗/)).not.toBeInTheDocument();
   });
+});
+
+it('启用队列时上传只确认待写，不走同步导入', async () => {
+  vi.mocked(analytics.ingest).mockResolvedValue({ enabled: true, running: true, state: 'idle', pending_batches: 0, pending_bytes: 0, max_batches: 1024, max_bytes: 67108864, oldest_queued_at: null, next_retry_at: null, last_error: null, completed_this_process: 0, duplicates_this_process: 0, failures_this_process: 0, consecutive_failures: 0 });
+  vi.mocked(analytics.enqueue).mockResolvedValue({ id: 'c'.repeat(64), durable: true, duplicate: false, acknowledged_stage: 'queue' });
+  render(<AnalyticsPage />); await screen.findByText(/工作进程运行中/);
+  fireEvent.change(screen.getByLabelText('导入聚合 JSONL'), { target: { files: [new File(['x'], 'aggregate.jsonl')] } });
+  expect(await screen.findByText('已进入持久化待写队列，历史写入尚未确认')).toBeInTheDocument();
+  expect(analytics.enqueue).toHaveBeenCalledTimes(1);
+  expect(analytics.upload).not.toHaveBeenCalled();
+});
+it('队列状态失败不静默绕过队列，仍可读取历史', async () => {
+  vi.mocked(analytics.ingest).mockRejectedValue(new Error('服务不可用'));
+  render(<AnalyticsPage />); await screen.findByText(/队列状态不可用/);
+  expect(screen.getByLabelText('导入聚合 JSONL')).toBeDisabled();
+  expect(await screen.findByText(/文件读取：不完整/)).toBeInTheDocument();
+  expect(analytics.upload).not.toHaveBeenCalled();
 });

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { analytics } from '@/api/analytics';
 import type { AggregateImport, AggregatePage, AggregateQuery } from '@/api/analytics';
+import { useIngestStatus } from '@/hooks/useIngestStatus';
+import { IngestPanel } from '@/components/IngestPanel';
 import { Card } from '@/components/Card';
 import { fmtBytes, fmtInt } from '@/utils/format';
 
@@ -12,6 +14,8 @@ const count = (value: number | null | undefined) => (value === null || value ===
 const message = (e: unknown) => e instanceof Error ? e.message : '请求失败';
 
 export function AnalyticsPage() {
+  const { status: ingest, error: ingestError } = useIngestStatus();
+  const pendingSelection = useRef<string | null>(null);
   const [imports, setImports] = useState<AggregateImport[]>([]);
   const [selected, setSelected] = useState('');
   const [page, setPage] = useState<AggregatePage | null>(null);
@@ -31,6 +35,10 @@ export function AnalyticsPage() {
     analytics.imports(controller.signal).then((data) => {
       if (controller.signal.aborted) return;
       setImports(data.items);
+      if (pendingSelection.current && data.items.some((item) => item.id === pendingSelection.current)) {
+        setSelected(pendingSelection.current); pendingSelection.current = null;
+        setNotice('历史批次已可查询');
+      }
       setSelected((old) => data.items.some((item) => item.id === old) ? old : data.items[0]?.id || '');
       setListLoading(false);
     }).catch((e: unknown) => { if (!controller.signal.aborted) { setError(message(e)); setListLoading(false); } });
@@ -48,6 +56,10 @@ export function AnalyticsPage() {
     return () => controller.abort();
   }, [selected, query, revision]);
 
+  useEffect(() => {
+    if (ingest?.enabled) setRevision((value) => value + 1);
+  }, [ingest?.enabled, ingest?.completed_this_process]);
+
   const status = page?.import.status;
   return (
     <div className="page analytics-page">
@@ -55,15 +67,23 @@ export function AnalyticsPage() {
         <p className="muted">按采集批次查询分钟窗口。不同批次可能重叠，不跨批次合计；未发布指标不作为零值。</p>
         <div className="analytics-toolbar">
           <label>导入聚合 JSONL
-            <input type="file" accept=".jsonl,.ndjson" disabled={uploading} onChange={(e) => {
+            <input type="file" accept=".jsonl,.ndjson" disabled={uploading || !ingest} onChange={(e) => {
               const file = e.target.files?.[0]; e.target.value = ''; if (!file) return;
               setUploading(true); setError(null); setNotice('');
-              void analytics.upload(file).then((data) => {
-                if (!data.durable) throw new Error('存储未确认持久化');
-                setSelected(data.import.id); setQuery({ offset: 0, limit: 100 });
-                setNotice(data.duplicate ? '该批次已存在，未重复写入' : '批次已持久化');
-                setRevision((v) => v + 1);
-              }).catch((e: unknown) => setError(message(e))).finally(() => setUploading(false));
+              void (async () => {
+                if (ingest?.enabled) {
+                  const data = await analytics.enqueue(file);
+                  if (!data.durable || data.acknowledged_stage !== 'queue') throw new Error('队列未确认持久化');
+                  pendingSelection.current = data.id;
+                  setNotice(data.duplicate ? '该批次已在待写队列，历史写入尚未确认' : '已进入持久化待写队列，历史写入尚未确认');
+                } else {
+                  const data = await analytics.upload(file);
+                  if (!data.durable) throw new Error('存储未确认持久化');
+                  setSelected(data.import.id);
+                  setNotice(data.duplicate ? '该批次已存在，未重复写入' : '批次已持久化');
+                }
+                setQuery({ offset: 0, limit: 100 }); setFrom(''); setTo(''); setRevision((v) => v + 1);
+              })().catch((e: unknown) => setError(message(e))).finally(() => setUploading(false));
             }} />
           </label>
           <button className="btn" type="button" onClick={() => setRevision((v) => v + 1)}>刷新历史</button>
@@ -97,6 +117,7 @@ export function AnalyticsPage() {
           </form>
         </>}
       </Card>
+      <IngestPanel status={ingest} error={ingestError} />
       {page && status && <Card title="采集与存储状态" subtitle={`已持久化 ${fmtBytes(page.import.bytes)} · ${page.import.windows} 个窗口`}>
         <p className={status.input_complete && status.analysis_complete ? '' : 'error-text'}>
           文件读取：{status.input_complete ? '完成' : '不完整'} · 分析处理：{status.analysis_complete ? '完成' : '不完整'} · {lossLabels[status.capture_loss_status]}

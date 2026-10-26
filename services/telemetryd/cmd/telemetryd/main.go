@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net"
@@ -44,6 +45,7 @@ func loadConfig() (config.Config, bool) {
 	logLevel := flag.String("log-level", "", "日志级别: debug / info / warn / error（默认 info）")
 	logFormat := flag.String("log-format", "", "日志格式: json / text（默认 json）")
 	noMetrics := flag.Bool("no-metrics", false, "关闭 GET /metrics 端点")
+	queueDir := flag.String("aggregate-queue-dir", c.AggregateQueueDir, "聚合磁盘队列目录（需启用 aggregate-dir）")
 	aggregateDir := flag.String("aggregate-dir", c.AggregateDir, "本机聚合持久化目录（默认未启用）")
 	targetFile := flag.String("target-file", c.TargetFile, "JSON 抓取目标文件路径（默认不载入）")
 	maxTargets := flag.Int("max-targets", c.MaxTargets, "允许载入的最大目标数（0 表示不限制）")
@@ -93,6 +95,9 @@ func loadConfig() (config.Config, bool) {
 	if set["target-file"] {
 		c.TargetFile = *targetFile
 	}
+	if set["aggregate-queue-dir"] {
+		c.AggregateQueueDir = *queueDir
+	}
 	if set["aggregate-dir"] {
 		c.AggregateDir = *aggregateDir
 	}
@@ -132,6 +137,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if c.AggregateQueueDir != "" && c.AggregateDir == "" {
+		log.Print("聚合队列需要启用 aggregate-dir")
+		os.Exit(1)
+	}
 	var aggregates *aggregate.Store
 	if c.AggregateDir != "" {
 		host, _, err := net.SplitHostPort(c.ListenAddr)
@@ -145,6 +154,19 @@ func main() {
 			os.Exit(1)
 		}
 		defer aggregates.Close()
+	}
+	var ingest *aggregate.Worker
+	if c.AggregateQueueDir != "" {
+		queue, err := aggregate.Open(c.AggregateQueueDir)
+		if err != nil {
+			log.Printf("打开聚合队列失败: %v", err)
+			os.Exit(1)
+		}
+		ingest = aggregate.NewWorker(aggregates, queue)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); ingest.Run(ctx) }()
+		defer func() { cancel(); <-done; queue.Close() }()
 	}
 	var obs api.ObservabilityMetrics
 	err = controlplane.Run(controlplane.ServerConfig{
@@ -163,6 +185,7 @@ func main() {
 		api.RegisterRoutes(mux, api.ServerOptions{
 			Store:        store,
 			Aggregates:   aggregates,
+			Ingest:       ingest,
 			TargetCount:  obs.TargetCount,
 			EnabledCount: obs.EnabledCount,
 		})

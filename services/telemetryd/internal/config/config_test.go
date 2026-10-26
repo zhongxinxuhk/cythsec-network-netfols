@@ -181,3 +181,25 @@ func TestAggregateDirectoryConfiguration(t *testing.T) {
 		t.Fatal(c.AggregateDir)
 	}
 }
+
+func TestAggregateQueueConfiguration(t *testing.T) {
+	c := Default()
+	if c.AggregateQueueDir != "" {
+		t.Fatal("queue enabled by default")
+	}
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("aggregate_queue_dir: /local/queue\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.LoadYAML(p); err != nil {
+		t.Fatal(err)
+	}
+	if c.AggregateQueueDir != "/local/queue" {
+		t.Fatal(c.AggregateQueueDir)
+	}
+	t.Setenv("TELEMETRYD_AGGREGATE_QUEUE_DIR", "/env/queue")
+	c.ApplyEnv()
+	if c.AggregateQueueDir != "/env/queue" {
+		t.Fatal(c.AggregateQueueDir)
+	}
+}

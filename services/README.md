@@ -75,3 +75,5 @@ scripts/verify/e2e-control-plane.sh   # 四服务端到端验收（启动→探�
 
 - 前端消费方：`web/README.md`（console 调 routerd `/api/v1`）
 - 属性字典真源：`configs/README.md`
+
+聚合写入新增可选 `-aggregate-queue-dir`：队列同步后接收、后台历史写入、失败退避及重启恢复。仅接收完整聚合批次，详见 [队列契约](../docs/observability/ingest-worker.md)。

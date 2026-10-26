@@ -6,3 +6,5 @@ cargo build --frozen --bin cythsec-observe
 mkdir -p build/aggregate-storage
 (cd services/telemetryd && GOWORK=off GOPROXY=off go build -o "$ROOT/build/aggregate-storage/telemetryd" ./cmd/telemetryd)
 "${PYTHON:-python3}" scripts/verify/check-aggregate-storage.py
+
+"${PYTHON:-python3}" scripts/verify/check-aggregate-ingest.py

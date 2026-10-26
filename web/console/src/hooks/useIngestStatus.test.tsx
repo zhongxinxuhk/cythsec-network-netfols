@@ -1,0 +1,24 @@
+import { act, cleanup, renderHook } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { analytics } from '@/api/analytics';
+import type { IngestStatus } from '@/api/analytics';
+import { useIngestStatus } from './useIngestStatus';
+vi.mock('@/api/analytics', () => ({ analytics: { ingest: vi.fn() } }));
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
+it('状态请求超时会撤销旧的零积压状态，并在卸载后停止轮询', async () => {
+  vi.useFakeTimers();
+  const status: IngestStatus = { enabled: true, running: true, state: 'idle', pending_batches: 0, pending_bytes: 0, max_batches: 1024, max_bytes: 67108864, oldest_queued_at: null, next_retry_at: null, last_error: null, completed_this_process: 0, duplicates_this_process: 0, failures_this_process: 0, consecutive_failures: 0 };
+  vi.mocked(analytics.ingest).mockResolvedValueOnce(status).mockImplementation(() => new Promise(() => {}));
+  const { result, unmount } = renderHook(() => useIngestStatus());
+  await act(async () => { await Promise.resolve(); });
+  expect(result.current.status?.pending_batches).toBe(0);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5500); });
+  expect(result.current.status).toBeNull();
+  expect(result.current.error).toBe('队列状态请求超时');
+  const calls = vi.mocked(analytics.ingest).mock.calls.length;
+  const signal = vi.mocked(analytics.ingest).mock.calls[calls - 1][0];
+  expect(signal?.aborted).toBe(true);
+  unmount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+  expect(analytics.ingest).toHaveBeenCalledTimes(calls);
+});

@@ -1,5 +1,7 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-10-26 聚合持续写入增量**：可选磁盘队列、常驻消费者、批次恢复和退避、控制台积压状态；不是 ClickHouse 写入器。最新范围和验收见 [INGEST-20261026.md](INGEST-20261026.md)。
+
 > **2026-10-26 聚合持久化纵向切片**：新增 telemetryd 本地聚合历史、严格导入/去重/重启校验和查询，第六页控制台 `/analytics`；不是 ClickHouse 常驻后端。lint/build/test 实际退出均 0；存储重启 E2E、前端 41 项、四服务 59 项通过；BPF 14 项通过但无 ICMP 注入目标，历史裁判例外仍未核验。阶段与本轮验收见 [CORE-STATUS-20261026.md](CORE-STATUS-20261026.md)。
 
 > **2026-10-26 聚合观测增量**：`feat/aggregate-observability` 新增离线 `cythsec-observe`；分钟窗承载统计、TCP质量与采集完整性，不调用应用/VPN分类器。lint/build/test 实际退出均 0；新增 17 项测试、tshark 对照和本机回读通过，BPF 14 项通过但无 ICMP 注入目标；既有裁判 14/2/8 项仍未核验，保留本地分支，见 [本批记录](AGGREGATE-20261026.md) 和 [字段契约](../observability/aggregate-stats.md)。

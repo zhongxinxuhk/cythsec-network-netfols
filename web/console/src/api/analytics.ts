@@ -58,11 +58,18 @@ export interface AggregatePage {
   limit: number;
 }
 export interface AggregateQuery { from?: number; to?: number; offset: number; limit: number }
+export interface IngestStatus {
+  enabled: boolean; running: boolean; state: 'disabled' | 'stopped' | 'idle' | 'writing' | 'backoff' | 'blocked';
+  pending_batches: number; pending_bytes: number; max_batches: number; max_bytes: number;
+  oldest_queued_at: string | null; next_retry_at: string | null; last_error: string | null;
+  completed_this_process: number; duplicates_this_process: number;
+  failures_this_process: number; consecutive_failures: number;
+}
 const BASE = (import.meta.env.VITE_TELEMETRYD_BASE as string) || '/telemetry/api/v1';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
-  try { res = await fetch(`${BASE}/analytics/imports${path}`, init); }
+  try { res = await fetch(`${BASE}/analytics${path}`, init); }
   catch (e) {
     if (e instanceof Error && e.name === 'AbortError') throw e;
     throw new ApiError('无法连接聚合存储服务');
@@ -72,15 +79,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body.data;
 }
 export const analytics = {
-  imports: (signal?: AbortSignal) => request<{ items: AggregateImport[]; total: number }>('', { signal }),
+  ingest: (signal?: AbortSignal) => request<IngestStatus>('/ingest', { signal }),
+  enqueue: async (file: File) => {
+    if (file.size > 1024 * 1024) throw new ApiError('聚合文件不能超过 1 MiB');
+    return request<{ id: string; duplicate: boolean; durable: boolean; acknowledged_stage: string }>('/ingest', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-ndjson' }, body: await file.text(),
+    });
+  },
+  imports: (signal?: AbortSignal) => request<{ items: AggregateImport[]; total: number }>('/imports', { signal }),
   windows: (id: string, query: AggregateQuery, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined) params.set(key, String(value)); });
-    return request<AggregatePage>(`/${encodeURIComponent(id)}?${params}`, { signal });
+    return request<AggregatePage>(`/imports/${encodeURIComponent(id)}?${params}`, { signal });
   },
   upload: async (file: File) => {
     if (file.size > 1024 * 1024) throw new ApiError('聚合文件不能超过 1 MiB');
-    return request<{ import: AggregateImport; duplicate: boolean; durable: boolean }>('', {
+    return request<{ import: AggregateImport; duplicate: boolean; durable: boolean }>('/imports', {
       method: 'POST', headers: { 'Content-Type': 'application/x-ndjson' }, body: await file.text(),
     });
   },

@@ -53,3 +53,5 @@ tests/                       # api-client 等测试 + vitest setup
 ## 聚合历史分析增量
 
 控制台现有第六页 `/analytics`：导入经过校验的聚合 JSONL，查询持久化批次、时间范围、TCP/UDP 计数、TLS/QUIC 头候选与采集状态。开发代理 `/telemetry` 指向 telemetryd（默认 `127.0.0.1:8083`，`VITE_TELEMETRYD_TARGET` 可覆盖）；既有 `/api` 仍指向 routerd。先启动启用 `-aggregate-dir` 的本机 telemetryd，页面数据才来自真实存储；未启用显示错误，不回退假数据。完整命令见 [聚合持久化](../docs/observability/persistence.md)。
+
+聚合分析页新增持续写入队列面板：积压、失败原因、退避和进程计数每三秒刷新。队列启用时上传只先确认入队；状态不可用则暂停上传，仍可查历史。见 [队列契约](../docs/observability/ingest-worker.md)。

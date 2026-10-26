@@ -43,21 +43,8 @@ func importAggregates(opts ServerOptions) http.HandlerFunc {
 		if !aggregateAccess(w, r, opts.Aggregates) {
 			return
 		}
-		media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || media != "application/x-ndjson" {
-			apiresp.Err(w, r, 415, apiresp.CodeBadRequest, "请上传聚合 JSONL（application/x-ndjson）")
-			return
-		}
-		body := http.MaxBytesReader(w, r.Body, aggregate.MaxBatchBytes)
-		defer body.Close()
-		data, err := io.ReadAll(body)
-		if err != nil {
-			var limit *http.MaxBytesError
-			if errors.As(err, &limit) {
-				apiresp.Err(w, r, 413, apiresp.CodeBadRequest, "聚合文件不能超过 1 MiB")
-			} else {
-				apiresp.Err(w, r, 400, apiresp.CodeBadRequest, "读取聚合文件失败")
-			}
+		data, ok := readAggregateBody(w, r)
+		if !ok {
 			return
 		}
 		item, duplicate, err := opts.Aggregates.Put(data)
@@ -117,4 +104,26 @@ func queryAggregates(opts ServerOptions) http.HandlerFunc {
 		}
 		apiresp.JSON(w, r, 200, page)
 	}
+}
+
+func readAggregateBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || media != "application/x-ndjson" {
+		apiresp.Err(w, r, 415, apiresp.CodeBadRequest, "请上传聚合 JSONL（application/x-ndjson）")
+		return nil, false
+	}
+	body := http.MaxBytesReader(w, r.Body, aggregate.MaxBatchBytes)
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		var limit *http.MaxBytesError
+		if errors.As(err, &limit) {
+			apiresp.Err(w, r, 413, apiresp.CodeBadRequest, "聚合文件不能超过 1 MiB")
+		} else {
+			apiresp.Err(w, r, 400, apiresp.CodeBadRequest, "读取聚合文件失败")
+		}
+		return nil, false
+	}
+
+	return data, true
 }

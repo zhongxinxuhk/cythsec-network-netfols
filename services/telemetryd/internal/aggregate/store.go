@@ -47,7 +47,7 @@ type Store struct {
 
 func digest(data []byte) string { v := sha256.Sum256(data); return hex.EncodeToString(v[:]) }
 func metadata(id string, b Batch, size int64, mod time.Time) Import {
-	m := Import{ID: id, StoredAt: mod.UTC().Format(time.RFC3339Nano), Windows: len(b.Windows), Bytes: size, Status: b.Status}
+	m := Import{ID: id, StoredAt: mod.UTC().Format("2006-01-02T15:04:05.000000000Z"), Windows: len(b.Windows), Bytes: size, Status: b.Status}
 	if len(b.Windows) > 0 {
 		a, z := b.Windows[0].Start, b.Windows[len(b.Windows)-1].Start
 		m.First = &a
@@ -261,4 +261,48 @@ func (s *Store) Query(id string, from, to uint64, offset, limit int) (Page, erro
 		page.Items = filtered[offset:end]
 	}
 	return page, nil
+}
+
+// readCommitted returns a validated immutable batch; only the ingest worker uses it.
+func (s *Store) readCommitted(id string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lock == nil || s.failed {
+		return nil, os.ErrClosed
+	}
+	if _, ok := s.items[id]; !ok {
+		return nil, ErrNotFound
+	}
+	_, data, _, err := s.read(id)
+	return data, err
+}
+func (s *Store) ready() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lock != nil && !s.failed
+}
+
+// acknowledge is called only after the destination has confirmed its durable commit.
+// If directory sync fails, stop writes until restart reconciles the on-disk queue.
+func (s *Store) acknowledge(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lock == nil || s.failed {
+		return os.ErrClosed
+	}
+	item, ok := s.items[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if err := os.Remove(filepath.Join(s.dir, id+".jsonl")); err != nil {
+		s.failed = true
+		return err
+	}
+	if err := s.syncDir(); err != nil {
+		s.failed = true
+		return err
+	}
+	delete(s.items, id)
+	s.bytes -= item.Bytes
+	return nil
 }
