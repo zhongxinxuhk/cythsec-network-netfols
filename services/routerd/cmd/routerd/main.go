@@ -33,6 +33,7 @@ import (
 func loadConfig() (config.Config, bool) {
 	c := config.Default()
 
+	accessFile := flag.String("access-file", "", "private JSON access policy with credential digests")
 	addr := flag.String("addr", c.ListenAddr, "HTTP 监听地址，如 :8080 或 127.0.0.1:8080")
 	cors := flag.String("cors-origins", "", "逗号分隔的允许跨域源，默认 http://localhost:5173")
 	shutdown := flag.Duration("shutdown-timeout", c.ShutdownTimeout, "优雅关闭超时（如 10s / 5s）")
@@ -66,11 +67,14 @@ func loadConfig() (config.Config, bool) {
 
 	// YAML 覆盖默认值，环境变量覆盖 YAML。
 	if err := c.LoadYAML(c.ConfigPath); err != nil {
-		log.Printf("读取配置文件 %s 失败: %v", c.ConfigPath, err)
+		log.Fatalf("读取配置文件 %s 失败: %v", c.ConfigPath, err)
 	}
 	c.ApplyEnv()
 
 	// 显式 flag 覆盖环境变量。
+	if set["access-file"] {
+		c.AccessFile = *accessFile
+	}
 	if set["addr"] {
 		c.ListenAddr = *addr
 	}
@@ -102,13 +106,15 @@ func main() {
 	}
 
 	err := controlplane.Run(controlplane.ServerConfig{
-		Service:            api.ServiceName,
-		Addr:               c.ListenAddr,
-		ShutdownTimeout:    c.ShutdownTimeout,
-		LogLevel:           c.LogLevel,
-		LogFormat:          c.LogFormat,
-		MetricsEnabled:     c.MetricsEnabled,
-		CORSAllowedOrigins: c.CORSAllowedOrigins,
+		AccessFile:             c.AccessFile,
+		RequireAccessForRemote: true,
+		Service:                api.ServiceName,
+		Addr:                   c.ListenAddr,
+		ShutdownTimeout:        c.ShutdownTimeout,
+		LogLevel:               c.LogLevel,
+		LogFormat:              c.LogFormat,
+		MetricsEnabled:         c.MetricsEnabled,
+		CORSAllowedOrigins:     c.CORSAllowedOrigins,
 	}, api.RegisterRoutes)
 	if err != nil {
 		log.Printf("routerd 退出: %v", err)

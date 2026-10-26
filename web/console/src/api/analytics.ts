@@ -1,4 +1,4 @@
-import { ApiError } from './client';
+import { ApiError, secureFetch } from './http';
 import type { ApiEnvelope } from './types';
 
 export interface CaptureStatus {
@@ -65,12 +65,13 @@ export interface IngestStatus {
   completed_this_process: number; duplicates_this_process: number;
   failures_this_process: number; consecutive_failures: number;
 }
-const BASE = __TELEMETRYD_BASE__;
+
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
-  try { res = await fetch(`${BASE}/analytics${path}`, init); }
+  try { res = await secureFetch('telemetryd', `/analytics${path}`, init); }
   catch (e) {
+    if (e instanceof ApiError) throw e;
     if (e instanceof Error && e.name === 'AbortError') throw e;
     throw new ApiError('无法连接聚合存储服务');
   }

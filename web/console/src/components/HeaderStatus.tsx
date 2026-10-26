@@ -1,5 +1,4 @@
-import { Space } from 'antd';
-import { StatusBadge } from './StatusBadge';
+import { Badge, Space, Tooltip } from 'antd';
 import { useApi } from '@/hooks/useApi';
 
 async function health(url: string) {
@@ -12,8 +11,12 @@ const telemetryd = () => health('/telemetry/healthz');
 export function HeaderStatus() {
   const router = useApi(routerd, 5000);
   const telemetry = useApi(telemetryd, 5000);
-  return <Space wrap>
-    <StatusBadge tone={router.error ? 'err' : router.data ? 'ok' : 'muted'} label={`routerd ${router.error ? 'offline' : router.data ? 'online' : '检查中'}`} />
-    <StatusBadge tone={telemetry.error ? 'err' : telemetry.data ? 'ok' : 'muted'} label={`telemetryd ${telemetry.error ? 'offline' : telemetry.data ? 'online' : '检查中'}`} />
+  return <Space>
+    {([['routerd', router], ['telemetryd', telemetry]] as const).map(([name, state]) => {
+      const label = `${name} ${state.error ? 'offline' : state.data ? 'online' : '检查中'}`;
+      return <Tooltip title={label} key={name}>
+        <span aria-label={label} tabIndex={0}><Badge status={state.error ? 'error' : state.data ? 'success' : 'default'} /> <span className="header-service-label">{label}</span></span>
+      </Tooltip>;
+    })}
   </Space>;
 }

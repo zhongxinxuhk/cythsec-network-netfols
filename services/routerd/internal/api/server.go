@@ -29,6 +29,7 @@ const ServiceName = "routerd"
 //
 // 所有字段均为可选：零值即使用默认行为，便于测试与最小化启动。
 type ServerOptions struct {
+	Access *controlplane.Access
 	// CORSAllowedOrigins 允许跨域的源列表；为空时使用默认 ["http://localhost:5173"]。
 	// 支持特殊值 "*" 表示允许任意源（仅建议开发/演示环境使用）。
 	CORSAllowedOrigins []string
@@ -59,6 +60,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 // NewServer 构造 routerd 的 HTTP handler（供测试与嵌入使用）。
 func NewServer(opts ServerOptions) http.Handler {
 	return controlplane.NewHandler(controlplane.Options{
+		Access:                opts.Access,
 		Service:               ServiceName,
 		CORSAllowedOrigins:    opts.CORSAllowedOrigins,
 		Logger:                opts.Logger,

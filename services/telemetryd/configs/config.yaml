@@ -4,7 +4,7 @@
 # 注释行以 # 开头；本解析器仅支持顶层 key: value，不支持嵌套结构与行内注释。
 
 # HTTP 监听地址
-listen_addr: ":8083"
+listen_addr: "127.0.0.1:8083"
 
 # 优雅关闭超时（Go duration 语法，如 10s / 5s）
 shutdown_timeout: "10s"
@@ -31,3 +31,6 @@ aggregate_dir: ""
 # 可选磁盘队列，需同时设置 aggregate_dir，且两个目录不同。
 # 接收完整聚合批次，后台写入历史；写入失败保留队列并退避重试。
 aggregate_queue_dir: ""
+
+# Optional private access policy; empty means unauthenticated local development.
+access_file: ""

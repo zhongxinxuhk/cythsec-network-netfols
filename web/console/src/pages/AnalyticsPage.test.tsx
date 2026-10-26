@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { serviceAccess } from '@/api/http';
 import { analytics } from '@/api/analytics';
 import type { AggregateImport, AggregatePage } from '@/api/analytics';
 import { AnalyticsPage } from './AnalyticsPage';
 vi.mock('@/api/analytics', () => ({ analytics: { imports: vi.fn(), windows: vi.fn(), upload: vi.fn(), enqueue: vi.fn(), ingest: vi.fn() } }));
+vi.mock('@/api/http', async (original) => ({ ...await original<typeof import('@/api/http')>(), serviceAccess: vi.fn() }));
 const item: AggregateImport = {
   id: 'a'.repeat(64), stored_at: '2026-10-26T00:00:00Z', bytes: 2048, windows: 2,
   first_window_seconds: 0, last_window_seconds: 60,
@@ -20,6 +22,7 @@ const page: AggregatePage = { import: item, total: 2, offset: 0, limit: 100, ite
   } },
 ] };
 beforeEach(() => {
+  vi.mocked(serviceAccess).mockResolvedValue({ enabled: false, can_ingest: false });
   vi.mocked(analytics.ingest).mockResolvedValue({ enabled: false, running: false, state: 'disabled', pending_batches: 0, pending_bytes: 0, max_batches: 0, max_bytes: 0, oldest_queued_at: null, next_retry_at: null, last_error: null, completed_this_process: 0, duplicates_this_process: 0, failures_this_process: 0, consecutive_failures: 0 });
   vi.mocked(analytics.imports).mockResolvedValue({ items: [item], total: 1 });
   vi.mocked(analytics.windows).mockResolvedValue(page);
@@ -102,4 +105,11 @@ it('队列状态失败不静默绕过队列，仍可读取历史', async () => {
   expect(document.querySelector('input[type=file]') as HTMLInputElement).toBeDisabled();
   expect(await screen.findByText(/文件读取：不完整/)).toBeInTheDocument();
   expect(analytics.upload).not.toHaveBeenCalled();
+});
+it('只读凭据可查看历史，但不能导入聚合批次', async () => {
+  vi.mocked(serviceAccess).mockResolvedValue({ enabled: true, name: 'qa-reader', role: 'viewer', can_ingest: false });
+  render(<AnalyticsPage />);
+  expect(await screen.findByText('当前身份只读，可查询历史，不能导入批次。')).toBeInTheDocument();
+  expect(document.querySelector('input[type=file]')).toBeDisabled();
+  expect(await screen.findByText(/文件读取：不完整/)).toBeInTheDocument();
 });

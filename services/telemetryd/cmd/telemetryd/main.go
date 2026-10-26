@@ -40,6 +40,7 @@ import (
 func loadConfig() (config.Config, bool) {
 	c := config.Default()
 
+	accessFile := flag.String("access-file", "", "private JSON access policy with credential digests")
 	addr := flag.String("addr", c.ListenAddr, "HTTP 监听地址，如 :8083 或 127.0.0.1:8083")
 	shutdown := flag.Duration("shutdown-timeout", c.ShutdownTimeout, "优雅关闭超时（如 10s / 5s）")
 	logLevel := flag.String("log-level", "", "日志级别: debug / info / warn / error（默认 info）")
@@ -73,10 +74,13 @@ func loadConfig() (config.Config, bool) {
 	c.ConfigPath = cfgPath
 
 	if err := c.LoadYAML(c.ConfigPath); err != nil {
-		log.Printf("读取配置文件 %s 失败: %v", c.ConfigPath, err)
+		log.Fatalf("读取配置文件 %s 失败: %v", c.ConfigPath, err)
 	}
 	c.ApplyEnv()
 
+	if set["access-file"] {
+		c.AccessFile = *accessFile
+	}
 	if set["addr"] {
 		c.ListenAddr = *addr
 	}
@@ -170,13 +174,15 @@ func main() {
 	}
 	var obs api.ObservabilityMetrics
 	err = controlplane.Run(controlplane.ServerConfig{
-		Service:            api.ServiceName,
-		Addr:               c.ListenAddr,
-		ShutdownTimeout:    c.ShutdownTimeout,
-		LogLevel:           c.LogLevel,
-		LogFormat:          c.LogFormat,
-		MetricsEnabled:     c.MetricsEnabled,
-		CORSAllowedOrigins: nil, // 使用 controlplane 默认值
+		AccessFile:             c.AccessFile,
+		RequireAccessForRemote: true,
+		Service:                api.ServiceName,
+		Addr:                   c.ListenAddr,
+		ShutdownTimeout:        c.ShutdownTimeout,
+		LogLevel:               c.LogLevel,
+		LogFormat:              c.LogFormat,
+		MetricsEnabled:         c.MetricsEnabled,
+		CORSAllowedOrigins:     nil, // 使用 controlplane 默认值
 		RegisterMetrics: func(reg *metrics.Registry) error {
 			obs = api.NewMetrics(reg)
 			return nil

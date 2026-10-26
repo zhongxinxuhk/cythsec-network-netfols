@@ -27,6 +27,7 @@ const ServiceName = "telemetryd"
 //
 // 所有字段均为可选：零值即使用默认行为，便于测试与最小化启动。
 type ServerOptions struct {
+	Access *controlplane.Access
 	// Aggregates 是可选的本机聚合持久化存储；nil 时返回 503。
 	Aggregates *aggregate.Store
 	// Ingest 为可选磁盘队列写入器。
@@ -93,6 +94,7 @@ func NewServer(opts ServerOptions) http.Handler {
 		opts.Store = target.NewStore()
 	}
 	return controlplane.NewHandler(controlplane.Options{
+		Access:                opts.Access,
 		Service:               ServiceName,
 		CORSAllowedOrigins:    opts.CORSAllowedOrigins,
 		Logger:                opts.Logger,

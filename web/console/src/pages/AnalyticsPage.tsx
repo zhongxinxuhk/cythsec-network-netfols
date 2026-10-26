@@ -3,6 +3,8 @@ import { PageContainer, ProTable, type ProColumns } from '@ant-design/pro-compon
 import { Alert, Button, Collapse, DatePicker, Empty, Form, Progress, Select, Space, Typography, Upload } from 'antd';
 import { ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { serviceAccess } from '@/api/http';
+import { useApi } from '@/hooks/useApi';
 import { analytics } from '@/api/analytics';
 import type { AggregateImport, AggregatePage, AggregateQuery, AggregateWindow } from '@/api/analytics';
 import { useIngestStatus } from '@/hooks/useIngestStatus';
@@ -18,6 +20,8 @@ const count = (value: number | null | undefined) => (value === null || value ===
 const message = (e: unknown) => e instanceof Error ? e.message : '请求失败';
 
 export function AnalyticsPage() {
+  const access = useApi(() => serviceAccess('telemetryd'), 10000);
+  const canUpload = Boolean(access.data && (!access.data.enabled || access.data.can_ingest));
   const { status: ingest, error: ingestError } = useIngestStatus();
   const pendingSelection = useRef<string | null>(null);
   const [imports, setImports] = useState<AggregateImport[]>([]);
@@ -65,7 +69,7 @@ export function AnalyticsPage() {
   }, [ingest?.enabled, ingest?.completed_this_process]);
 
   async function upload(file: File) {
-    if (uploading || !ingest) return;
+    if (uploading || !ingest || !canUpload) return;
     setUploading(true); setError(null); setNotice('');
     try {
       if (ingest.enabled) {
@@ -107,8 +111,8 @@ export function AnalyticsPage() {
     <Card title="聚合历史分析" subtitle="按采集批次查询分钟窗口">
       <Typography.Paragraph type="secondary">不同批次可能重叠，不跨批次合计；未发布指标不作为零值。仅接收聚合 JSONL，最大 1 MiB。</Typography.Paragraph>
       <Space wrap>
-        <Upload accept=".jsonl,.ndjson" showUploadList={false} disabled={uploading || !ingest} beforeUpload={(file) => { void upload(file); return false; }}>
-          <Button icon={<UploadOutlined />} disabled={uploading || !ingest} loading={uploading}>导入聚合 JSONL</Button>
+        <Upload accept=".jsonl,.ndjson" showUploadList={false} disabled={uploading || !ingest || !canUpload} beforeUpload={(file) => { void upload(file); return false; }}>
+          <Button icon={<UploadOutlined />} disabled={uploading || !ingest || !canUpload} loading={uploading}>导入聚合 JSONL</Button>
         </Upload>
         <Button icon={<ReloadOutlined />} onClick={() => setRevision((v) => v + 1)} loading={listLoading}>刷新历史</Button>
       </Space>
@@ -139,6 +143,8 @@ export function AnalyticsPage() {
         <Typography.Paragraph type="secondary">本机时区；按窗口起点，结束时间不包含在范围内。</Typography.Paragraph>
       </Form>}
     </Card>
+    {access.error && <Alert type="warning" title={`访问权限不可用：${access.error}；上传暂不可用`} />}
+    {access.data?.enabled && !access.data.can_ingest && <Alert type="info" title="当前身份只读，可查询历史，不能导入批次。" />}
     <IngestPanel status={ingest} error={ingestError} />
     {page && status && <Card title="采集与存储状态" subtitle={`已持久化 ${fmtBytes(page.import.bytes)} · ${page.import.windows} 个窗口`}>
       <Alert showIcon type={status.input_complete && status.analysis_complete && status.capture_loss_status === 'declared_zero' ? 'success' : 'warning'} title={`文件读取：${status.input_complete ? '完成' : '不完整'} · 分析处理：${status.analysis_complete ? '完成' : '不完整'} · ${lossLabels[status.capture_loss_status]}`} description="持久化成功只表示数据已保存，不能证明采集无丢包；处理完成也不代表全部报文均可解码。" />

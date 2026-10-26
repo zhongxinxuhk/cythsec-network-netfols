@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,6 +31,8 @@ const readHeaderTimeout = 5 * time.Second
 //
 // 各字段的零值均映射到合理默认值，便于最小化启动。
 type ServerConfig struct {
+	AccessFile             string
+	RequireAccessForRemote bool
 	// Service 是服务名，作为日志固定字段与 /healthz 响应内容。
 	Service string
 	// Addr 是 HTTP 监听地址，如 ":8080" 或 "127.0.0.1:8080"。
@@ -70,6 +73,16 @@ type Runtime struct {
 //
 // register 用于注册各服务自身的业务路由，可为 nil。
 func NewRuntime(cfg ServerConfig, register func(*http.ServeMux)) (*Runtime, error) {
+	access, err := LoadAccess(cfg.AccessFile)
+	if err != nil {
+		return nil, fmt.Errorf("load access policy: %w", err)
+	}
+	if cfg.RequireAccessForRemote && access == nil {
+		host, _, err := net.SplitHostPort(cfg.Addr)
+		if err != nil || !net.ParseIP(host).IsLoopback() {
+			return nil, errors.New("unauthenticated service must bind a loopback IP")
+		}
+	}
 	logger := cfg.Logger
 	if logger == nil {
 		var err error
@@ -99,6 +112,7 @@ func NewRuntime(cfg ServerConfig, register func(*http.ServeMux)) (*Runtime, erro
 	}
 
 	handler := NewHandler(Options{
+		Access:                access,
 		Service:               cfg.Service,
 		CORSAllowedOrigins:    cfg.CORSAllowedOrigins,
 		Logger:                logger,
@@ -157,6 +171,7 @@ func (rt *Runtime) Serve(cfg ServerConfig) error {
 		"log_level", cfg.LogLevel,
 		"log_format", cfg.LogFormat,
 		"metrics_enabled", cfg.MetricsEnabled,
+		"access_enabled", cfg.AccessFile != "",
 	)
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

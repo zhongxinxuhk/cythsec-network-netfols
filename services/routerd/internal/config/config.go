@@ -16,6 +16,7 @@ const envPrefix = "ROUTERD"
 
 // Config 是 routerd 的运行时配置。
 type Config struct {
+	AccessFile         string
 	ListenAddr         string        // HTTP 监听地址
 	ShutdownTimeout    time.Duration // 优雅关闭超时
 	CORSAllowedOrigins []string      // 允许跨域的源列表
@@ -28,7 +29,7 @@ type Config struct {
 // Default 返回内置默认值。
 func Default() Config {
 	return Config{
-		ListenAddr:         ":8080",
+		ListenAddr:         "127.0.0.1:8080",
 		ShutdownTimeout:    10 * time.Second,
 		CORSAllowedOrigins: []string{"http://localhost:5173"},
 		LogLevel:           "info",
@@ -47,6 +48,7 @@ func (c *Config) LoadYAML(path string) error {
 	if err != nil {
 		return err
 	}
+	c.AccessFile = m.Get("access_file", c.AccessFile)
 	c.ListenAddr = m.Get("listen_addr", c.ListenAddr)
 	c.CORSAllowedOrigins = m.List("cors_origins", c.CORSAllowedOrigins)
 	c.ShutdownTimeout = m.Duration("shutdown_timeout", c.ShutdownTimeout)
@@ -58,6 +60,7 @@ func (c *Config) LoadYAML(path string) error {
 
 // ApplyEnv 用环境变量（ROUTERD_* 前缀）覆盖配置。
 func (c *Config) ApplyEnv() {
+	c.AccessFile = configutil.EnvString(envPrefix, "access_file", c.AccessFile)
 	c.ListenAddr = configutil.EnvString(envPrefix, "listen_addr", c.ListenAddr)
 	c.CORSAllowedOrigins = configutil.EnvList(envPrefix, "cors_origins", c.CORSAllowedOrigins)
 	c.ShutdownTimeout = configutil.EnvDuration(envPrefix, "shutdown_timeout", c.ShutdownTimeout)

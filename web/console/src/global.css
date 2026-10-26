@@ -7,3 +7,5 @@ body { margin: 0; }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .error-text { color: var(--ant-color-error); }
 .analytics-batch { width: 100%; max-width: 680px; min-width: 0; }
+
+@media (max-width: 575px) { .header-service-label { display: none; } }

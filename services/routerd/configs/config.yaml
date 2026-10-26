@@ -4,7 +4,7 @@
 # 可用 -config 指定其他路径；环境变量用 ROUTERD_* 前缀（如 ROUTERD_LISTEN_ADDR）。
 
 # HTTP 监听地址
-listen_addr: ":8080"
+listen_addr: "127.0.0.1:8080"
 
 # 允许跨域的源（逗号分隔）；默认开发源为 http://localhost:5173
 cors_origins: "http://localhost:5173"
@@ -20,3 +20,6 @@ log_format: "json"
 
 # 是否暴露 GET /metrics（Prometheus 文本格式）
 metrics_enabled: true
+
+# Optional private access policy; empty means unauthenticated local development.
+access_file: ""

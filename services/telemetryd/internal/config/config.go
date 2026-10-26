@@ -15,6 +15,7 @@ const envPrefix = "TELEMETRYD"
 
 // Config 是 telemetryd 的运行时配置。
 type Config struct {
+	AccessFile        string
 	ListenAddr        string        // HTTP 监听地址
 	ShutdownTimeout   time.Duration // 优雅关闭超时
 	LogLevel          string        // 日志级别：debug/info/warn/error
@@ -33,7 +34,7 @@ type Config struct {
 // telemetryd 8083，便于本机同时启动四个服务联调。
 func Default() Config {
 	return Config{
-		ListenAddr:      ":8083",
+		ListenAddr:      "127.0.0.1:8083",
 		ShutdownTimeout: 10 * time.Second,
 		LogLevel:        "info",
 		LogFormat:       "json",
@@ -51,6 +52,7 @@ func (c *Config) LoadYAML(path string) error {
 	if err != nil {
 		return err
 	}
+	c.AccessFile = m.Get("access_file", c.AccessFile)
 	c.ListenAddr = m.Get("listen_addr", c.ListenAddr)
 	c.ShutdownTimeout = m.Duration("shutdown_timeout", c.ShutdownTimeout)
 	c.LogLevel = m.Get("log_level", c.LogLevel)
@@ -65,6 +67,7 @@ func (c *Config) LoadYAML(path string) error {
 
 // ApplyEnv 用环境变量（TELEMETRYD_* 前缀）覆盖配置。
 func (c *Config) ApplyEnv() {
+	c.AccessFile = configutil.EnvString(envPrefix, "access_file", c.AccessFile)
 	c.ListenAddr = configutil.EnvString(envPrefix, "listen_addr", c.ListenAddr)
 	c.ShutdownTimeout = configutil.EnvDuration(envPrefix, "shutdown_timeout", c.ShutdownTimeout)
 	c.LogLevel = configutil.EnvString(envPrefix, "log_level", c.LogLevel)
