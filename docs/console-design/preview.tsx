@@ -8,7 +8,6 @@ import {
   Descriptions,
   Drawer,
   Empty,
-  Grid,
   List,
   Radio,
   Select,
@@ -21,6 +20,7 @@ import {
   Tag,
   Timeline,
   Typography,
+  Tooltip,
   theme,
 } from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -40,7 +40,6 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   WarningOutlined,
-  InfoCircleOutlined,
 } from "@ant-design/icons";
 import "./preview.css";
 
@@ -59,10 +58,7 @@ const navigation = [
 ];
 const titles: Record<Page, [string, string]> = {
   overview: ["网络运行概览", "链路、受管资产与安全设备的统一观测视图"],
-  topology: [
-    "受管基础设施拓扑",
-    "关系来自合成库存证据；通信关系与物理链路分层展示",
-  ],
+  topology: ["受管基础设施拓扑", "物理连接、逻辑邻居与区域通信"],
   asset: ["CORE-GW-01", "受管网关技术档案 · 地址关联、接口质量与事件证据"],
   integrations: [
     "安全设备联动",
@@ -70,7 +66,7 @@ const titles: Record<Page, [string, string]> = {
   ],
   incident: [
     "接口丢弃计数持续上升",
-    "合成事件 SEC-DEMO-027 · 受管核心网关 · 运行质量异常",
+    "SEC-DEMO-027 · 受管核心网关 · 运行质量异常",
   ],
 };
 const assetRows = [
@@ -106,7 +102,7 @@ const connectors = [
   {
     key: "c1",
     name: "边界安全设备",
-    adapter: "合成 NGFW 适配器",
+    adapter: "NGFW 事件接入",
     transport: "正常",
     parse: "正常",
     verify: "未执行",
@@ -116,7 +112,7 @@ const connectors = [
   {
     key: "c2",
     name: "网络入侵检测",
-    adapter: "合成 IDS 适配器",
+    adapter: "IDS 事件接入",
     transport: "正常",
     parse: "异常",
     verify: "不适用",
@@ -126,7 +122,7 @@ const connectors = [
   {
     key: "c3",
     name: "资产目录",
-    adapter: "合成 CMDB 适配器",
+    adapter: "CMDB 目录接入",
     transport: "正常",
     parse: "正常",
     verify: "已核对",
@@ -201,11 +197,7 @@ function Trend({ quality = false }: { quality?: boolean }) {
         viewBox="0 0 620 260"
         className="design-chart"
         role="img"
-        aria-label={
-          quality
-            ? "合成RTT分位趋势，中段p95上升，数据替代见下方文字"
-            : "合成接口收发趋势，数据替代见下方文字"
-        }
+        aria-label={quality ? "RTT分位趋势，中段p95上升" : "接口收发趋势"}
       >
         {[0, 1, 2, 3, 4].map((i) => (
           <g key={i}>
@@ -258,11 +250,11 @@ function Trend({ quality = false }: { quality?: boolean }) {
       <div className="design-legend">
         <Text>
           <Tag color="blue">{quality ? "p95" : "接收"}</Tag>
-          {quality ? "观察RTT样本" : "合成范围 6.5–13.0 Gbps"}
+          {quality ? "观察RTT样本" : "6.5–13.0 Gbps"}
         </Text>
         <Text>
           <Tag color="cyan">{quality ? "p50" : "发送"}</Tag>
-          {quality ? "非应用响应时间" : "合成范围 3.5–7.5 Gbps"}
+          {quality ? "非应用响应时间" : "3.5–7.5 Gbps"}
         </Text>
       </div>
     </>
@@ -272,7 +264,7 @@ function Trend({ quality = false }: { quality?: boolean }) {
 function Carriers() {
   return (
     <>
-      <Paragraph type="secondary">观察字节占比 · 类别相斥 · 合成数据</Paragraph>
+      <Paragraph type="secondary">观察字节占比</Paragraph>
       <div className="design-bars" aria-label="TCP 68%，UDP 27%，其他IP 5%">
         <span style={{ width: "68%", background: "#1677ff" }} />
         <span style={{ width: "27%", background: "#13a8a8" }} />
@@ -321,7 +313,7 @@ function Topology({
     <svg
       className="design-chart"
       viewBox="0 0 760 325"
-      aria-label={`${layer === "physical" ? "物理证据" : "区域通信"}合成拓扑。五个受管节点，按Tab可选择节点证据。`}
+      aria-label={`${layer === "physical" ? "物理证据" : "区域通信"}拓扑，五个受管节点，按Tab查看证据`}
     >
       {[
         [0, 1],
@@ -356,7 +348,7 @@ function Topology({
           key={n.id}
           role="button"
           tabIndex={0}
-          aria-label={`查看${n.name}合成证据`}
+          aria-label={`查看${n.name}证据`}
           onClick={() => onSelect(n.name)}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -404,7 +396,7 @@ function Topology({
         </g>
       ))}
       <text x="24" y="310" fill={token.colorTextSecondary} fontSize="12">
-        实线：合成已核实关系 · 虚线：合成待核实关系 · 容量缺失时不计算利用率
+        实线：已核实关系 · 虚线：待核实关系 · 容量缺失时不计算利用率
       </text>
     </svg>
   );
@@ -451,7 +443,7 @@ function Matrix() {
         ]}
       />
       <Paragraph style={{ marginTop: 16, color: token.colorTextSecondary }}>
-        {selected} · 仅合成区域聚合，无公众终端明细
+        {selected}
       </Paragraph>
     </>
   );
@@ -486,16 +478,10 @@ function Console({
   dark: boolean;
   setDark: (value: boolean) => void;
 }) {
-  const { message } = App.useApp();
-  const screens = Grid.useBreakpoint();
   const [page, setPage] = useState<Page>(currentPage);
   const [scope, setScope] = useState("all");
   const [layer, setLayer] = useState("physical");
   const [drawer, setDrawer] = useState<string | null>(null);
-  const [task, setTask] = useState<
-    "none" | "preview" | "accepted" | "verified"
-  >("none");
-  const [eventState, setEventState] = useState("新建");
   useEffect(() => {
     const listener = () => {
       setPage(currentPage());
@@ -511,18 +497,18 @@ function Console({
     <Space wrap>
       {(page === "overview" || page === "asset") && (
         <Select
-          aria-label="资产表演示筛选"
+          aria-label="资产区域筛选"
           value={scope}
           onChange={setScope}
           style={{ width: 220 }}
           options={[
-            { value: "all", label: "资产表：全部受管样例" },
-            { value: "core", label: "资产表：核心区样例" },
+            { value: "all", label: "全部受管资产" },
+            { value: "core", label: "核心区" },
           ]}
         />
       )}
-      <Tag icon={<ClockCircleOutlined />}>固定样本 09:00–10:00 UTC+8</Tag>
-      <Text type="secondary">2026-10-27 · 图表为固定合成快照</Text>
+      <Tag icon={<ClockCircleOutlined />}>09:00–10:00 UTC+8</Tag>
+      <Text type="secondary">2026-10-27</Text>
     </Space>
   );
   return (
@@ -540,9 +526,6 @@ function Console({
         <a href={`#${item.path?.slice(1)}`}>{dom}</a>
       )}
       actionsRender={() => [
-        <Tag key="mode" color="blue">
-          {screens.md ? "设计预览 v1.1" : "设计稿"}
-        </Tag>,
         <Switch
           key="theme"
           aria-label="深色主题"
@@ -552,47 +535,37 @@ function Console({
           unCheckedChildren="浅色"
         />,
       ]}
-      avatarProps={{
-        icon: <InfoCircleOutlined />,
-        title: screens.md ? "演示模式 · 无真实身份" : undefined,
-      }}
     >
       <PageContainer
         title={titles[page][0]}
         subTitle={titles[page][1]}
         breadcrumb={{
-          items: [{ title: "设计工作区" }, { title: titles[page][0] }],
+          items: [{ title: "控制台" }, { title: titles[page][0] }],
         }}
       >
         <div className="design-page">
-          <Alert
-            showIcon
-            type="info"
-            title="独立设计演示 · 全部为合成数据 · 未连接后端或实际设备"
-            description="不读取真实流量，不发送通知，不执行设备配置。数字、关系和任务回执仅用于评审布局与交互。"
-          />
           {filters}
           {page === "overview" && (
             <>
               <Metrics
                 items={[
-                  ["接收速率", "12.8", "Gbps", "合成测量值 · 非实测容量"],
-                  ["受管资产", rows.length, "项", "示例目录 · 不含过境终端"],
+                  ["接收速率", "12.8", "Gbps", "时间范围内最近值"],
+                  ["受管资产", rows.length, "项", "当前筛选范围"],
                   ["来源质量", "2 / 3", "正常", "1项解析异常待处理"],
-                  ["待处理事件", 3, "项", "合成基础设施事件"],
+                  ["待处理事件", 3, "项", "基础设施事件"],
                 ]}
               />
               <div className="design-row">
                 <ProCard
                   title="接口收发趋势"
-                  extra={<Tag>V01 · 合成</Tag>}
+                  extra={<Tag>Gbps</Tag>}
                   variant="outlined"
                 >
                   <Trend />
                 </ProCard>
                 <ProCard
                   title="承载协议构成"
-                  extra={<Tag>V02 · 合成</Tag>}
+                  extra={<Tag>字节占比</Tag>}
                   variant="outlined"
                 >
                   <Carriers />
@@ -628,8 +601,8 @@ function Console({
                   <Alert
                     type="warning"
                     showIcon
-                    title="未知不是零"
-                    description="源计数缺失时，不显示“零丢包”或完整覆盖。"
+                    title="丢包状态未知"
+                    description="未收到来源丢包计数。"
                   />
                 </ProCard>
               </div>
@@ -648,9 +621,7 @@ function Console({
                     { value: "communications", label: "区域通信" },
                   ]}
                 />
-                <Text type="secondary">
-                  当前仅5个合成节点 · 点击节点查看证据
-                </Text>
+                <Text type="secondary">5个节点 · 点击节点查看证据</Text>
               </div>
               <ProCard
                 title={
@@ -671,7 +642,7 @@ function Console({
                         id: "e1",
                         a: "CORE-GW-01",
                         b: "AGG-SW-02",
-                        evidence: "合成库存 + LLDP",
+                        evidence: "库存 + LLDP",
                         state: "已核实",
                       },
                       {
@@ -697,7 +668,7 @@ function Console({
                 </ProCard>
                 <ProCard
                   title="区域通信矩阵"
-                  extra={<Tag>V09 · GB · 合成</Tag>}
+                  extra={<Tag>GB</Tag>}
                   variant="outlined"
                 >
                   <Matrix />
@@ -742,14 +713,14 @@ function Console({
                       {
                         key: "team",
                         label: "维护团队",
-                        children: "网络运维组（合成）",
+                        children: "网络运维组",
                       },
                     ]}
                   />
                   <Alert
                     showIcon
-                    title="MAC仅为本链路证据"
-                    description="不代表远端终端地址，不建立使用者身份关联。"
+                    title="链路邻居"
+                    description="MAC观察范围：当前链路。"
                     type="info"
                   />
                 </Space>
@@ -792,8 +763,7 @@ function Console({
                               {
                                 key: "ip",
                                 label: "地址与有效范围",
-                                children:
-                                  "192.0.2.1 · VRF-DEMO · 合成固定管理地址",
+                                children: "192.0.2.1 · VRF-DEMO · 固定管理地址",
                               },
                               {
                                 key: "mac",
@@ -804,13 +774,12 @@ function Console({
                               {
                                 key: "evidence",
                                 label: "支持证据",
-                                children: "合成设备目录 + 合成只读接口",
+                                children: "设备目录 + 只读接口",
                               },
                               {
                                 key: "time",
                                 label: "有效期",
-                                children:
-                                  "2026-10-27 09:00–10:00 UTC+8（合成）",
+                                children: "2026-10-27 09:00–10:00 UTC+8",
                               },
                             ]}
                           />
@@ -828,7 +797,7 @@ function Console({
                           <Alert
                             type="warning"
                             showIcon
-                            title="接口丢弃计数持续上升（合成）"
+                            title="接口丢弃计数持续上升"
                             action={<Button href="#incident">查看事件</Button>}
                           />
                         ),
@@ -843,10 +812,10 @@ function Console({
             <>
               <Metrics
                 items={[
-                  ["已配置连接器", 3, "项", "合成适配器，无厂商兼容声明"],
+                  ["已配置连接器", 3, "项", "已配置接入"],
                   ["解析正常", 2, "项", "传输成功与解析成功独立"],
                   ["结果未知", 1, "项", "不可计入已验证"],
-                  ["外部动作", 0, "次", "本预览绝不投递"],
+                  ["外部动作", 0, "次", "当前时间范围"],
                 ]}
               />
               <ProCard
@@ -878,7 +847,7 @@ function Console({
                       dataIndex: "verify",
                       render: (v) => <Status value={v} />,
                     },
-                    { title: "样例事件", dataIndex: "events" },
+                    { title: "事件数", dataIndex: "events" },
                     { title: "延迟", dataIndex: "delay" },
                     {
                       title: "操作",
@@ -894,26 +863,9 @@ function Console({
                   ]}
                 />
               </ProCard>
-              <ProCard
-                title="工单协作阶段演示"
-                extra={<Tag color="blue">本地模拟，不发送</Tag>}
-                variant="outlined"
-              >
-                <Paragraph type="secondary">
-                  预览 → 对端接受 →
-                  对账验证。每一步均由演示按钮推进，无网络请求。
-                </Paragraph>
+              <ProCard title="工单协作" variant="outlined">
                 <Steps
-                  status={task === "verified" ? "finish" : "process"}
-                  current={
-                    task === "none"
-                      ? 0
-                      : task === "preview"
-                        ? 1
-                        : task === "accepted"
-                          ? 2
-                          : 3
-                  }
+                  current={2}
                   items={[
                     { title: "草稿" },
                     { title: "预览已生成" },
@@ -922,29 +874,10 @@ function Console({
                   ]}
                 />
                 <Space wrap className="design-task">
-                  <Button onClick={() => setTask("preview")}>
-                    生成合成预览
+                  <Tag color="warning">对端已接受，等待核对</Tag>
+                  <Button onClick={() => showEvidence("TASK-027")}>
+                    任务详情
                   </Button>
-                  <Button
-                    disabled={task !== "preview"}
-                    onClick={() => setTask("accepted")}
-                  >
-                    模拟接收回执
-                  </Button>
-                  <Button
-                    disabled={task !== "accepted"}
-                    onClick={() => setTask("verified")}
-                  >
-                    模拟对账一致
-                  </Button>
-                  <Button onClick={() => setTask("none")}>重置演示</Button>
-                  <Tag color={task === "verified" ? "success" : "warning"}>
-                    {task === "accepted"
-                      ? "对端已接受，结果尚未核对"
-                      : task === "verified"
-                        ? "合成对象已核对（非真实执行）"
-                        : "无外部动作"}
-                  </Tag>
                 </Space>
               </ProCard>
             </>
@@ -953,18 +886,14 @@ function Console({
             <>
               <Space wrap>
                 <Tag color="warning">来源级别：中</Tag>
-                <Tag>归一化：中 · 映射demo-v1</Tag>
-                <Status value={eventState} />
-                <Button
-                  disabled={eventState === "已确认"}
-                  onClick={() => {
-                    setEventState("已确认");
-                    void message.info("仅更新本地演示状态，未写入服务端");
-                  }}
-                >
-                  演示确认事件
-                </Button>
-                <Button href="#integrations">查看协作演示</Button>
+                <Tag>归一化：中 · 映射版本 v1</Tag>
+                <Status value="新建" />
+                <Tooltip title="事件服务未连接">
+                  <span>
+                    <Button disabled>确认事件</Button>
+                  </span>
+                </Tooltip>
+                <Button href="#integrations">查看关联任务</Button>
               </Space>
               <div className="design-row">
                 <ProCard title="事件与证据时间线" variant="outlined">
@@ -974,9 +903,7 @@ function Console({
                         children: (
                           <>
                             <Text strong>09:32:10 · 来源观察</Text>
-                            <Paragraph>
-                              受管接口discards计数增量上升，合成样本；不推断攻击或确定丢包率。
-                            </Paragraph>
+                            <Paragraph>受管接口丢弃计数增量上升。</Paragraph>
                           </>
                         ),
                       },
@@ -985,7 +912,7 @@ function Console({
                           <>
                             <Text strong>09:32:12 · 平台接收</Text>
                             <Paragraph>
-                              事件字段归一化，目录引用已核实，来源时钟质量为演示值。
+                              事件已归一化，资产目录关联已核实。
                             </Paragraph>
                           </>
                         ),
@@ -1008,7 +935,7 @@ function Console({
                               showEvidence("SEC-DEMO-027 来源证据")
                             }
                           >
-                            展开合成证据摘要
+                            展开证据摘要
                           </Button>
                         ),
                       },
@@ -1032,12 +959,12 @@ function Console({
                       {
                         key: "source",
                         label: "来源",
-                        children: "合成只读接口计数",
+                        children: "只读接口计数",
                       },
                       {
                         key: "binding",
                         label: "资产关联",
-                        children: "目录+接口证据（合成）",
+                        children: "目录与接口证据",
                       },
                       { key: "impact", label: "业务影响", children: "未核验" },
                     ]}
@@ -1045,8 +972,8 @@ function Console({
                   <Alert
                     type="info"
                     showIcon
-                    title="事件确认不等于故障已消除"
-                    description="来源恢复、平台结案和工单结果是独立状态。"
+                    title="处置状态"
+                    description="待确认；来源恢复与任务回执待核对。"
                   />
                 </ProCard>
               </div>
@@ -1058,7 +985,7 @@ function Console({
           {(page === "overview" || page === "asset") && (
             <div className="design-table">
               <ProTable<(typeof assetRows)[number]>
-                headerTitle="受管资产样例"
+                headerTitle="受管资产"
                 rowKey="key"
                 search={false}
                 options={false}
@@ -1088,21 +1015,16 @@ function Console({
               />
             </div>
           )}
-          <Paragraph type="secondary">
-            设计稿 v1.1 · 技术资产与网络聚合 · 无个人身份字段 ·
-            所有示例值均为合成 · 生产能力以实际后端发布与验收为准
-          </Paragraph>
         </div>
       </PageContainer>
       <Drawer
-        title={`${drawer ?? ""} · 合成证据`}
+        title={`${drawer ?? ""} · 证据`}
         open={drawer !== null}
         onClose={() => setDrawer(null)}
         width={480}
       >
         {drawer ? (
           <Space direction="vertical" size={20} style={{ width: "100%" }}>
-            <Alert showIcon type="info" title="设计示意，无真实设备数据" />
             <Descriptions
               column={1}
               bordered
@@ -1110,7 +1032,7 @@ function Console({
                 {
                   key: "source",
                   label: "来源",
-                  children: "合成目录 / 接口快照",
+                  children: "资产目录 / 接口快照",
                 },
                 {
                   key: "time",
@@ -1126,7 +1048,7 @@ function Console({
                 {
                   key: "limit",
                   label: "缺口",
-                  children: "不证明远端MAC、端到端可达或实际安全检测能力",
+                  children: "远端MAC：未提供；可达性：未核验。",
                 },
               ]}
             />
