@@ -60,7 +60,7 @@ case "$action" in
     exec "build/bin/$service" "${args[@]}" "$@" ;;
   console)
     [[ -d web/console/node_modules ]] || { echo 'Run CythSec Build Console first' >&2; exit 1; }
-    export PORT=15174
+    export PORT=15173
     export VITE_ROUTERD_TARGET=http://127.0.0.1:18080
     export VITE_TELEMETRYD_TARGET=http://127.0.0.1:18083
     exec npm --prefix web/console run dev ;;

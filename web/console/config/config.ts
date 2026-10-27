@@ -13,7 +13,7 @@ export default defineConfig({
   routes,
   // Preserve v7 package exports (including /dom); Umi's directory alias bypasses them.
   chainWebpack(config: WebpackChain) { config.resolve.alias.delete('react-router'); },
-  layout: { title: 'CythSec', locale: false, layout: 'mix', splitMenus: false, fixedHeader: true, fixSiderbar: true },
+  layout: { title: 'CythSec', locale: false },
   antd: {
     appConfig: {},
     configProvider: {

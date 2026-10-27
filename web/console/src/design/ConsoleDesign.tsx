@@ -1,20 +1,16 @@
-import { useEffect, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { useState } from "react";
+import { Link } from "@umijs/max";
 import {
   Alert,
-  App,
   Button,
-  ConfigProvider,
   Descriptions,
   Drawer,
   Empty,
-  List,
   Radio,
   Select,
   Space,
   Statistic,
   Steps,
-  Switch,
   Table,
   Tabs,
   Tag,
@@ -23,40 +19,22 @@ import {
   Tooltip,
   theme,
 } from "antd";
-import zhCN from "antd/locale/zh_CN";
 import {
   ProCard,
-  ProLayout,
   PageContainer,
   ProTable,
 } from "@ant-design/pro-components";
 import {
-  ApartmentOutlined,
-  ApiOutlined,
-  DashboardOutlined,
-  DatabaseOutlined,
-  DeploymentUnitOutlined,
   SafetyCertificateOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
-import "./preview.css";
+import "./console-design.css";
 
 const { Text, Paragraph, Title } = Typography;
-type Page = "overview" | "topology" | "asset" | "integrations" | "incident";
-const navigation = [
-  { path: "/overview", name: "运行概览", icon: <DashboardOutlined /> },
-  { path: "/topology", name: "网络拓扑", icon: <ApartmentOutlined /> },
-  { path: "/asset", name: "资产技术画像", icon: <DatabaseOutlined /> },
-  { path: "/integrations", name: "安全设备联动", icon: <ApiOutlined /> },
-  {
-    path: "/incident",
-    name: "安全事件调查",
-    icon: <SafetyCertificateOutlined />,
-  },
-];
-const titles: Record<Page, [string, string]> = {
+export type DesignView = "overview" | "topology" | "asset" | "integrations" | "incident";
+const titles: Record<DesignView, [string, string]> = {
   overview: ["网络运行概览", "链路、受管资产与安全设备的统一观测视图"],
   topology: ["受管基础设施拓扑", "物理连接、逻辑邻居与区域通信"],
   asset: ["CORE-GW-01", "受管网关技术档案 · 地址关联、接口质量与事件证据"],
@@ -270,22 +248,21 @@ function Carriers() {
         <span style={{ width: "27%", background: "#13a8a8" }} />
         <span style={{ width: "5%", background: "#bfbfbf" }} />
       </div>
-      <List
+      <Table<string[]>
         size="small"
+        showHeader={false}
+        pagination={false}
+        rowKey={item => item[0]}
         dataSource={[
           ["TCP", "68%", "1.36 TB"],
           ["UDP", "27%", "0.54 TB"],
           ["其他 IP", "5%", "0.10 TB"],
         ]}
-        renderItem={(item) => (
-          <List.Item>
-            <Text>{item[0]}</Text>
-            <Space>
-              <Text strong>{item[1]}</Text>
-              <Text type="secondary">{item[2]}</Text>
-            </Space>
-          </List.Item>
-        )}
+        columns={[
+          { key: "carrier", render: (_, item) => <Text>{item[0]}</Text> },
+          { key: "share", align: "right", render: (_, item) => <Text strong>{item[1]}</Text> },
+          { key: "bytes", align: "right", render: (_, item) => <Text type="secondary">{item[2]}</Text> },
+        ]}
       />
       <Paragraph type="secondary" style={{ marginTop: 16 }}>
         TLS／QUIC 头候选不叠加到本分母。
@@ -449,47 +426,12 @@ function Matrix() {
   );
 }
 
-function currentPage(): Page {
-  const requested = window.location.hash.slice(1);
-  return Object.hasOwn(titles, requested) ? (requested as Page) : "overview";
-}
-
-function Preview() {
-  const [dark, setDark] = useState(false);
-  return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm,
-        token: { colorPrimary: "#1677ff" },
-      }}
-    >
-      <App>
-        <Console dark={dark} setDark={setDark} />
-      </App>
-    </ConfigProvider>
-  );
-}
-
-function Console({
-  dark,
-  setDark,
-}: {
-  dark: boolean;
-  setDark: (value: boolean) => void;
-}) {
-  const [page, setPage] = useState<Page>(currentPage);
+// Fixture-backed layout study. Only referenced by development routes in config/routes.ts.
+// No management requests, extra React root, browser router, or application shell.
+export default function ConsoleDesign({ page }: { page: DesignView }) {
   const [scope, setScope] = useState("all");
   const [layer, setLayer] = useState("physical");
   const [drawer, setDrawer] = useState<string | null>(null);
-  useEffect(() => {
-    const listener = () => {
-      setPage(currentPage());
-      setDrawer(null);
-    };
-    window.addEventListener("hashchange", listener);
-    return () => window.removeEventListener("hashchange", listener);
-  }, []);
   const rows =
     scope === "core" ? assetRows.filter((x) => x.zone === "核心区") : assetRows;
   const showEvidence = (label: string) => setDrawer(label);
@@ -512,36 +454,10 @@ function Console({
     </Space>
   );
   return (
-    <ProLayout
-      title="CythSec"
-      logo={<DeploymentUnitOutlined />}
-      layout="mix"
-      navTheme={dark ? "realDark" : "light"}
-      siderWidth={224}
-      fixedHeader
-      fixSiderbar
-      route={{ routes: navigation }}
-      location={{ pathname: `/${page}` }}
-      menuItemRender={(item, dom) => (
-        <a href={`#${item.path?.slice(1)}`}>{dom}</a>
-      )}
-      actionsRender={() => [
-        <Switch
-          key="theme"
-          aria-label="深色主题"
-          checked={dark}
-          onChange={setDark}
-          checkedChildren="深色"
-          unCheckedChildren="浅色"
-        />,
-      ]}
-    >
+    <>
       <PageContainer
         title={titles[page][0]}
         subTitle={titles[page][1]}
-        breadcrumb={{
-          items: [{ title: "控制台" }, { title: titles[page][0] }],
-        }}
       >
         <div className="design-page">
           {filters}
@@ -575,29 +491,17 @@ function Console({
                 <ProCard
                   title="受管基础设施关系"
                   extra={
-                    <Button type="link" href="#topology">
-                      打开拓扑
-                    </Button>
+                    <Link to="/design/topology">打开拓扑</Link>
                   }
                   variant="outlined"
                 >
                   <Topology onSelect={showEvidence} />
                 </ProCard>
                 <ProCard title="数据覆盖与完整性" variant="outlined">
-                  <List
-                    dataSource={[
-                      ["目录关联", "已核实"],
-                      ["接口计数", "正常"],
-                      ["IDS 事件解析", "异常"],
-                      ["镜像丢失真值", "未提供"],
-                    ]}
-                    renderItem={(item) => (
-                      <List.Item>
-                        <Text>{item[0]}</Text>
-                        <Status value={item[1]} />
-                      </List.Item>
-                    )}
-                  />
+                  <Descriptions column={1} items={[
+                    ["目录关联", "已核实"], ["接口计数", "正常"],
+                    ["IDS 事件解析", "异常"], ["镜像丢失真值", "未提供"],
+                  ].map(([label, value]) => ({ key: label, label, children: <Status value={value} /> }))} />
                   <Alert
                     type="warning"
                     showIcon
@@ -679,7 +583,7 @@ function Console({
           {page === "asset" && (
             <div className="design-asset">
               <ProCard title="资产证据摘要" variant="outlined">
-                <Space direction="vertical" size={18}>
+                <Space orientation="vertical" size={18}>
                   <SafetyCertificateOutlined style={{ fontSize: 36 }} />
                   <Title level={4}>CORE-GW-01</Title>
                   <Status value="已核实" />
@@ -798,7 +702,7 @@ function Console({
                             type="warning"
                             showIcon
                             title="接口丢弃计数持续上升"
-                            action={<Button href="#incident">查看事件</Button>}
+                            action={<Link to="/design/incident">查看事件</Link>}
                           />
                         ),
                       },
@@ -893,14 +797,14 @@ function Console({
                     <Button disabled>确认事件</Button>
                   </span>
                 </Tooltip>
-                <Button href="#integrations">查看关联任务</Button>
+                <Link to="/design/integrations">查看关联任务</Link>
               </Space>
               <div className="design-row">
                 <ProCard title="事件与证据时间线" variant="outlined">
                   <Timeline
                     items={[
                       {
-                        children: (
+                        content: (
                           <>
                             <Text strong>09:32:10 · 来源观察</Text>
                             <Paragraph>受管接口丢弃计数增量上升。</Paragraph>
@@ -908,7 +812,7 @@ function Console({
                         ),
                       },
                       {
-                        children: (
+                        content: (
                           <>
                             <Text strong>09:32:12 · 平台接收</Text>
                             <Paragraph>
@@ -919,7 +823,7 @@ function Console({
                       },
                       {
                         color: "orange",
-                        children: (
+                        content: (
                           <>
                             <Text strong>09:33:00 · 证据缺口</Text>
                             <Paragraph>
@@ -929,7 +833,7 @@ function Console({
                         ),
                       },
                       {
-                        children: (
+                        content: (
                           <Button
                             onClick={() =>
                               showEvidence("SEC-DEMO-027 来源证据")
@@ -949,7 +853,7 @@ function Console({
                       {
                         key: "asset",
                         label: "资产",
-                        children: <a href="#asset">CORE-GW-01</a>,
+                        children: <Link to="/design/asset">CORE-GW-01</Link>,
                       },
                       {
                         key: "scope",
@@ -1021,10 +925,10 @@ function Console({
         title={`${drawer ?? ""} · 证据`}
         open={drawer !== null}
         onClose={() => setDrawer(null)}
-        width={480}
+        size={480}
       >
         {drawer ? (
-          <Space direction="vertical" size={20} style={{ width: "100%" }}>
+          <Space orientation="vertical" size={20} style={{ width: "100%" }}>
             <Descriptions
               column={1}
               bordered
@@ -1052,18 +956,12 @@ function Console({
                 },
               ]}
             />
-            <Button href="#asset" onClick={() => setDrawer(null)}>
-              查看资产技术档案
-            </Button>
+            <Link to="/design/asset" onClick={() => setDrawer(null)}>查看资产技术档案</Link>
           </Space>
         ) : (
           <Empty />
         )}
       </Drawer>
-    </ProLayout>
+    </>
   );
 }
-
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Design preview root element is missing");
-createRoot(rootElement).render(<Preview />);

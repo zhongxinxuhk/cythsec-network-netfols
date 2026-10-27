@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node --require ./scripts/loopback-only.cjs ./node_modules/@umijs/max/bin/max.js dev",
+    "dev": "node --require ./scripts/loopback-only.cjs ./scripts/start-console.cjs dev",
     "build": "npm run typecheck:all && max build",
-    "preview": "max preview",
+    "preview": "node --require ./scripts/loopback-only.cjs ./scripts/start-console.cjs preview",
     "typecheck": "max setup && tsc --noEmit",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:all": "npm run typecheck && npm run typecheck:node",

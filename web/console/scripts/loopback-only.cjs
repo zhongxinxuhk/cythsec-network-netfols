@@ -5,6 +5,10 @@ const https = require('node:https');
 const original = http.Server.prototype.listen;
 const local = new Set(['127.0.0.1', '::1']);
 function loopbackListen(...args) {
+  const requested = args[0] && typeof args[0] === 'object' ? args[0].port : args[0];
+  if (process.env.CYTHSEC_CONSOLE_PORT && Number(requested) !== Number(process.env.CYTHSEC_CONSOLE_PORT)) {
+    throw new Error(`Console port ${process.env.CYTHSEC_CONSOLE_PORT} is unavailable; refusing fallback to ${requested}`);
+  }
   if (typeof args[0] === 'number' || (typeof args[0] === 'string' && /^\d+$/.test(args[0]))) {
     if (typeof args[1] === 'string') {
       if (!local.has(args[1])) throw new Error('Console development listeners must use a loopback IP');

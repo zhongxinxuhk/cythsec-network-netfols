@@ -62,12 +62,12 @@ ProComponents 3 当前为预发布版本，版本精确锁定；与官方主线�
 ```bash
 cd web/console
 npm ci
-VITE_TELEMETRYD_TARGET=http://127.0.0.1:18883 PORT=15173 npm run dev
+npm run dev
 npm run typecheck:all
 npm run lint
 npm test
 npm run build
-npm run preview -- --port 15173
+npm run preview
 ```
 
 Umi Max 代替 Vite 开发/构建；Vitest 继续用于组件测试。`npm ci` 的 prepare 执行 `max setup`，
@@ -75,14 +75,14 @@ Umi Max 代替 Vite 开发/构建；Vitest 继续用于组件测试。`npm ci` �
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `VITE_ROUTERD_TARGET` | `http://127.0.0.1:8080` | 开发代理 `/api`、`/healthz` |
-| `VITE_TELEMETRYD_TARGET` | `http://127.0.0.1:8083` | 开发代理 `/telemetry`，剥除该前缀 |
+| `VITE_ROUTERD_TARGET` | `http://127.0.0.1:18080` | 开发代理 `/api`、`/healthz` |
+| `VITE_TELEMETRYD_TARGET` | `http://127.0.0.1:18083` | 开发代理 `/telemetry`，剥除该前缀 |
 | `VITE_ROUTERD_BASE` | `/api/v1` | 编译期控制面 API 基地址 |
 | `VITE_TELEMETRYD_BASE` | `/telemetry/api/v1` | 编译期聚合 API 基地址 |
-| `PORT` | Umi 默认端口 | 本地开发端口 |
+| `PORT` | `15173` | 开发/构建预览统一端口，冲突时失败，不自动递增 |
 | `CONSOLE_OUTPUT_PATH` | `dist` | 发版版本号实验的独立产物目录 |
 
-生产环境由反向代理提供相同路径和 SPA 回退。开发代理不会写入 `dist`，preview 也不替代生产代理。
+生产环境由反向代理提供相同路径和 SPA 回退。开发代理不会写入 `dist`，Umi preview读取同一代理配置用于本机复验；正式部署仍由反向代理提供同源API。
 `__APP_VERSION__` 在构建与测试中复用 `version-source.ts` 从仓库根 VERSION 注入，缺失即失败。
 
 验收要覆盖六条路由直达与菜单切换、404、窄屏菜单和表格、服务离线、空列表、上传禁用与去重、
@@ -95,3 +95,14 @@ Ant / Pro 控件整体 mock 掉。仓库 lint 通过 ESLint 禁止业务组件�
 框架迁移时的历史告警见 [原审计记录](../security/ant-pro-dependencies-20261026.md)，
 后续清零与兼容性验证见 [2026-10-27依赖修复](dependency-remediation.md)。
 审计、功能测试和第三方独立核验分别判断；保留的未核验项不能因设计更新改成通过。
+
+## 统一控制台入口
+
+开发与CLion统一访问`http://127.0.0.1:15173`；`npm run dev`和`npm run preview`复用同一端口约束，不能同时另起入口。
+默认本机代理目标为routerd `127.0.0.1:18080`、telemetryd `127.0.0.1:18083`；可通过既有环境变量设置真实服务地址。
+浏览器仅请求当前源的`/api`、`/telemetry`和`/healthz`，不直接连接后端端口。
+六个业务入口和开发环境的五个设计视图共用Umi路由、ProLayout、服务访问与主题。
+设计视图从`/design`进入；样例代码仅在development路由树加载，生产构建不注册，也不将样例数据混入业务统计。
+原15174开发入口与15176静态预览已停用，不再维护第二个React根、路由器或构建脚本。
+
+完整整合结构、启动冲突处理和验证证据见[统一控制台工程](unified-console.md)。

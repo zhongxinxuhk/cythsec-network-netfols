@@ -12,7 +12,7 @@
 
 ## 2. 可复现预览检查
 
-执行`node docs/console-design/build-preview.mjs`：严格TypeScript检查、ESLint和esbuild打包。
+历史版本执行`node docs/console-design/build-preview.mjs`（该独立入口现已移除）：严格TypeScript检查、ESLint和esbuild打包。
 ESLint复用前端规则；预览在生产tsconfig之外，因此解析project单独处理，类型由前一步完整检查；
 独立静态包没有Fast Refresh，故不应用该一项规则。没有关闭生产工程规则，没有新增依赖。
 最终命令退出码0；不是生产Umi应用完整构建、组件测试或真实后端验收。
@@ -39,7 +39,7 @@ ESLint复用前端规则；预览在生产tsconfig之外，因此解析project�
 | 事件调查 | [incident-light.png](screenshots/incident-light.png) |
 | 窄屏资产摘要 | [asset-mobile.png](screenshots/asset-mobile.png) |
 
-## 4. 核验边界
+## 4. v1.1初版核验边界（历史）
 
 本轮未修改`web/console`生产代码、依赖锁文件、服务与数据面；未运行BPF或提权命令，
 未发送消息、创建真实工单或执行设备配置。`lint-all.sh`与`test-all.sh`未在本轮执行，
@@ -58,3 +58,12 @@ V01—V20图表编号、内部文件引用、Markdown围栏与截图存在性；
 当前截图随文案修订更新；历史本地交互检查不代表当前版本仍提供模拟按钮。
 
 本次文案修订复验：独立预览严格类型检查、ESLint和打包退出0；浏览器确认通栏声明/虚构身份/页脚自述已删除、联动为只读状态、事件确认禁用，深色与390/1440布局检查完成，6张截图已更新，错误/警告列表为空。
+
+## 6. 单入口整合
+
+设计视图已迁入`web/console/src/design`，作为开发环境`/design/*`路由复用现有Pro布局。
+独立React根、hash导航、静态服务和专用构建脚本已移除。现按前端统一命令验收。
+浏览器统一15173，业务与设计内部跳转共用应用路由；正式构建不引入样例数据。
+本文件前述截图记录对应整合前文案版本；本轮整合证据另存`build/unified-console`。
+
+最终整合结果见[统一控制台验收](../development/unified-console.md)：完整lint/test均退出0，前端63项通过，生产构建退出0；既有tshark 14/2/8项跳过继续为未核验，不据此合入main。

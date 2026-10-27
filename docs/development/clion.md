@@ -43,7 +43,7 @@ Benchmark 仍是显式单项测试，默认 Test All 不执行有机器标定条
 | policyd | `127.0.0.1:18081` |
 | dnsd | `127.0.0.1:18082`，当前为 HTTP 管理骨架，无 DNS 报文服务 |
 | telemetryd | `127.0.0.1:18083` |
-| Pro 控制台 | `http://127.0.0.1:15174`，代理到上述 routerd / telemetryd |
+| Pro 控制台 | `http://127.0.0.1:15173`，代理到上述 routerd / telemetryd |
 | 聚合历史 / 队列 | `build/clion/aggregate/archive` / `build/clion/aggregate/queue` |
 | 样本观察结果 | `build/clion/observations/run.*/aggregate.jsonl`，每次保留独立输出 |
 

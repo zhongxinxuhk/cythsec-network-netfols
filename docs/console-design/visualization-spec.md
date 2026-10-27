@@ -137,18 +137,21 @@ flowchart TB
 
 ## 6. 可运行设计预览
 
-源码：[preview.tsx](preview.tsx)、[preview.css](preview.css)、[构建脚本](build-preview.mjs)。
-用已安装依赖构建到仓库忽略的`build/console-design-preview`；不修改生产路由、包清单或锁文件。
+源码位于[ConsoleDesign.tsx](../../web/console/src/design/ConsoleDesign.tsx)、
+[统一页面入口](../../web/console/src/design/DesignWorkspacePage.tsx)与
+[布局样式](../../web/console/src/design/console-design.css)。运行菜单只由
+[Umi路由](../../web/console/config/routes.ts)定义；不再创建独立应用、静态服务或React根。
 
 ```bash
-node docs/console-design/build-preview.mjs
-python3 -m http.server 15176 --bind 127.0.0.1 --directory build/console-design-preview
+cd web/console
+npm run dev
 ```
 
-端口被占用时换一个空闲本地端口，不终止其他服务。预览包含运行概览、拓扑、资产技术档案、
-设备联动、事件调查5个代表视图，以及主题切换、选中证据、资产范围筛选和联动阶段只读视图。
-所有数据为固定合成值，示例IPv4使用文档保留网段、MAC使用本地管理地址；不读取实际流量/文件/秘密。
-合成值不代表设备兼容、后端功能、真实容量或安全检测效果。预览不能发送通知或设备变更。
+同一控制台访问`http://127.0.0.1:15173/design/overview`，包含概览、拓扑、资产、联动与事件五个设计视图。
+它们使用统一ProLayout、服务访问栏和主题；内部跳转使用应用路由，不刷新页面丢失服务认证。
+设计数据来源仍为固定样例，与六个真实业务页面的数据链路分开；源代码只在development路由加载，生产构建排除。
+样例IP来自文档网段、MAC来自本地管理地址。没有接入后台的写操作禁用；架构说明保留在文档。
+类型、lint和构建使用前端统一命令；不存在独立预览编译入口。
 
 ## 7. 官方设计与技术参考
 
