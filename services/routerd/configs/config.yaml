@@ -23,3 +23,6 @@ metrics_enabled: true
 
 # Optional private access policy; empty means unauthenticated local development.
 access_file: ""
+
+# Optional private desired-state directory. Saves drafts only, never applies OS networking.
+network_config_dir: ""

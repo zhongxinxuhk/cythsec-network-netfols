@@ -146,3 +146,22 @@ func TestAccessFileConfig(t *testing.T) {
 		t.Fatal("access env did not override YAML")
 	}
 }
+
+func TestNetworkConfigurationDirectoryPrecedence(t *testing.T) {
+	c := Default()
+	if c.NetworkConfigDir != "" {
+		t.Fatal("network store enabled by default")
+	}
+	path := writeTempYAML(t, "network_config_dir: /tmp/cythsec-network-test\n")
+	if err := c.LoadYAML(path); err != nil {
+		t.Fatal(err)
+	}
+	if c.NetworkConfigDir != "/tmp/cythsec-network-test" {
+		t.Fatal("YAML setting not loaded")
+	}
+	t.Setenv("ROUTERD_NETWORK_CONFIG_DIR", "/tmp/cythsec-network-env-test")
+	c.ApplyEnv()
+	if c.NetworkConfigDir != "/tmp/cythsec-network-env-test" {
+		t.Fatal("environment did not override YAML")
+	}
+}

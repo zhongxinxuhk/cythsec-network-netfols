@@ -1,0 +1,36 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { ApiError } from '@/api/http';
+import { networkConfig, type NetworkState } from '@/api/network-config';
+vi.mock('@/api/network-config', () => ({ networkConfig: { read: vi.fn(), preview: vi.fn(), save: vi.fn() } }));
+vi.mock('@/api/client', () => ({ api: { interfaces: vi.fn(async () => []) } }));
+import NetworkConfigurationPage from './NetworkConfigurationPage';
+const state: NetworkState = { snapshot: { revision: 3, updated_at: null, stage: 'draft_saved', config: { backend: 'netplan', interfaces: [{ id: 'lan', device: 'eth0', mtu: 1500, addresses: ['192.0.2.10/24'], dns: ['192.0.2.53'], search: [], routes: [] }] } }, capabilities: { platform: 'linux', can_preview: true, can_save: false, can_apply: false, store_enabled: true, preview_backends: ['netplan', 'networkmanager', 'openwrt'] } };
+afterEach(() => { cleanup(); vi.resetAllMocks(); });
+it('预览使用真实表单值，只读身份不能保存，也不显示未实现的应用动作', async () => {
+  vi.mocked(networkConfig.read).mockResolvedValue(state);
+  vi.mocked(networkConfig.preview).mockResolvedValue({ digest: 'a'.repeat(64), stage: 'validated_preview', artifacts: [{ name: '90-cythsec.yaml', content: '{"network":{}}' }] });
+  render(<NetworkConfigurationPage />);
+  await screen.findByDisplayValue('eth0');
+  expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: '校验并预览' }));
+  await screen.findByRole('dialog', { name: '原生配置预览' });
+  expect(networkConfig.preview).toHaveBeenCalledWith(state.snapshot.config);
+  expect(screen.getByText('校验已完成，配置尚未应用')).toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: '90-cythsec.yaml' })).toHaveAttribute('readonly');
+  expect(networkConfig.save).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: '应用配置' })).not.toBeInTheDocument();
+}, 15000);
+it('管理员保存版本与冲突分别反馈，冲突保留编辑内容并阻止覆盖', async () => {
+  vi.mocked(networkConfig.read).mockResolvedValue({ ...state, capabilities: { ...state.capabilities, can_save: true } });
+  vi.mocked(networkConfig.save).mockResolvedValueOnce({ ...state.snapshot, revision: 4 }).mockRejectedValue(new ApiError('conflict', 412));
+  render(<NetworkConfigurationPage />);
+  await screen.findByDisplayValue('eth0');
+  fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+  await screen.findByText('草稿已保存 · 版本 4');
+  expect(networkConfig.save).toHaveBeenCalledWith(state.snapshot.config, 3);
+  fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+  await screen.findByText(/服务端配置版本已变化，当前编辑已保留/);
+  expect(screen.getByDisplayValue('eth0')).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled());
+}, 15000);

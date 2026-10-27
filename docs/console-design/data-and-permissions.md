@@ -261,3 +261,14 @@ UI按钮权限只用于交互；服务端对每次请求重新检查主体、范
 3. 图表、明细与导出使用同一范围快照；只能声明当前证据支持的结果，不能将目录标签变成识别事实。
 4. 业务数据、凭据和秘密不进入浏览器埋点。CSV公式转义、日志纯文本显示与产物访问权限必须验收。
 5. 设计状态、编译成功、测试退出0、第三方独立核验与生产部署分别记录；未核验仍为未核验。
+
+## 8. 新增网络配置契约（P53）
+
+| ID | 实际入口 | 已实现能力 | 权限与阶段 |
+| --- | --- | --- | --- |
+| A16 | routerd GET /api/v1/network/configuration | 草稿快照、版本、能力与ETag | 当前读取身份；无鉴权仅本机回环开发；不是系统运行态 |
+| A17 | routerd POST /api/v1/network/configuration/preview | 通用模型校验、三类原生配置预览、摘要 | 读取身份可预览；纯生成，不探测目标、不执行OS命令 |
+| A18 | routerd PUT /api/v1/network/configuration | 私有目录持久化最新草稿、If-Match版本控制 | 必须已认证admin+存储启用；仅draft_saved，不是已应用 |
+| N26 | 网络系统应用/确认/回滚（尚未发布） | Netplan / NetworkManager / UCI原生事务与运行态核对 | NC-02—NC-05完成前can_apply=false；后续需独立应用权限、任务、审计与断线回滚 |
+
+P53配置模型、原生映射、发行版选型和后续门禁见[网络配置专项](network-configuration.md)及[API说明](../development/network-configuration-api.md)。

@@ -1,6 +1,6 @@
 # CythSec 前端控制台完整设计
 
-版本：1.2
+版本：1.3
 
 设计日期：2026-10-27（Asia/Shanghai）
 
@@ -11,6 +11,7 @@
 | 文档 | 回答的问题 |
 | --- | --- |
 | [板块、功能、页面与开发拆分总表](implementation-breakdown.md) | 十大业务板块、全局外壳、52页逐项规格、20类图形、25组后端契约和开发任务 |
+| [网络配置中心与跨系统适配](network-configuration.md) | P53接口IP、DNS、静态路由；原生管理栈、版本保存与应用回滚阶段 |
 | [首批字段级显示字典](implementation-fields.md) | 指标字段路径、单位、空值、发布条件和显示限制；队列字段 |
 | 本文 | 产品范围、用户任务、完整菜单、页面清单、当前与目标的区别 |
 | [布局与交互规范](layout-and-interaction.md) | Pro外壳、栅格、页面模板、线框结构、反馈、响应式与可访问性 |
@@ -56,7 +57,7 @@ IP/MAC可能具有可关联性，仍按范围授权、时效和最小化展示�
 | P | 缺后端业务契约/存储/权限或调度能力 | 只存在于设计稿；运行菜单不发布 |
 | C | 当前为局部能力，目标页面还依赖后端补充 | 分项标明可用部分，剩余项保持未知/未开通 |
 
-现有八个业务页面：`/`、`/interfaces`、`/routes`、`/traffic`、`/analytics`、`/analytics/metrics`、`/data/queue`、`/system`。P17/P19为本轮新增正式页面，验收状态见[实施记录](module-delivery-verification.md)。
+现有九个业务页面：`/`、`/interfaces`、`/routes`、`/traffic`、`/analytics`、`/analytics/metrics`、`/data/queue`、`/system`、`/network/configuration`。P53当前实现草稿、校验和预览，系统应用未发布。P17/P19的验收状态见[实施记录](module-delivery-verification.md)。
 有真实聚合导入、窗口查询、磁盘队列状态及静态Bearer服务访问；没有完整多观测点管理、
 管理员账号平台、告警调度、统一审计、保留策略执行器、异步导出和真实转发控制。
 新增资产目录、安全事件和设备联动契约同样尚未实现；开发设计工作区使用样例数据，来源与能力边界记录在文档中。
@@ -143,8 +144,9 @@ flowchart LR
 | P50 | 设备联动 | 联动任务 `/integrations/tasks` | 任务列表 | P | 可见 |
 | P51 | 设备联动 | 任务详情与回执 `/integrations/tasks/:taskId` | 阶段证据 | P | 隐藏 |
 | P52 | 设备联动 | 联动健康与数据链路 `/integrations/health` | 管道分析 | P | 可见 |
+| P53 | 网络管理 | 网络配置 `/network/configuration` | 版本化配置与原生预览 | C | 可见 |
 
-共52个逻辑页面：E 8、R 6、C 8、P 30。P37—P52的独立详细规格见上方专项文件。
+共53个逻辑页面：E 8、R 6、C 9、P 30。P37—P52的独立详细规格见上方专项文件。
 目标菜单按业务组排序，页面编号保留稳定；静态子路由必须先于`:assetId`/`:connectorId`等动态路由注册，避免`addresses`/`tasks`被误当ID。
 
 P36覆盖403、404、500、服务不可达与能力未开通；当前已有独立404。未来`code`只能采用固定枚举。

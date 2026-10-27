@@ -34,6 +34,12 @@ type AccessIdentity struct {
 }
 type identityKey struct{}
 
+// IdentityFromContext returns only the identity authenticated by this middleware.
+func IdentityFromContext(ctx context.Context) AccessIdentity {
+	identity, _ := ctx.Value(identityKey{}).(AccessIdentity)
+	return identity
+}
+
 var principalName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
 func LoadAccess(path string) (*Access, error) {
@@ -127,7 +133,9 @@ func (a *Access) middleware(service string) func(http.Handler) http.Handler {
 			}
 			read := r.Method == "GET" || r.Method == "HEAD"
 			ingest := r.Method == "POST" && (r.URL.Path == "/api/v1/analytics/imports" || r.URL.Path == "/api/v1/analytics/ingest") && identity.CanIngest
-			if !read && !ingest {
+			networkPreview := service == "routerd" && r.Method == "POST" && r.URL.Path == "/api/v1/network/configuration/preview"
+			networkSave := service == "routerd" && identity.Role == "admin" && r.Method == "PUT" && r.URL.Path == "/api/v1/network/configuration"
+			if !read && !ingest && !networkPreview && !networkSave {
 				if holder := httpx.RouteHolderFromContext(r.Context()); holder != nil {
 					holder.Set("/forbidden")
 				}

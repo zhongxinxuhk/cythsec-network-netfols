@@ -16,6 +16,7 @@ const envPrefix = "ROUTERD"
 
 // Config 是 routerd 的运行时配置。
 type Config struct {
+	NetworkConfigDir   string
 	AccessFile         string
 	ListenAddr         string        // HTTP 监听地址
 	ShutdownTimeout    time.Duration // 优雅关闭超时
@@ -48,6 +49,7 @@ func (c *Config) LoadYAML(path string) error {
 	if err != nil {
 		return err
 	}
+	c.NetworkConfigDir = m.Get("network_config_dir", c.NetworkConfigDir)
 	c.AccessFile = m.Get("access_file", c.AccessFile)
 	c.ListenAddr = m.Get("listen_addr", c.ListenAddr)
 	c.CORSAllowedOrigins = m.List("cors_origins", c.CORSAllowedOrigins)
@@ -60,6 +62,7 @@ func (c *Config) LoadYAML(path string) error {
 
 // ApplyEnv 用环境变量（ROUTERD_* 前缀）覆盖配置。
 func (c *Config) ApplyEnv() {
+	c.NetworkConfigDir = configutil.EnvString(envPrefix, "network_config_dir", c.NetworkConfigDir)
 	c.AccessFile = configutil.EnvString(envPrefix, "access_file", c.AccessFile)
 	c.ListenAddr = configutil.EnvString(envPrefix, "listen_addr", c.ListenAddr)
 	c.CORSAllowedOrigins = configutil.EnvList(envPrefix, "cors_origins", c.CORSAllowedOrigins)

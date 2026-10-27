@@ -1,6 +1,6 @@
 // routerd - cythsec 路由器核心服务（控制面）。
 //
-// 提供本机网络信息采集的只读 HTTP API，作为 Web Console 的数据后端：
+// 提供网络信息只读API及网络配置草稿/校验API；当前不应用操作系统网络配置：
 //
 //	GET /healthz            健康检查
 //	GET /metrics            Prometheus 指标（文本格式 0.0.4）
@@ -17,8 +17,10 @@
 package main
 
 import (
+	"cythsec/services/routerd/internal/networkcfg"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 
 	"cythsec/services/pkg/configutil"
@@ -33,6 +35,7 @@ import (
 func loadConfig() (config.Config, bool) {
 	c := config.Default()
 
+	networkDir := flag.String("network-config-dir", "", "private network desired-state directory; does not apply OS settings")
 	accessFile := flag.String("access-file", "", "private JSON access policy with credential digests")
 	addr := flag.String("addr", c.ListenAddr, "HTTP 监听地址，如 :8080 或 127.0.0.1:8080")
 	cors := flag.String("cors-origins", "", "逗号分隔的允许跨域源，默认 http://localhost:5173")
@@ -72,6 +75,9 @@ func loadConfig() (config.Config, bool) {
 	c.ApplyEnv()
 
 	// 显式 flag 覆盖环境变量。
+	if set["network-config-dir"] {
+		c.NetworkConfigDir = *networkDir
+	}
 	if set["access-file"] {
 		c.AccessFile = *accessFile
 	}
@@ -105,6 +111,18 @@ func main() {
 		return
 	}
 
+	var store *networkcfg.Store
+	if c.NetworkConfigDir != "" {
+		var err error
+		store, err = networkcfg.Open(c.NetworkConfigDir)
+		if err != nil {
+			log.Printf("network configuration initialization failed: %v", err)
+			os.Exit(1)
+		}
+	}
+	if store != nil {
+		defer store.Close()
+	}
 	err := controlplane.Run(controlplane.ServerConfig{
 		AccessFile:             c.AccessFile,
 		RequireAccessForRemote: true,
@@ -115,7 +133,7 @@ func main() {
 		LogFormat:              c.LogFormat,
 		MetricsEnabled:         c.MetricsEnabled,
 		CORSAllowedOrigins:     c.CORSAllowedOrigins,
-	}, api.RegisterRoutes)
+	}, func(mux *http.ServeMux) { api.RegisterRoutesWithNetworkConfig(mux, store) })
 	if err != nil {
 		log.Printf("routerd 退出: %v", err)
 		os.Exit(1)

@@ -17,7 +17,7 @@ it('运行时明确应用共享Pro外壳，服务操作不落入旧版侧栏渲�
   });
 });
 it('Pro 菜单与真实页面使用同一份 Umi 路由配置，保留既有入口并发布字典和队列及独立404', () => {
-  expect(routes.filter((route) => route.name).map((route) => route.path)).toEqual(['/', '/interfaces', '/routes', '/traffic', '/analytics', '/analytics/metrics', '/data/queue', '/system']);
+  expect(routes.filter((route) => route.name).map((route) => route.path)).toEqual(['/', '/interfaces', '/routes', '/traffic', '/network/configuration', '/analytics', '/analytics/metrics', '/data/queue', '/system']);
   expect(new Set(routes.map((route) => route.path)).size).toBe(routes.length);
   for (const route of routes) {
     expect(route.component).toBeDefined();

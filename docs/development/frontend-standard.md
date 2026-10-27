@@ -23,7 +23,7 @@ ProComponents 3 当前为预发布版本，版本精确锁定；与官方主线�
 | 位置 | 职责 |
 | --- | --- |
 | `web/console/config/config.ts` | Umi Max 插件、ProLayout、Ant ConfigProvider、代理和构建常量 |
-| `web/console/config/routes.ts` | 菜单、面包屑、八个业务路由与独立 404 |
+| `web/console/config/routes.ts` | 菜单、面包屑、九个业务路由与独立 404 |
 | `web/console/src/app.tsx` | Pro 布局运行时、真实服务健康状态、根 VERSION 版本号 |
 | `web/console/src/pages/` | PageContainer 页面，ProTable / ProDescriptions / ProCard |
 | `web/console/src/global.css` | 业务结构布局，视觉主题交给 Ant Design Token |
@@ -37,6 +37,7 @@ ProComponents 3 当前为预发布版本，版本精确锁定；与官方主线�
 | 路由表 `/routes` | ProTable；IPv4 路由只读，Metric 排序与手动刷新 |
 | 接口流量 `/traffic` | ProTable；累计收发、丢弃、错误，3 秒刷新；不虚构实时速率 |
 | 聚合分析 `/analytics` | Ant Upload、Form、DatePicker、Select；ProTable 服务端分页、Collapse / Progress 时差桶 |
+| 网络配置 `/network/configuration` | Pro表单、IP/DNS/静态路由、原生预览与版本化草稿；系统应用未发布 |
 | 指标字典 `/analytics/metrics` | Ant Tree、Input、ProDescriptions、ProTable；30个实际查询字段，键绑定DTO |
 | 写入队列 `/data/queue` | 复用状态轮询与IngestPanel；容量Progress、最近成功读取、手动刷新和处理说明 |
 | 系统信息 `/system` | ProDescriptions；主机与运行进程信息 |
@@ -57,7 +58,7 @@ ProComponents 3 当前为预发布版本，版本精确锁定；与官方主线�
 - 队列接收确认只表示待写文件落盘；历史确认只由历史接口返回的批次证明。历史保存不证明采集无损。
 - 统计按批次独立，时间查询按本机时区解释，范围 `[from, to)`，每页最多 100 窗。
   null、样本抑制、来源丢包未知均保留原意，不转换为零；TLS / QUIC 是头候选计数。
-- 本轮不新增后端业务能力。没有接口支撑的配置、账号、权限与业务操作不显示为已实现。
+- 新增网络配置草稿/预览契约由routerd提供，见[网络配置API](network-configuration-api.md)；真实系统应用尚未发布。其他没有接口支撑的配置、账号、权限与业务操作不显示为已实现。
 
 ## 开发与验证
 
@@ -87,7 +88,7 @@ Umi Max 代替 Vite 开发/构建；Vitest 继续用于组件测试。`npm ci` �
 生产环境由反向代理提供相同路径和 SPA 回退。开发代理不会写入 `dist`，Umi preview读取同一代理配置用于本机复验；正式部署仍由反向代理提供同源API。
 `__APP_VERSION__` 在构建与测试中复用 `version-source.ts` 从仓库根 VERSION 注入，缺失即失败。
 
-验收要覆盖八条路由直达与菜单切换、404、窄屏菜单和表格、服务离线、空列表、上传禁用与去重、
+验收要覆盖九条路由直达与菜单切换、404、窄屏菜单和表格、服务离线、空列表、上传禁用与去重、
 队列接受与历史确认、日期范围、服务端翻页以及旧请求晚到。测试可以隔离网络服务，但不能把
 Ant / Pro 控件整体 mock 掉。仓库 lint 通过 ESLint 禁止业务组件重建原生按钮、输入和表格。
 本地证据放在忽略目录 `build/ant-design-console/`；实际结果与未核验项目由本轮交付记录报告。
@@ -103,7 +104,7 @@ Ant / Pro 控件整体 mock 掉。仓库 lint 通过 ESLint 禁止业务组件�
 开发与CLion统一访问`http://127.0.0.1:15173`；`npm run dev`和`npm run preview`复用同一端口约束，不能同时另起入口。
 默认本机代理目标为routerd `127.0.0.1:18080`、telemetryd `127.0.0.1:18083`；可通过既有环境变量设置真实服务地址。
 浏览器仅请求当前源的`/api`、`/telemetry`和`/healthz`，不直接连接后端端口。
-八个业务入口和开发环境的五个设计视图共用Umi路由、ProLayout、服务访问与主题。
+九个业务入口和开发环境的五个设计视图共用Umi路由、ProLayout、服务访问与主题。
 设计视图从`/design`进入；样例代码仅在development路由树加载，生产构建不注册，也不将样例数据混入业务统计。
 原15174开发入口与15176静态预览已停用，不再维护第二个React根、路由器或构建脚本。
 

@@ -149,3 +149,33 @@ func TestUnprotectedPublicListenerIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNetworkConfigurationAccessIsNarrow(t *testing.T) {
+	for _, role := range []string{"viewer", "operator", "admin"} {
+		_, value, policy := accessFixture(t, role)
+		for _, tc := range []struct {
+			service, method, path string
+			allowed               bool
+		}{
+			{"routerd", "POST", "/api/v1/network/configuration/preview", true},
+			{"routerd", "PUT", "/api/v1/network/configuration", role == "admin"},
+			{"routerd", "DELETE", "/api/v1/network/configuration", false},
+			{"routerd", "POST", "/api/v1/network/configuration/apply", false},
+			{"telemetryd", "PUT", "/api/v1/network/configuration", false},
+		} {
+			called := false
+			r := httptest.NewRequest(tc.method, tc.path, nil)
+			r.RemoteAddr = "127.0.0.1:12000"
+			r.Header.Set("Authorization", "Bearer "+value)
+			policy.middleware(tc.service)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				if IdentityFromContext(r.Context()).Role != role {
+					t.Error("identity missing")
+				}
+			})).ServeHTTP(httptest.NewRecorder(), r)
+			if called != tc.allowed {
+				t.Fatalf("%s %s %s role=%s allowed=%v", tc.service, tc.method, tc.path, role, called)
+			}
+		}
+	}
+}

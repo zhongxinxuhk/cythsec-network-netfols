@@ -158,8 +158,9 @@ func CORSMiddleware(allowed []string) func(http.Handler) http.Handler {
 			if origin != "" && (allowAll || originAllowed(origin, allowed)) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, Authorization")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, Authorization, If-Match")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Request-ID")
 				w.Header().Set("Vary", "Origin")
 			}
 			if r.Method == http.MethodOptions {
