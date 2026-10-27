@@ -1,0 +1,57 @@
+/* Own layout only. Controls, colors, focus and Drawer/Menu motion come from Ant Design. */
+.cloud-header { height: 50px; display: flex; align-items: center; gap: 12px; padding: 0 16px 0 0; border-bottom: 1px solid var(--ant-color-border-secondary); background: var(--ant-color-bg-container); }
+.cloud-catalog-trigger { width: 56px; height: 50px; flex-shrink: 0; border-radius: 0; font-size: 20px; }
+.cloud-brand { display: inline-flex; gap: 8px; align-items: center; white-space: nowrap; color: var(--ant-color-text); }
+.cloud-brand img { width: 26px; height: 26px; }
+.cloud-brand strong { font-size: 18px; letter-spacing: -.4px; }
+.cloud-brand > span { color: var(--ant-color-text-secondary); }
+.cloud-header-divider { height: 18px; border-left: 1px solid var(--ant-color-border-secondary); }
+.cloud-home { padding: 8px; color: var(--ant-color-text); white-space: nowrap; }
+.cloud-search { margin-left: 12px; margin-right: auto; color: var(--ant-color-text-tertiary); }
+.cloud-header-services { margin-left: auto; }
+.cloud-mobile-trigger { display: none; }
+.cloud-navigation-slot { width: 272px; flex: 0 0 auto; transition: width 200ms cubic-bezier(.2,0,0,1); }
+.cloud-navigation { position: fixed; top: 50px; bottom: 0; width: inherit; display: flex; z-index: 99; border-right: 1px solid; overflow: hidden; }
+.product-rail { width: 56px; flex: 0 0 56px; display: flex; flex-direction: column; align-items: center; padding: 12px 0; border-right: 1px solid; gap: 12px; }
+.product-rail-links { width: 100%; flex: 1; overflow: auto; }
+.product-rail-link { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 10px 0; margin: 0 4px 4px; border-radius: 4px; transition: background-color 160ms, color 160ms; }
+.product-rail-link > span:first-child { font-size: 18px; }
+.product-rail-link > span:last-child { font-size: 11px; }
+.product-rail-link:hover { background: var(--ant-color-fill-tertiary); }
+.context-menu-panel { flex: 0 0 216px; width: 216px; min-height: 0; opacity: 1; transform: translateX(0); transition: opacity 160ms, transform 200ms cubic-bezier(.2,0,0,1); }
+.is-collapsed { width: 56px; }
+.is-collapsed .context-menu-panel { opacity: 0; transform: translateX(-12px); visibility: hidden; }
+.context-menu-content { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.context-menu-heading { padding: 20px 20px 12px; }
+.context-menu-heading h5 { margin: 0; }
+.context-menu-search { padding: 0 12px 12px; }
+.context-menu-scroll { overflow: auto; flex: 1; min-height: 0; padding-bottom: 16px; }
+.catalog-layout { height: 100%; display: grid; grid-template-columns: 200px minmax(0,1fr); }
+.catalog-categories { overflow: auto; padding: 16px 0; border-right: 1px solid var(--ant-color-border-secondary); }
+.catalog-content { min-width: 0; padding: 20px 28px; overflow: auto; }
+.catalog-groups { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 24px 28px; align-content: start; }
+.catalog-group { min-width: 0; }
+.catalog-group h5 { margin: 8px 0 16px; }
+.catalog-section { display: block; margin: 14px 0 6px; font-size: 12px; }
+.catalog-link { display: flex; align-items: center; gap: 4px; }
+.catalog-page { flex: 1; min-width: 0; display: block; padding: 8px; border-radius: 4px; color: var(--ant-color-text); transition: background-color 160ms,color 160ms; }
+.catalog-page:hover, .catalog-page[aria-current=page] { background: var(--ant-color-primary-bg); color: var(--ant-color-primary); }
+.catalog-page:focus-visible, .product-rail-link:focus-visible, .cloud-brand:focus-visible, .cloud-home:focus-visible { outline: 2px solid var(--ant-color-primary); outline-offset: 2px; }
+@media (max-width: 1100px) { .cloud-header-services .header-service-label { display: none; } .catalog-groups { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 767px) {
+  .cloud-header { gap: 4px; padding-right: 8px; }
+  .cloud-brand > span, .cloud-header-divider, .cloud-home { display: none; }
+  .cloud-brand strong { font-size: 16px; }
+  .cloud-search { margin-left: auto; margin-right: 0; }
+  .cloud-search-label { display: none; }
+  .cloud-header-services { display: flex; margin-left: 0; }
+  .cloud-mobile-trigger { display: inline-flex; }
+  .cloud-navigation-slot { width: 0; }
+  .cloud-navigation { display: none; }
+  .catalog-layout { grid-template-columns: 130px minmax(0,1fr); }
+  .catalog-content { padding: 16px; }
+  .catalog-groups { grid-template-columns: minmax(0,1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cloud-navigation-slot, .context-menu-panel, .product-rail-link, .catalog-page { transition: none; }
+}

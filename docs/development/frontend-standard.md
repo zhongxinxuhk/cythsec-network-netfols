@@ -39,7 +39,7 @@ ProComponents 3 当前为预发布版本，版本精确锁定；与官方主线�
 | 聚合分析 `/analytics` | Ant Upload、Form、DatePicker、Select；ProTable 服务端分页、Collapse / Progress 时差桶 |
 | 系统信息 `/system` | ProDescriptions；主机与运行进程信息 |
 
-全局使用 ProLayout 自适应菜单、面包屑和页面容器。错误路径独立显示 Ant Result 404。
+全局使用 ProLayout 的headerRender/menuRender扩展点实现顶栏、模块快捷栏与分组功能菜单；面包屑和页面容器仍由Pro统一管理。目录、收藏和最近访问从同一份routes元数据生成，详见[导航收纳与动效](../console-design/cloud-navigation.md)。错误路径独立显示 Ant Result 404。
 官方组件 API 参考 [ProComponents](https://procomponents.ant.design/) 与
 [Ant Design 主题定制](https://ant.design/docs/react/customize-theme-cn/)。
 

@@ -7,8 +7,8 @@
 
 | 区域 | 1440基准值 | 实施方式 / 规则 |
 | --- | --- | --- |
-| 顶部 | 高56px，固定 | ProLayout配置；内容不挤进侧栏页脚 |
-| 侧边栏 | 展开224px，折叠使用Pro原生尺寸 | Sider宽度通过布局配置；1024—1279默认折叠 |
+| 顶部 | 高50px，固定 | ProLayout headerRender；全局产品入口、搜索、服务与访问认证 |
+| 侧边栏 | 模块快捷栏56px + 功能菜单216px | ProLayout menuRender；功能菜单可独立收起；768px以下使用抽屉 |
 | 主内容 | 左右/上下24px | PageContainer与业务容器布局；不覆盖Ant私有结构 |
 | 布局栅格 | 24列，列间16px，行间24px | Row/Col或Pro布局；卡片内容不采用固定绝对坐标 |
 | 卡片 | 内容间距16px，内部留白24px | ProCard / Ant Token |
@@ -24,10 +24,12 @@
 
 ```mermaid
 flowchart TB
-    H[固定顶部：实例范围 / 服务健康 / 帮助 / 真实访问身份]
+    H[固定顶部：产品与服务 / 工作台 / 搜索 / 服务健康 / 访问认证]
     subgraph B[主工作区]
       direction LR
-      M[Pro侧栏：当前组与叶子菜单]
+      R[模块快捷栏]
+      M[当前模块：搜索 / 折叠分组 / 功能菜单]
+      R --- M
       subgraph C[PageContainer]
         direction TB
         P[面包屑 / 标题 / 口径 / 页面操作]
@@ -49,6 +51,8 @@ flowchart TB
 
 顶部服务摘要区独立展示routerd与telemetryd，未来其他服务须由真实后端状态聚合支撑。
 窄屏用带可访问名称和Tooltip的状态点；错误展开可到P23，不让长文本被截断或覆盖认证按钮。
+
+当前已发布导航和动效实施细则见[云控制台式导航](cloud-navigation.md)。上文未接入后端的目标菜单仍按能力发布，不作为占位入口上线。
 
 ## 2. 八类页面模板
 

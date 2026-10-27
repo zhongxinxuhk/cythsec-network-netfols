@@ -1,15 +1,19 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import routes, { createConsoleRoutes, type ConsoleRoute } from '../config/routes';
+vi.mock('@umijs/max', async () => {
+  const router = await import('react-router-dom');
+  return { Link: router.Link, useLocation: router.useLocation };
+});
 import { layout } from '../src/app';
 
 const leaves = (items: ConsoleRoute[]): ConsoleRoute[] => items.flatMap(item => item.routes ? leaves(item.routes) : [item]);
 
 it('运行时明确应用共享Pro外壳，服务操作不落入旧版侧栏渲染器', () => {
   expect(layout({} as Parameters<typeof layout>[0])).toMatchObject({
-    layout: 'mix', siderWidth: 224, fixedHeader: true, fixSiderbar: true,
-    rightContentRender: false,
+    layout: 'mix', siderWidth: 272, fixedHeader: true, fixSiderbar: false,
+    rightContentRender: false, headerRender: expect.any(Function), menuRender: expect.any(Function),
   });
 });
 it('Pro 菜单与真实页面使用同一份 Umi 路由配置，保留六个业务入口及独立404', () => {
