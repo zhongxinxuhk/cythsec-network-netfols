@@ -28,3 +28,10 @@ it('队列查询失败显示不可用，不能显示零积压', () => {
   expect(screen.getByText(/上传暂不可用，已有历史仍可查询/)).toBeInTheDocument();
   expect(screen.queryByText(/待写批次/)).not.toBeInTheDocument();
 });
+it('容量分母未提供时不生成比例，失败优先于旧状态', () => {
+  const view = render(<IngestPanel status={{ ...pending, max_batches: 0, max_bytes: 0 }} error={null} />);
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  view.rerender(<IngestPanel status={pending} error="连接中断" />);
+  expect(screen.queryByText(/退避重试中/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});

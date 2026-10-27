@@ -18,6 +18,7 @@ export interface ConsoleRoute {
 const workspace = { id: 'workspace', name: '工作台', icon: 'DashboardOutlined' };
 const network = { id: 'network', name: '网络管理', icon: 'ClusterOutlined' };
 const analytics = { id: 'analytics', name: '流量分析', icon: 'BarChartOutlined' };
+const data = { id: 'data', name: '数据管理', icon: 'DatabaseOutlined' };
 const platform = { id: 'platform', name: '平台管理', icon: 'SettingOutlined' };
 const design = { id: 'design', name: '设计工作区', icon: 'ExperimentOutlined' };
 const businessRoutes: ConsoleRoute[] = [
@@ -26,6 +27,8 @@ const businessRoutes: ConsoleRoute[] = [
   { consoleProduct: network, consoleSection: '网络资源', path: '/routes', name: '路由表', icon: 'BranchesOutlined', component: './RoutesPage' },
   { consoleProduct: network, consoleSection: '运行监测', path: '/traffic', name: '接口流量', icon: 'AreaChartOutlined', component: './TrafficPage' },
   { consoleProduct: analytics, consoleSection: '聚合数据', path: '/analytics', name: '聚合分析', icon: 'BarChartOutlined', component: './AnalyticsPage' },
+  { consoleProduct: analytics, consoleSection: '指标口径', path: '/analytics/metrics', name: '指标字典', icon: 'BookOutlined', component: './MetricDictionaryPage' },
+  { consoleProduct: data, consoleSection: '写入管道', path: '/data/queue', name: '写入队列', icon: 'DatabaseOutlined', component: './IngestQueuePage' },
   { consoleProduct: platform, consoleSection: '系统管理', path: '/system', name: '系统信息', icon: 'SettingOutlined', component: './SystemPage' },
 ];
 

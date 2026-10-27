@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from '@umijs/max';
-import { AppstoreOutlined, BarChartOutlined, ClusterOutlined, DashboardOutlined, ExperimentOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, SettingOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BarChartOutlined, ClusterOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, SettingOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import { Button, ConfigProvider, Drawer, Empty, Input, Menu, Tabs, Tooltip, Typography, theme } from 'antd';
 import { HeaderStatus } from '@/components/HeaderStatus';
 import { ServiceAccess } from '@/components/ServiceAccess';
@@ -9,7 +9,7 @@ import { useConsoleNavigation } from './NavigationProvider';
 import './cloud-console.css';
 
 const icons: Record<string, ReactNode> = {
-  DashboardOutlined: <DashboardOutlined />, ClusterOutlined: <ClusterOutlined />,
+  DatabaseOutlined: <DatabaseOutlined />, DashboardOutlined: <DashboardOutlined />, ClusterOutlined: <ClusterOutlined />,
   BarChartOutlined: <BarChartOutlined />, SettingOutlined: <SettingOutlined />, ExperimentOutlined: <ExperimentOutlined />,
 };
 function useCurrentPage() {

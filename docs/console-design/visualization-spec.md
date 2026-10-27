@@ -12,7 +12,7 @@
 
 | 元素 | 设计值与规则 | 实现 |
 | --- | --- | --- |
-| 外壳 | 顶栏56、侧栏224、内容24；同既有规范 | ProLayout，PageContainer |
+| 外壳 | 顶栏50、模块栏56+功能菜单216、内容由PageContainer管理；见云控制台式导航规范 | ProLayout，PageContainer |
 | 视觉层级 | 20px页标题、16px区块、14px正文、12px辅助；指标28px | ConfigProvider Typography/Statistic Token |
 | 间距 | 4/8/12/16/24/32；图表区之间24，控件之间8 | 业务布局CSS，不覆盖Ant内部结构 |
 | 边角/阴影 | 遵循borderRadius与boxShadowSecondary；仅选中/浮层强调 | 官方Token，禁止另一套控件皮肤 |

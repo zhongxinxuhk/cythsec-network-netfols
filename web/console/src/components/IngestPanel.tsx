@@ -1,4 +1,4 @@
-import { Alert, Col, Row, Statistic } from 'antd';
+import { Alert, Col, Progress, Row, Statistic } from 'antd';
 import type { IngestStatus } from '@/api/analytics';
 import { Card } from './Card';
 import { fmtBytes } from '@/utils/format';
@@ -16,8 +16,8 @@ export function IngestPanel({ status, error }: { status: IngestStatus | null; er
       <p className="muted">未启用磁盘队列，文件仍通过同步导入保存。</p> : <>
         <p>{states[status.state]} · {status.running ? '工作进程运行中' : '工作进程未运行'}</p>
         <Row gutter={[24, 16]}>
-          <Col xs={24} md={8}><Statistic title={`待写批次 / ${status.max_batches}`} value={status.pending_batches} /></Col>
-          <Col xs={24} md={8}><Statistic title={`待写数据 / ${fmtBytes(status.max_bytes)}`} value={fmtBytes(status.pending_bytes)} /></Col>
+          <Col xs={24} md={8}><Statistic title={`待写批次 / ${status.max_batches}`} value={status.pending_batches} />{status.max_batches > 0 && <Progress aria-label="批次容量使用率" percent={Math.min(100, 100 * status.pending_batches / status.max_batches)} showInfo={false} status={status.pending_batches >= status.max_batches ? 'exception' : 'normal'} />}</Col>
+          <Col xs={24} md={8}><Statistic title={`待写数据 / ${fmtBytes(status.max_bytes)}`} value={fmtBytes(status.pending_bytes)} />{status.max_bytes > 0 && <Progress aria-label="字节容量使用率" percent={Math.min(100, 100 * status.pending_bytes / status.max_bytes)} showInfo={false} status={status.pending_bytes >= status.max_bytes ? 'exception' : 'normal'} />}</Col>
           <Col xs={24} md={8}><Statistic title="本次进程已确认批次" value={status.completed_this_process} /></Col>
         </Row>
         {status.oldest_queued_at && <p>最早待写：{new Date(status.oldest_queued_at).toLocaleString()}</p>}

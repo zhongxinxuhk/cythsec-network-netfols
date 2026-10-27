@@ -5,10 +5,10 @@ import { collectPages, sanitizePreferences, searchPages } from './catalog';
 it('目录继承路由产品元数据且只发布实际页面，设计视图不进入生产导航', () => {
   const production = collectPages(createConsoleRoutes(false));
   const development = collectPages(createConsoleRoutes(true));
-  expect(production).toHaveLength(6);
-  expect(development).toHaveLength(11);
+  expect(production).toHaveLength(8);
+  expect(development).toHaveLength(13);
   expect(development.filter(page => page.product.id === 'design')).toHaveLength(5);
-  expect(new Set(development.map(page => page.path)).size).toBe(11);
+  expect(new Set(development.map(page => page.path)).size).toBe(13);
   expect(production.some(page => page.path.startsWith('/design'))).toBe(false);
   expect(searchPages(production, ' NETWORK ')).toEqual([]);
   expect(searchPages(production, '网络管理').map(page => page.path)).toEqual(['/interfaces', '/routes', '/traffic']);
