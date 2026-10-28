@@ -44,6 +44,9 @@ func TestLoadedSettingsComparisonIsBoundedWhitelistAndPartial(t *testing.T) {
 				if reflect.DeepEqual(args, []string{"-t", "-m", "multiline", "-f", "GENERAL.DEVICE,GENERAL.STATE,GENERAL.CON-UUID", "device", "show"}) {
 					return nil, os.ErrPermission
 				}
+				if reflect.DeepEqual(args, []string{"-t", "-m", "multiline", "-f", routingFields, "connection", "show", "uuid", uuid}) {
+					return nil, os.ErrPermission
+				}
 				if filepath.Base(tool) != "nmcli" || !reflect.DeepEqual(args, []string{"-t", "-m", "multiline", "-f", loadedFields, "connection", "show", "uuid", uuid}) {
 					t.Fatal("unexpected or broad query", tool, args)
 				}

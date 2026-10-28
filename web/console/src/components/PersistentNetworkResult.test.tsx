@@ -82,3 +82,19 @@ it('加载差异展示自动MTU、不同与来源未配置，不将空集合充�
   expect(within(panel).getByText('来源未显式配置或格式未解析')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '应用配置' })).not.toBeInTheDocument();
 });
+
+it('路由差异保留重复声明，未核验加载值不显示为空集合', async () => {
+  const tuple = '198.51.100.0/24 via 192.0.2.1 metric default';
+  const report: PersistentNetworkInspection = { id: 'a'.repeat(64), backend: 'networkmanager', platform: 'linux', scope: 'keyfile_profiles', observed_at: '2026-10-29T01:00:00Z', status: 'partial', can_apply: false, sources: [], warnings: [], profiles: [
+    { reference: 'nm:12345678-1234-1234-1234-123456789abc', device: 'eth0', binding: 'declared', methods: {}, mtu: null, addresses: null, dns: null, search: null, routes: [{ destination: '198.51.100.0/24', gateway: '192.0.2.1', metric: null }, { destination: '198.51.100.0/24', gateway: '192.0.2.1', metric: null }], field_states: { mtu: 'unset', addresses: 'unset', dns: 'unset', search: 'unset', routes: 'configured' }, source_ids: ['b'.repeat(64)], origin_verified: true,
+      routing_comparison: { state: 'unknown', scope: 'nm_declared_route_multiset', observed_at: '2026-10-29T01:00:00Z', reason: 'loaded_route_semantics_unsupported', source: [tuple, tuple], loaded: null } },
+  ] };
+  await act(async () => { render(<PersistentNetworkResult report={report} />); });
+  await act(async () => { fireEvent.click(screen.getByRole('tab', { name: '路由差异' })); });
+  const panel = screen.getByRole('tabpanel', { name: '路由差异' });
+  expect(within(panel).getByText('路由语义未核验')).toBeInTheDocument();
+  await act(async () => { fireEvent.click(within(panel).getByRole('button', { name: /展开行|Expand row/i })); });
+  expect(within(panel).getAllByText(tuple)).toHaveLength(2);
+  expect(within(panel).getByText('未核验')).toBeInTheDocument();
+  expect(within(panel).queryByText('显式空路由集合')).not.toBeInTheDocument();
+});

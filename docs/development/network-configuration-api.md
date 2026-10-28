@@ -59,3 +59,6 @@ Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入�
 来源快照增加可选 `profiles[].loaded_comparison`，七项标量与集合成员比较见
 [NC-02B3B2](../console-design/network-loaded-settings.md)。仅在明确UUID与来源文件引用匹配后查询；
 字段差异形成接管阻断，HTTP成功、部分字段一致均不发放配置应用许可。
+
+来源快照增加可选 `profiles[].routing_comparison`，见[NC-02B3B3](../console-design/network-route-evidence.md)。
+路由查询独立失败，保留基础字段结果；只比较目标/下一跳/Metric声明及重复数量，不代表内核路由或策略等价。

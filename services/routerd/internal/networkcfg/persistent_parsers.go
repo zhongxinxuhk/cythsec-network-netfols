@@ -90,6 +90,15 @@ func persistentRoute(p *PersistentProfile, destination, gateway, metric string) 
 	p.Routes = append(p.Routes, ConfiguredRoute{d.Masked().String(), a.String(), m})
 	p.FieldStates["routes"] = "configured"
 }
+func persistentNMRoute(p *PersistentProfile, family, destination, gateway, metric string) {
+	g, err := netip.ParseAddr(gateway)
+	d, de := netip.ParsePrefix(destination)
+	if err != nil || g.Zone() != "" || g.IsUnspecified() || g.IsMulticast() || g.Is4() != (family == "ipv4") || destination != "default" && (de != nil || d.Addr().Is4() != g.Is4()) {
+		p.Routes, p.FieldStates["routes"] = nil, "unsupported"
+		return
+	}
+	persistentRoute(p, destination, gateway, metric)
+}
 func stringList(raw json.RawMessage) ([]string, error) {
 	var v []string
 	err := json.Unmarshal(raw, &v)
@@ -143,7 +152,7 @@ func parseKeyfile(raw []byte, source string) (PersistentProfile, error) {
 		}
 		// Only retain networking properties, never credential-like extension keys.
 		if section == "ipv4" || section == "ipv6" {
-			selected = key == "method" || key == "dns" || key == "dns-search" || key == "gateway" || key == "route-metric" || key == "route-table" || key == "never-default" || strings.HasPrefix(key, "address") || strings.HasPrefix(key, "route") || strings.HasPrefix(key, "routing-rule")
+			selected = key == "method" || key == "dns" || key == "dns-search" || key == "gateway" || key == "route-metric" || key == "route-table" || key == "never-default" || key == "ignore-auto-routes" || strings.HasPrefix(key, "address") || strings.HasPrefix(key, "route") || strings.HasPrefix(key, "routing-rule")
 		}
 		if !selected {
 			continue
@@ -206,14 +215,15 @@ func parseKeyfile(raw []byte, source string) (PersistentProfile, error) {
 					addresses = append(addresses, "invalid")
 				}
 				if len(parts) > 1 && parts[1] != "" && fields[family+".gateway"] == "" {
-					persistentRoute(&p, "default", parts[1], "")
+					persistentNMRoute(&p, family, "default", parts[1], "")
 				}
 			case name == "gateway":
 				if value != "" {
-					persistentRoute(&p, "default", value, "")
+					persistentNMRoute(&p, family, "default", value, "")
 				}
-			case name == "route-metric" || name == "route-table" || name == "never-default":
-				if value != "" && value != "-1" && value != "0" && value != "false" {
+			case name == "route-metric" || name == "route-table" || name == "never-default" || name == "ignore-auto-routes":
+				baseline := value == "" || name == "route-metric" && value == "-1" || name == "route-table" && value == "0" || (name == "never-default" || name == "ignore-auto-routes") && (value == "false" || value == "0")
+				if !baseline {
 					p.FieldStates["routes"] = "unsupported"
 					p.Routes = nil
 				}
@@ -231,7 +241,7 @@ func parseKeyfile(raw []byte, source string) (PersistentProfile, error) {
 				if len(parts) == 3 {
 					metric = parts[2]
 				}
-				persistentRoute(&p, parts[0], parts[1], metric)
+				persistentNMRoute(&p, family, parts[0], parts[1], metric)
 			}
 		}
 	}

@@ -52,6 +52,7 @@ type PersistentProfile struct {
 	LoadReference  string             `json:"load_reference,omitempty"`
 	Association    *DeviceAssociation `json:"device_association,omitempty"`
 	Loaded         *LoadedComparison  `json:"loaded_comparison,omitempty"`
+	Routing        *RoutingComparison `json:"routing_comparison,omitempty"`
 }
 type PersistentInspection struct {
 	ID         string              `json:"id"`
@@ -94,7 +95,8 @@ func newPersistentProfile(ref string, sources []string) PersistentProfile {
 	return PersistentProfile{Reference: ref, Binding: "unresolved", Methods: map[string]string{}, FieldStates: map[string]string{"mtu": "unset", "addresses": "unset", "dns": "unset", "search": "unset", "routes": "unset"}, SourceIDs: sources}
 }
 
-// Inspect reads source bytes, never daemon-memory settings or staged UCI changes.
+// Inspect captures source declarations and separately reads selected NM settings;
+// neither represents the device's applied configuration or staged UCI changes.
 func (p *PersistentReader) Inspect(ctx context.Context, backend string) (PersistentInspection, error) {
 	if !ValidBackend(backend) {
 		return PersistentInspection{}, errors.New("选择受支持的目标管理器")
@@ -111,6 +113,7 @@ func (p *PersistentReader) Inspect(ctx context.Context, backend string) (Persist
 	finish := func() (PersistentInspection, error) {
 		p.correlateManager(ctx, &r)
 		p.compareLoadedSettings(ctx, &r)
+		p.compareRouting(ctx, &r)
 		r.Authority = assessAuthority(r)
 		r.Warnings = stringSet(r.Warnings)
 		r.ObservedAt = time.Now().UTC()

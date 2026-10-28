@@ -10,6 +10,11 @@ const loadedStates = { partial: '基础字段已比较', different: '存在加�
 const loadedLabels = { device: '设备名称', mtu: 'MTU 声明', ipv4_method: 'IPv4 地址方式', ipv6_method: 'IPv6 地址方式', addresses: '静态地址集合', dns: 'DNS 地址集合', search: '搜索域集合' };
 const loadedReasons: Record<string, string> = { compared: '已比较', source_unset_or_unsupported: '来源未显式配置或格式未解析', loaded_field_unsupported: '加载字段格式未解析' };
 const loadedDiagnostics: Record<string, string> = { reference_not_matched: '加载引用未匹配', unsupported_platform: '当前平台不支持', backend_not_supported: '当前适配器未提供', settings_unavailable: '查询未完成，请核对工具与读取权限', settings_schema_unsupported: '加载响应格式未兼容', profile_not_observed: '当前身份未观察到该配置', partial_scope_not_full_sync: '标量与集合成员比较' };
+const routingStates = { same: '元组一致', different: '存在路由差异', unknown: '路由语义未核验', unavailable: '查询未完成', unsupported: '当前平台不支持', not_checked: '尚未比较' };
+const routingReasons: Record<string, string> = { reference_not_matched: '加载引用未匹配', unsupported_platform: '当前平台不支持', backend_not_supported: '当前适配器未提供', routing_query_unavailable: '核对工具与读取权限', routing_schema_unsupported: '路由响应格式未兼容', profile_not_observed: '当前身份未观察到该配置', loaded_route_semantics_unsupported: '路由属性、策略或格式超出核验范围', source_unset_or_unsupported: '来源未显式配置或语义未解析', compared_partial_semantics: '声明元组比较，保留重复数量与 Metric 默认值' };
+function routingValues(values: string[] | null) {
+  return values === null ? '未核验' : values.length ? <Space orientation="vertical">{values.map((value, index) => <Typography.Text code key={`${index}:${value}`}>{value}</Typography.Text>)}</Space> : '显式空路由集合';
+}
 function loadedValue(value: number | string | string[] | null, field: string) {
   if (value === null) return '未核验';
   if (field === 'mtu' && value === 0) return '自动';
@@ -80,6 +85,15 @@ export function PersistentNetworkResult({ report }: { report: PersistentNetworkI
         { title: '管理器加载值', key: 'loaded', width: 260, render: (_, f) => loadedValue(f.loaded, f.field) },
         { title: '比较结果', key: 'state', width: 130, render: (_, f) => <Tag color={f.state === 'different' ? 'error' : 'default'}>{{ same: '一致', different: '不同', unknown: '未核验' }[f.state]}</Tag> },
         { title: '依据', key: 'reason', width: 250, render: (_, f) => loadedReasons[f.reason] ?? '未核验' },
+      ]} /> }} /> },
+      { key: 'routing', label: '路由差异', children: <ProTable<PersistentNetworkProfile> headerTitle="路由声明与加载元组" rowKey={p => `${p.source_ids.join(':')}:${p.reference}`} dataSource={report.profiles} search={false} options={false} pagination={{ pageSize: 8, showSizeChanger: false }} scroll={{ x: 1150 }} locale={{ emptyText: report.platform === 'linux' ? '未取得可比较的路由声明' : '当前平台不支持路由加载比较' }} columns={[
+        { title: '配置标识', dataIndex: 'reference', width: 260 },
+        { title: '比较状态', key: 'state', width: 180, render: (_, p) => <Tag color={p.routing_comparison?.state === 'different' ? 'error' : 'default'}>{p.routing_comparison ? routingStates[p.routing_comparison.state] : '未取得'}</Tag> },
+        { title: '检查时间', key: 'time', width: 200, render: (_, p) => p.routing_comparison ? new Date(p.routing_comparison.observed_at).toLocaleString() : '未取得' },
+        { title: '核验依据', key: 'reason', width: 400, render: (_, p) => p.routing_comparison ? routingReasons[p.routing_comparison.reason] ?? '待核验' : '未取得' },
+      ]} expandable={{ rowExpandable: p => Boolean(p.routing_comparison), expandedRowRender: p => <ProDescriptions column={1} dataSource={{}} columns={[
+        { title: '源文件路由元组', render: () => routingValues(p.routing_comparison?.source ?? null) },
+        { title: '管理器加载元组', render: () => routingValues(p.routing_comparison?.loaded ?? null) },
       ]} /> }} /> },
       { key: 'sources', label: '来源证据', children: <ProTable<PersistentNetworkInspection['sources'][number]> headerTitle="源文件快照" rowKey="id" dataSource={report.sources} search={false} options={false} scroll={{ x: 1500 }} pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: '未取得配置来源' }} columns={[
         { title: '配置文件', dataIndex: 'path', width: 390 },

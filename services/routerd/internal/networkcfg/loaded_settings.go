@@ -117,31 +117,17 @@ func loadedFieldValue(p PersistentProfile, field string) (any, bool) {
 }
 
 func parseLoadedSettings(raw []byte, requested map[string]bool) (map[string]PersistentProfile, error) {
-	result := map[string]PersistentProfile{}
-	var fields map[string]string
-	allowed := map[string]bool{}
-	for _, name := range strings.Split(loadedFields, ",") {
-		allowed[name] = true
+	records, err := parseNMSettingsBatch(raw, loadedFields, requested)
+	if err != nil {
+		return nil, err
 	}
-	flush := func() error {
-		if fields == nil {
-			return nil
-		}
-		uuid := strings.ToLower(fields["connection.uuid"])
-		if !profileUUID.MatchString(uuid) || !requested[uuid] || len(fields) != len(allowed) || len(result) >= 64 {
-			return errNativeSchema
-		}
-		if _, exists := result[uuid]; exists {
-			return errNativeSchema
-		}
-		if kind := fields["connection.type"]; kind != "802-3-ethernet" && kind != "ethernet" {
-			return errNativeSchema
-		}
+	result := map[string]PersistentProfile{}
+	for uuid, fields := range records {
 		profile := newPersistentProfile("nm:"+uuid, nil)
 		if name := fields["connection.interface-name"]; deviceName.MatchString(name) {
 			profile.Device, profile.Binding = name, "declared"
 		} else if name != "" && name != "--" {
-			return errNativeSchema
+			return nil, errNativeSchema
 		}
 		mtu := fields["802-3-ethernet.mtu"]
 		if mtu == "auto" || mtu == "0" {
@@ -167,39 +153,6 @@ func parseLoadedSettings(raw []byte, requested map[string]bool) (map[string]Pers
 			persistentValues(&profile, field, values)
 		}
 		result[uuid] = profile
-		return nil
-	}
-	if len(raw) > 1024*1024 || len(requested) > 64 {
-		return nil, errNativeSchema
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok || !allowed[key] || len(line) > 65536 {
-			return nil, errNativeSchema
-		}
-		if key == "connection.uuid" {
-			if err := flush(); err != nil {
-				return nil, err
-			}
-			fields = map[string]string{}
-		}
-		if fields == nil {
-			return nil, errNativeSchema
-		}
-		if _, exists := fields[key]; exists {
-			return nil, errNativeSchema
-		}
-		value, err := nmUnescape(strings.TrimSpace(value))
-		if err != nil || strings.ContainsAny(value, "\x00\r") {
-			return nil, errNativeSchema
-		}
-		fields[key] = value
-	}
-	if err := flush(); err != nil {
-		return nil, err
 	}
 	return result, nil
 }

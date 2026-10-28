@@ -1197,5 +1197,6 @@ flowchart LR
 | NC-02B3A | 文件权限、捕获一致性、NM加载引用与接管条件 | 实现见[规格](network-source-authority.md)，不能发放接管或应用许可 |
 | NC-02B3B1 | NM设备受管状态与活动配置关联 | 实现见[规格](network-device-association.md)；仅NM当前身份视图，不证明内容同步或独占归属 |
 | NC-02B3B2 | NM加载标量与集合成员比较 | 实现见[规格](network-loaded-settings.md)；七项基础字段，完整同步未核验 |
+| NC-02B3B3 | 独立路由加载核验与有界解析 | 实现见[规格](network-route-evidence.md)；重复计数/Metric默认值保留，复杂语义未知不放行 |
 | NC-02B3B（后续） | 完整加载内容、字段归因、插件/ifcfg与明确接管 | 待开发，标量/集合成员一致不代表完整内容同步 |
 | NC-03—05 | 实际应用、确认、回滚与目标系统矩阵 | 未发布/未核验 |

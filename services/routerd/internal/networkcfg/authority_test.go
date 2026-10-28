@@ -104,13 +104,16 @@ func TestManagerReferencesAreNotContentOrActivationProof(t *testing.T) {
 		if reflect.DeepEqual(args, []string{"-t", "-m", "multiline", "-f", loadedFields, "connection", "show", "uuid", uuid}) {
 			return []byte(loadedFixture(uuid)), nil
 		}
+		if reflect.DeepEqual(args, []string{"-t", "-m", "multiline", "-f", routingFields, "connection", "show", "uuid", uuid}) {
+			return []byte(routingFixture(uuid)), nil
+		}
 		if filepath.Base(tool) != "nmcli" || !reflect.DeepEqual(args, []string{"-t", "-f", "UUID,FILENAME", "connection", "show"}) {
 			t.Fatal("write/secret query", tool, args)
 		}
 		return []byte(uuid + ":" + path + "\n"), nil
 	}
 	r, err := p.Inspect(context.Background(), "networkmanager")
-	if err != nil || calls != 4 || r.Manager == nil || r.Manager.State != "observed" || r.Profiles[0].LoadReference != "matched" || r.Profiles[0].Association.State != "active" || r.Authority == nil || r.Authority.CanAdopt || r.CanApply {
+	if err != nil || calls != 5 || r.Manager == nil || r.Manager.State != "observed" || r.Profiles[0].LoadReference != "matched" || r.Profiles[0].Association.State != "active" || r.Authority == nil || r.Authority.CanAdopt || r.CanApply {
 		t.Fatal(r, err)
 	}
 	if r.Sources[0].Safety == nil || r.Sources[0].Safety.Stable == nil || !*r.Sources[0].Safety.Stable {

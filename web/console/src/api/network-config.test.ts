@@ -121,3 +121,29 @@ it('加载比较拒绝伪一致、来源错绑、未知转空与汇总掩盖差�
   respond({ profiles: [{ ...profile, loaded_comparison: { ...comparison, state: 'unavailable', fields: [] } }] });
   await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ profiles: [{ loaded_comparison: { state: 'unavailable' } }] });
 });
+
+it('路由比较保留重复数量、默认Metric与未知语义，拒绝伪一致', async () => {
+  const source = { id: 'b'.repeat(64), path: '/etc/NetworkManager/system-connections/lan.nmconnection', storage: 'persistent', version_tag: 'c'.repeat(64), bytes: 60, state: 'read' };
+  const tuple = '198.51.100.0/24 via 192.0.2.1 metric 0';
+  const comparison = { state: 'same', scope: 'nm_declared_route_multiset', observed_at: '2026-10-29T01:00:00Z', reason: 'compared_partial_semantics', source: [tuple, tuple], loaded: [tuple, tuple] };
+  const route = { destination: '198.51.100.0/24', gateway: '192.0.2.1', metric: 0 };
+  const profile = { reference: 'nm:12345678-1234-1234-1234-123456789abc', device: 'eth0', binding: 'declared', methods: {}, mtu: null, addresses: null, dns: null, search: null, routes: [route, route], field_states: { mtu: 'unset', addresses: 'unset', dns: 'unset', search: 'unset', routes: 'configured' }, source_ids: [source.id], origin_verified: true, load_reference: 'matched', routing_comparison: comparison };
+  const base = { id: 'a'.repeat(64), backend: 'networkmanager', platform: 'linux', scope: 'keyfile_profiles', observed_at: comparison.observed_at, status: 'partial', can_apply: false, sources: [source], profiles: [profile], warnings: [] };
+  const respond = (p: object) => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: { ...base, profiles: [{ ...profile, ...p }] } }), { status: 200 })));
+  respond({}); await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ profiles: [{ routing_comparison: { state: 'same' } }] });
+  for (const c of [
+    { ...comparison, loaded: [tuple] }, { ...comparison, source: [tuple] },
+    { ...comparison, loaded: [tuple.replace('metric 0', 'metric default'), tuple] },
+    { ...comparison, state: 'different' }, { ...comparison, state: 'passed' },
+    { ...comparison, loaded: null }, { ...comparison, state: 'unavailable' },
+    { ...comparison, state: 'unknown', reason: 'source_unset_or_unsupported', loaded: [] },
+    { ...comparison, scope: 'effective_routes' },
+  ]) {
+    respond({ routing_comparison: c });
+    await expect(networkConfig.inspectPersistent('networkmanager')).rejects.toThrow('持久配置来源响应无效');
+  }
+  respond({ routing_comparison: { ...comparison, state: 'unknown', reason: 'loaded_route_semantics_unsupported', loaded: null } });
+  await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ profiles: [{ routing_comparison: { state: 'unknown', loaded: null } }] });
+  respond({ routing_comparison: { ...comparison, state: 'different', loaded: [tuple] } });
+  await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ profiles: [{ routing_comparison: { state: 'different' } }] });
+});

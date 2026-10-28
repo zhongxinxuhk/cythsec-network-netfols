@@ -78,6 +78,7 @@ export interface PersistentNetworkProfile {
   source_ids: string[]; origin_verified: boolean; load_reference?: 'matched' | 'not_observed' | 'conflicting' | 'unknown';
   device_association?: NetworkDeviceAssociation;
   loaded_comparison?: NetworkLoadedComparison;
+  routing_comparison?: NetworkRoutingComparison;
 }
 export interface PersistentNetworkInspection {
   id: string; backend: NetworkDraft['backend']; platform: string; scope: 'merged_ethernets' | 'keyfile_profiles' | 'committed_network';
@@ -145,6 +146,19 @@ function validatePersistentInspection(value: PersistentNetworkInspection, backen
         else if (!Array.isArray(field) || field.length > 256 || (key === 'routes' ? field.some(r => typeof r !== 'object' || !r || !('destination' in r) || typeof r.destination !== 'string' || !('gateway' in r) || typeof r.gateway !== 'string' || !('metric' in r) || !(r.metric === null || typeof r.metric === 'number' && Number.isInteger(r.metric) && r.metric >= 0 && r.metric <= 4294967295)) : field.some(v => typeof v !== 'string'))) fail();
       }
     }
+    if (p.routing_comparison) {
+      const c = p.routing_comparison;
+      const values = (v: unknown) => v === null || Array.isArray(v) && v.length <= 256 && v.every(s => typeof s === 'string' && s.length > 0 && s.length <= 253);
+      const expected = p.field_states.routes === 'configured' ? (p.routes ?? []).map(r => `${r.destination} via ${r.gateway} metric ${r.metric === null ? 'default' : r.metric}`).sort() : null;
+      if (!['same', 'different', 'unknown', 'unavailable', 'unsupported', 'not_checked'].includes(c.state) || c.scope !== 'nm_declared_route_multiset' || typeof c.observed_at !== 'string' || !Number.isFinite(Date.parse(c.observed_at)) || !['reference_not_matched', 'unsupported_platform', 'backend_not_supported', 'routing_query_unavailable', 'routing_schema_unsupported', 'profile_not_observed', 'loaded_route_semantics_unsupported', 'source_unset_or_unsupported', 'compared_partial_semantics'].includes(c.reason) || !values(c.source) || !values(c.loaded) || JSON.stringify(c.source) !== JSON.stringify(expected)) fail();
+      if (['same', 'different', 'unknown'].includes(c.state) && (backend !== 'networkmanager' || value.platform !== 'linux' || p.load_reference !== 'matched' || !p.origin_verified || !/^nm:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(p.reference))) fail();
+      if (c.loaded !== null && JSON.stringify(c.loaded) !== JSON.stringify([...c.loaded].sort())) fail();
+      if (c.state === 'same' || c.state === 'different') {
+        if (c.source === null || c.loaded === null || c.reason !== 'compared_partial_semantics' || (c.state === 'same') !== (JSON.stringify(c.source) === JSON.stringify(c.loaded))) fail();
+      } else if (c.state === 'unknown') {
+        if (!(c.reason === 'source_unset_or_unsupported' && c.source === null && c.loaded !== null || c.reason === 'loaded_route_semantics_unsupported' && c.loaded === null)) fail();
+      } else if (c.loaded !== null || c.reason === 'compared_partial_semantics') fail();
+    }
   }
   if (value.manager && (!['observed', 'inactive', 'unavailable', 'unsupported', 'not_checked'].includes(value.manager.state) || value.manager.scope !== 'visible_profile_references' || typeof value.manager.observed_at !== 'string' || !Number.isFinite(Date.parse(value.manager.observed_at)) || typeof value.manager.diagnostic !== 'string')) fail();
   if (value.device_evidence) {
@@ -180,4 +194,9 @@ export interface NetworkDeviceAssociation {
 export interface NetworkLoadedComparison {
   state: 'partial' | 'different' | 'unavailable' | 'unsupported' | 'not_checked'; scope: 'nm_profile_scalar_and_sets'; observed_at: string; diagnostic: string;
   fields: { field: 'device' | 'mtu' | 'ipv4_method' | 'ipv6_method' | 'addresses' | 'dns' | 'search'; state: 'same' | 'different' | 'unknown'; reason: string; source: number | string | string[] | null; loaded: number | string | string[] | null }[];
+}
+
+export interface NetworkRoutingComparison {
+  state: 'same' | 'different' | 'unknown' | 'unavailable' | 'unsupported' | 'not_checked'; scope: 'nm_declared_route_multiset'; observed_at: string; reason: string;
+  source: string[] | null; loaded: string[] | null;
 }

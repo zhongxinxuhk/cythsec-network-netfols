@@ -266,6 +266,9 @@ func assessAuthority(r PersistentInspection) *AuthorityReport {
 		if profile.Loaded != nil && profile.Loaded.State == "different" {
 			add(sourceID, profile.Reference, "blocker", "loaded_settings_different", "源文件声明与管理器加载字段存在差异")
 		}
+		if profile.Routing != nil && profile.Routing.State == "different" {
+			add(sourceID, profile.Reference, "blocker", "loaded_routes_different", "源文件路由声明与管理器加载元组存在差异")
+		}
 	}
 	return a
 }
