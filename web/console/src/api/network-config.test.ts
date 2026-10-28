@@ -33,3 +33,19 @@ it('原生校验绑定目标与文件，拒绝可应用声明和空检查假通�
     await expect(networkConfig.validateNative(draft)).rejects.toThrow('原生配置校验响应无效');
   }
 });
+
+it('持久配置只提交backend，并拒绝来源伪造、缺失字段与空值转零', async () => {
+  const source = { id: 'b'.repeat(64), path: '/etc/NetworkManager/system-connections/lan.nmconnection', storage: 'persistent', version_tag: 'c'.repeat(64), bytes: 60, state: 'read' };
+  const profile = { reference: 'nm:123', device: 'eth0', binding: 'declared', methods: { ipv4: 'manual' }, mtu: null, addresses: ['192.0.2.10/24'], dns: [], search: null, routes: null, field_states: { mtu: 'unset', addresses: 'configured', dns: 'configured', search: 'unset', routes: 'unset' }, source_ids: [source.id], origin_verified: true };
+  const report = { id: 'a'.repeat(64), backend: 'networkmanager', platform: 'linux', scope: 'keyfile_profiles', observed_at: '2026-10-28T01:00:00Z', status: 'partial', can_apply: false, sources: [source], profiles: [profile], warnings: [] };
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ data: report }), { status: 200 }));
+  vi.stubGlobal('fetch', fetch);
+  await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ status: 'partial' });
+  const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+  expect(url).toBe('/api/v1/network/configuration/persistent-inspection');
+  expect(JSON.parse(init.body as string)).toEqual({ backend: 'networkmanager' });
+  for (const patch of [{ can_apply: true }, { profiles: [{ ...profile, source_ids: ['f'.repeat(64)] }] }, { profiles: [{ ...profile, mtu: 0 }] }, { profiles: [{ ...profile, field_states: {} }] }, { status: 'unavailable' }, { backend: 'netplan' }]) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: { ...report, ...patch } }), { status: 200 })));
+    await expect(networkConfig.inspectPersistent('networkmanager')).rejects.toThrow('持久配置来源响应无效');
+  }
+});

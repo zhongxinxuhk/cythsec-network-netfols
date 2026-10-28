@@ -133,7 +133,7 @@ func (a *Access) middleware(service string) func(http.Handler) http.Handler {
 			}
 			read := r.Method == "GET" || r.Method == "HEAD"
 			ingest := r.Method == "POST" && (r.URL.Path == "/api/v1/analytics/imports" || r.URL.Path == "/api/v1/analytics/ingest") && identity.CanIngest
-			networkPreview := service == "routerd" && r.Method == "POST" && (r.URL.Path == "/api/v1/network/configuration/preview" || r.URL.Path == "/api/v1/network/configuration/preflight" || r.URL.Path == "/api/v1/network/configuration/native-validation")
+			networkPreview := service == "routerd" && r.Method == "POST" && (r.URL.Path == "/api/v1/network/configuration/preview" || r.URL.Path == "/api/v1/network/configuration/preflight" || r.URL.Path == "/api/v1/network/configuration/native-validation" || r.URL.Path == "/api/v1/network/configuration/persistent-inspection")
 			networkSave := service == "routerd" && identity.Role == "admin" && r.Method == "PUT" && r.URL.Path == "/api/v1/network/configuration"
 			if !read && !ingest && !networkPreview && !networkSave {
 				if holder := httpx.RouteHolderFromContext(r.Context()); holder != nil {

@@ -46,7 +46,7 @@ func Compare(c Config, o Observation) (Preflight, error) {
 	if !o.InventoryAvailable {
 		add("blocker", "", "inventory_unavailable", "接口快照不可用，不能判断接口是否存在")
 	}
-	add("review", "", "persistent_state_not_read", "本次比较使用运行态；持久配置、DHCP/RA与现有配置归属仍须核对")
+	add("review", "", "persistent_state_not_read", "本报告未关联持久配置来源快照，DHCP/RA与现有配置归属仍须核对")
 	add("review", "", "native_validation_pending", "本报告未关联原生工具校验结果，请单独校验配置")
 	add("review", "", "management_path_unverified", "管理连接路径及断线恢复尚未核验")
 	for _, desired := range c.Interfaces {

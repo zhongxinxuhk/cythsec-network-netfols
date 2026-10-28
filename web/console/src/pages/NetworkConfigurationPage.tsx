@@ -4,8 +4,9 @@ import { Alert, AutoComplete, Button, Col, Drawer, Empty, Form, Input, InputNumb
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '@/api/client';
 import { ApiError } from '@/api/http';
-import { networkConfig, type NetworkDraft, type NetworkPreview, type NetworkObservation, type NetworkPreflight, type NetworkNativeValidation } from '@/api/network-config';
+import { networkConfig, type NetworkDraft, type NetworkPreview, type NetworkObservation, type NetworkPreflight, type NetworkNativeValidation, type PersistentNetworkInspection } from '@/api/network-config';
 import { NetworkEnvironmentPanel, NetworkPreflightResult, NetworkNativeValidationResult } from '@/components/NetworkObservation';
+import { PersistentNetworkResult } from '@/components/PersistentNetworkResult';
 import { useApi } from '@/hooks/useApi';
 
 const managers = [
@@ -27,9 +28,11 @@ export default function NetworkConfigurationPage() {
   const [environmentError, setEnvironmentError] = useState('');
   const [report, setReport] = useState<NetworkPreflight | null>(null);
   const [nativeValidation, setNativeValidation] = useState<NetworkNativeValidation | null>(null);
+  const [persistent, setPersistent] = useState<PersistentNetworkInspection | null>(null);
+  const inspectionRequest = useRef(0);
   const generation = useRef(0);
   useEffect(() => {
-    if (state.data) { form.setFieldsValue(state.data.snapshot.config); setRevision(state.data.snapshot.revision); setConflict(false); setError(''); setNotice(''); setPreview(null); setReport(null); setNativeValidation(null); generation.current++; }
+    if (state.data) { form.setFieldsValue(state.data.snapshot.config); setRevision(state.data.snapshot.revision); setConflict(false); setError(''); setNotice(''); setPreview(null); setReport(null); setNativeValidation(null); setPersistent(null); generation.current++; }
   }, [state.data, form]);
   async function submit(mode: 'save' | 'preview' | 'preflight' | 'native') {
     let draft: NetworkDraft;
@@ -65,6 +68,18 @@ export default function NetworkConfigurationPage() {
     catch (cause) { setEnvironment(null); setEnvironmentError(cause instanceof Error ? cause.message : '环境读取失败'); }
     finally { setBusy(false); }
   }
+  async function inspectPersistent() {
+    const backend: NetworkDraft['backend'] = form.getFieldValue('backend');
+    const ticket = ++inspectionRequest.current;
+    const epoch = generation.current;
+    setBusy(true); setError(''); setPersistent(null);
+    try {
+      const result = await networkConfig.inspectPersistent(backend);
+      if (ticket === inspectionRequest.current && epoch === generation.current) setPersistent(result);
+    } catch (cause) {
+      if (ticket === inspectionRequest.current && epoch === generation.current) setError(cause instanceof Error ? cause.message : '持久配置读取失败');
+    } finally { if (ticket === inspectionRequest.current) setBusy(false); }
+  }
   const ready = Boolean(state.data && !state.error && !state.loading);
   return <PageContainer content="接口静态地址、DNS 与静态路由" extra={[
     <Popconfirm key="reload" title="重新读取将替换未保存的编辑内容" onConfirm={state.reload} disabled={busy}><Button icon={<ReloadOutlined />} disabled={busy} loading={state.loading}>重新读取</Button></Popconfirm>,
@@ -78,8 +93,8 @@ export default function NetworkConfigurationPage() {
       { title: '保存权限', render: () => state.data?.capabilities.can_save ? '管理员' : '当前连接不可保存' },
     ]} /></ProCard>}
     {state.data?.capabilities.can_observe && <NetworkEnvironmentPanel observation={environment} error={environmentError} loading={busy} onRefresh={() => void readEnvironment()} />}
-    {state.data && <Form className="page-stack" form={form} layout="vertical" disabled={busy || !ready} onValuesChange={() => { generation.current++; setPreview(null); setReport(null); setNativeValidation(null); setNotice(''); }}>
-      <ProCard title="目标管理器" variant="outlined">
+    {state.data && <Form className="page-stack" form={form} layout="vertical" disabled={busy || !ready} onValuesChange={() => { generation.current++; setPreview(null); setReport(null); setNativeValidation(null); setPersistent(null); setNotice(''); }}>
+      <ProCard title="目标管理器" variant="outlined" extra={state.data?.capabilities.can_inspect_persistent && <Button disabled={!ready} loading={busy} onClick={() => void inspectPersistent()}>读取持久配置</Button>}>
         <Form.Item name="backend" label="网络管理器" rules={[{ required: true }]}><Select options={managers} /></Form.Item>
       </ProCard>
       <Form.List name="interfaces" rules={[{ validator: async (_, value) => { if (!value?.length || value.length > 32) throw new Error('请配置1至32个接口'); } }]}>
@@ -119,6 +134,7 @@ export default function NetworkConfigurationPage() {
         </div>}
       </Form.List>
     </Form>}
+    <Drawer title="持久配置来源" size="min(1040px, 100vw)" open={Boolean(persistent)} onClose={() => setPersistent(null)} destroyOnHidden>{persistent && <PersistentNetworkResult report={persistent} />}</Drawer>
     <Drawer title="原生工具校验" size="min(860px, 100vw)" open={Boolean(nativeValidation)} onClose={() => setNativeValidation(null)} destroyOnHidden>{nativeValidation && <NetworkNativeValidationResult report={nativeValidation} />}</Drawer>
     <Drawer title="应用前检查" size="min(960px, 100vw)" open={Boolean(report)} onClose={() => setReport(null)} destroyOnHidden>{report && <NetworkPreflightResult report={report} />}</Drawer>
     <Drawer title="原生配置预览" size="min(760px, 100vw)" open={Boolean(preview)} onClose={() => setPreview(null)} destroyOnHidden>

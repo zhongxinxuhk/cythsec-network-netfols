@@ -35,6 +35,7 @@ type ServerOptions struct {
 	NetworkConfig   *networkcfg.Store
 	NetworkObserve  func(context.Context) (networkcfg.Observation, error)
 	NetworkValidate func(context.Context, networkcfg.Config) (networkcfg.NativeValidation, error)
+	NetworkInspect  func(context.Context, string) (networkcfg.PersistentInspection, error)
 	// CORSAllowedOrigins 允许跨域的源列表；为空时使用默认 ["http://localhost:5173"]。
 	// 支持特殊值 "*" 表示允许任意源（仅建议开发/演示环境使用）。
 	CORSAllowedOrigins []string
@@ -59,10 +60,11 @@ func RegisterRoutes(mux *http.ServeMux) {
 }
 
 func RegisterRoutesWithNetworkConfig(mux *http.ServeMux, store *networkcfg.Store) {
-	registerRouterRoutes(mux, store, nil, nil)
+	registerRouterRoutes(mux, ServerOptions{NetworkConfig: store})
 }
 
-func registerRouterRoutes(mux *http.ServeMux, store *networkcfg.Store, observe func(context.Context) (networkcfg.Observation, error), validate func(context.Context, networkcfg.Config) (networkcfg.NativeValidation, error)) {
+func registerRouterRoutes(mux *http.ServeMux, opts ServerOptions) {
+	store, observe, validate, inspect := opts.NetworkConfig, opts.NetworkObserve, opts.NetworkValidate, opts.NetworkInspect
 	if observe == nil {
 		observe = networkcfg.NewObserver().Capture
 	}
@@ -71,6 +73,10 @@ func registerRouterRoutes(mux *http.ServeMux, store *networkcfg.Store, observe f
 		validate = networkcfg.NewNativeValidator().Validate
 	}
 	registerNetworkValidation(mux, validate)
+	if inspect == nil {
+		inspect = networkcfg.NewPersistentReader().Inspect
+	}
+	registerNetworkInspection(mux, inspect)
 	registerNetworkConfig(mux, store)
 	// v1 控制面 API（供 Web Console 对接）
 	controlplane.Handle(mux, "GET /api/v1/system", handleSystem)
@@ -91,7 +97,7 @@ func NewServer(opts ServerOptions) http.Handler {
 		RuntimeMetricsRefresh: opts.RuntimeMetricsRefresh,
 		DisableMetrics:        opts.DisableMetrics,
 	}, func(mux *http.ServeMux) {
-		registerRouterRoutes(mux, opts.NetworkConfig, opts.NetworkObserve, opts.NetworkValidate)
+		registerRouterRoutes(mux, opts)
 	})
 }
 

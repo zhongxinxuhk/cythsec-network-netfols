@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/http';
 import { networkConfig, type NetworkState, type NetworkObservation, type NetworkPreflight } from '@/api/network-config';
-vi.mock('@/api/network-config', () => ({ networkConfig: { read: vi.fn(), preview: vi.fn(), save: vi.fn(), observe: vi.fn(), preflight: vi.fn(), validateNative: vi.fn() } }));
+vi.mock('@/api/network-config', () => ({ networkConfig: { read: vi.fn(), preview: vi.fn(), save: vi.fn(), observe: vi.fn(), preflight: vi.fn(), validateNative: vi.fn(), inspectPersistent: vi.fn() } }));
 vi.mock('@/api/client', () => ({ api: { interfaces: vi.fn(async () => []) } }));
 import NetworkConfigurationPage from './NetworkConfigurationPage';
 const state: NetworkState = { snapshot: { revision: 3, updated_at: null, stage: 'draft_saved', config: { backend: 'netplan', interfaces: [{ id: 'lan', device: 'eth0', mtu: 1500, addresses: ['192.0.2.10/24'], dns: ['192.0.2.53'], search: [], routes: [] }] } }, capabilities: { platform: 'linux', can_preview: true, can_observe: true, can_preflight: true, can_save: false, can_apply: false, store_enabled: true, preview_backends: ['netplan', 'networkmanager', 'openwrt'] } };
@@ -82,4 +82,20 @@ it('原生工具不可用保持未完成，编辑后移除旧报告', async () =
   await act(async () => { fireEvent.change(screen.getByDisplayValue('eth0'), { target: { value: 'eth1' } }); });
   expect(screen.queryByRole('dialog', { name: '原生工具校验' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '应用配置' })).not.toBeInTheDocument();
+}, 15000);
+
+it('无接口草稿也能读取所选管理器来源，不支持状态保留未知且失败清除旧报告', async () => {
+  vi.mocked(networkConfig.read).mockResolvedValue({ ...state, snapshot: { ...state.snapshot, config: { backend: 'netplan', interfaces: [] } }, capabilities: { ...state.capabilities, can_inspect_persistent: true } });
+  vi.mocked(networkConfig.inspectPersistent).mockResolvedValueOnce({ id: 'e'.repeat(64), backend: 'netplan', platform: 'darwin', scope: 'merged_ethernets', observed_at: '2026-10-28T01:00:00Z', status: 'unsupported', can_apply: false, sources: [], profiles: [], warnings: ['unsupported_platform'] }).mockRejectedValue(new Error('来源读取超时'));
+  await act(async () => { render(<NetworkConfigurationPage />); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '读取持久配置' })); });
+  const dialog = screen.getByRole('dialog', { name: '持久配置来源' });
+  expect(networkConfig.inspectPersistent).toHaveBeenCalledWith('netplan');
+  expect(within(dialog).getByText('持久配置来源：当前平台不支持')).toBeInTheDocument();
+  expect(within(dialog).getByText('未取得接口配置声明')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '应用配置' })).not.toBeInTheDocument();
+  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: '关闭' })); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '读取持久配置' })); });
+  expect(screen.getByText('来源读取超时')).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: '持久配置来源' })).not.toBeInTheDocument();
 }, 15000);

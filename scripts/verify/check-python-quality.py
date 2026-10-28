@@ -22,6 +22,7 @@ SUPPORT = (
     'scripts/verify/check-features.py',
     'scripts/verify/check-training-project.py',
     'scripts/verify/check-python-quality.py',
+    'services/routerd/internal/networkcfg/netplan_projection.py',
 )
 
 

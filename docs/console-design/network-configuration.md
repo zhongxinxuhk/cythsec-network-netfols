@@ -97,7 +97,7 @@ flowchart LR
 | 任务 | 内容 | 状态 |
 | --- | --- | --- |
 | NC-01 | P53统一模型、静态IP/DNS/路由、预览、admin草稿保存、版本冲突与重启恢复 | 本轮实现，验证见记录 |
-| NC-02 | 实际管理器/接口归属、配置读取、差异及原生校验 | 运行态观测与差异已实现，见[NC-02运行态](network-preflight.md)；原生解析校验见[NC-02B1](network-native-validation.md)；持久配置、来源接管及目标系统验收仍待完成 |
+| NC-02 | 实际管理器/接口归属、配置读取、差异及原生校验 | 运行态观测与差异已实现，见[NC-02运行态](network-preflight.md)；原生解析校验见[NC-02B1](network-native-validation.md)；源文件读取见[NC-02B2](network-persistent-inspection.md)；完整归因、接管及目标系统验收仍待完成 |
 | NC-03 | 三管理器事务应用、独立回滚期限、管理连接确认、进程崩溃/重启恢复 | 待开发 |
 | NC-04 | 已应用状态核对、回滚失败/部分/未知结果、持久化及操作者审计 | 待开发 |
 | NC-05 | Ubuntu/Rocky/Kylin V11/OpenWrt版本×CPU×接口类型的虚拟机/实机门禁 | 待验收环境，不因交叉编译通过而标兼容 |

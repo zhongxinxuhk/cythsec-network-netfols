@@ -44,3 +44,7 @@ Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入�
 新增 POST `/api/v1/network/configuration/native-validation`，严格请求模型、固定非特权原生命令、
 逐文件解析结果与不可应用契约见[NC-02B1](../console-design/network-native-validation.md)。
 成功HTTP不代表校验通过，须检查status与checks；原生平台和工具不满足时明确unsupported/unavailable。
+
+新增POST `/api/v1/network/configuration/persistent-inspection`，仅接受backend。
+返回来源版本、存储类别、字段投影与未知状态；权限及边界见[NC-02B2](../console-design/network-persistent-inspection.md)。
+此入口不修改草稿、源文件或系统网络，不返回原始配置。
