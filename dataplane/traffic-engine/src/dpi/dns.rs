@@ -308,6 +308,27 @@ pub fn detect(payload: &[u8]) -> Detect {
     }
 }
 
+/// Inspect the first length-delimited DNS message in a contiguous TCP prefix.
+/// The caller owns TCP reassembly and the inspection budget. Never borrow bytes
+/// from the next message to repair an incomplete name in a complete frame.
+pub fn detect_tcp(payload: &[u8]) -> Detect {
+    if payload.len() < 2 {
+        return Detect::NeedMore;
+    }
+    let length = usize::from(u16::from_be_bytes([payload[0], payload[1]]));
+    if length < DNS_HEADER {
+        return Detect::Rejected;
+    }
+    let end = 2 + length;
+    let result = detect(&payload[2..payload.len().min(end)]);
+    match result {
+        Detect::Rejected | Detect::Malformed => result,
+        _ if payload.len() < end => Detect::NeedMore,
+        Detect::NeedMore => Detect::Malformed,
+        _ => result,
+    }
+}
+
 impl DnsMessage {
     pub fn into_detection(self) -> Detection {
         let mut d = Detection::new(

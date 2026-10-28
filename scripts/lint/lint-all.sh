@@ -200,6 +200,10 @@ echo "==> [vpn-catalog] 协议目录与逐项文档一致性"
 if ! "${PYTHON:-python3}" tools/codegen/gen-vpn-protocols.py --check; then
   failed=$((failed+1))
 fi
+if ! "${PYTHON:-python3}" tools/codegen/gen-protocol-adaptation.py --check --self-test; then
+  echo "✗ [protocol-adaptation] 适配清单或状态证据不一致" >&2
+  failed=$((failed+1))
+fi
 
 echo "==> [python-quality] Ruff / Black / strict mypy（含反向注入）"
 if ! bash scripts/verify/check-python-quality.sh; then

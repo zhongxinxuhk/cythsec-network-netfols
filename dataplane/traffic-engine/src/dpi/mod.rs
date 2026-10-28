@@ -58,14 +58,19 @@ const PORT_DOT: u16 = 853;
 /// 443 上优先试 TLS 而不是 DNS，不仅更快（DNS 头校验要读 12 字节），
 /// 也避免了把某个恰好前两字节非零的 TLS 报文误判成 DNS。
 fn order(proto: u8, dst_port: u16) -> [fn(&[u8]) -> Detect; 3] {
+    let dns: fn(&[u8]) -> Detect = if proto == IPPROTO_TCP {
+        dns::detect_tcp
+    } else {
+        dns::detect
+    };
     match (proto, dst_port) {
-        (IPPROTO_UDP, PORT_DNS) => [dns::detect, tls::detect, http::detect],
-        (IPPROTO_TCP, PORT_DOT) => [tls::detect, dns::detect, http::detect],
-        (IPPROTO_TCP, PORT_HTTPS) => [tls::detect, http::detect, dns::detect],
-        (IPPROTO_TCP, PORT_HTTP) => [http::detect, tls::detect, dns::detect],
+        (IPPROTO_UDP, PORT_DNS) | (IPPROTO_TCP, PORT_DNS) => [dns, tls::detect, http::detect],
+        (IPPROTO_TCP, PORT_DOT) => [tls::detect, dns, http::detect],
+        (IPPROTO_TCP, PORT_HTTPS) => [tls::detect, http::detect, dns],
+        (IPPROTO_TCP, PORT_HTTP) => [http::detect, tls::detect, dns],
         // 端口给不出线索（或端口漂移）：按"特征最强"的顺序试，TLS 的 `\x16\x03` 记录头
         // 几乎不可能与其他协议撞，放在最前面最省。
-        _ => [tls::detect, http::detect, dns::detect],
+        _ => [tls::detect, http::detect, dns],
     }
 }
 
@@ -140,12 +145,20 @@ mod framework_tests {
 
     #[test]
     fn port_hint_puts_dns_first_for_udp_53() {
-        // 同一段 DNS 载荷，UDP/53 与 TCP/80 走不同顺序，但结论必须一致
+        // DNS/TCP requires its length prefix even when the service uses another
+        // port. A UDP-format message alone must not become a TCP DNS hit.
         let p: &[u8] = &[
             0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1,
         ];
         assert_eq!(identify(p, IPPROTO_UDP, PORT_DNS).word(), "identified");
-        assert_eq!(identify(p, IPPROTO_TCP, PORT_HTTP).word(), "identified");
+        assert!(
+            !matches!(identify(p, IPPROTO_TCP, PORT_HTTP), Outcome::Identified(d) if d.app == AppId::Dns)
+        );
+        let mut framed = (p.len() as u16).to_be_bytes().to_vec();
+        framed.extend_from_slice(p);
+        assert!(
+            matches!(identify(&framed, IPPROTO_TCP, PORT_HTTP), Outcome::Identified(d) if d.app == AppId::Dns)
+        );
     }
 
     #[test]

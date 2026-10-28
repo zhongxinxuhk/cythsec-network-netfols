@@ -12,7 +12,7 @@
 use crate::testjson::{Json, JsonParser};
 
 use super::attributes;
-use super::{dns, http, tls, Detect, Outcome};
+use super::{dns, http, tls, AppId, Detect, Outcome};
 
 /// 期望值清单（与生成器、tshark 共用同一份文件）。
 const EXPECTED: &str = include_str!("../../../../datasets/dpi/expected.json");
@@ -402,6 +402,56 @@ fn framework_does_not_report_need_more_as_unknown() {
     let frag = payload("tls-truncated");
     let out = super::identify(frag, super::IPPROTO_TCP, 443);
     assert_eq!(out, Outcome::NeedMore);
+}
+
+#[test]
+fn dns_tcp_length_frames_keep_boundaries_and_transport_semantics() {
+    let query = payload("dns-query-a");
+    let frame = |body: &[u8]| {
+        let mut out = (body.len() as u16).to_be_bytes().to_vec();
+        out.extend_from_slice(body);
+        out
+    };
+    let complete = frame(query);
+    assert_eq!(
+        dns::detect_tcp(&complete).detection(),
+        dns::detect(query).detection()
+    );
+    for n in 0..complete.len() {
+        assert_eq!(
+            dns::detect_tcp(&complete[..n]),
+            Detect::NeedMore,
+            "prefix={n}"
+        );
+    }
+    let response = frame(payload("dns-response-compressed"));
+    assert_eq!(
+        dns::detect_tcp(&response).detection(),
+        dns::detect(payload("dns-response-compressed")).detection()
+    );
+    let mut joined = complete.clone();
+    joined.extend_from_slice(&response);
+    assert_eq!(dns::detect_tcp(&joined), dns::detect_tcp(&complete));
+    let mut broken = frame(&query[..query.len() - 1]);
+    broken.extend_from_slice(&complete);
+    assert_eq!(dns::detect_tcp(&broken), Detect::Malformed);
+    for len in [0u16, 1, 11] {
+        assert_eq!(dns::detect_tcp(&len.to_be_bytes()), Detect::Rejected);
+    }
+    let mut huge = vec![255, 255];
+    huge.extend_from_slice(query);
+    assert_eq!(dns::detect_tcp(&huge), Detect::NeedMore);
+    for port in [53, 5353, 40000] {
+        assert!(
+            matches!(super::identify(&complete,super::IPPROTO_TCP,port), Outcome::Identified(d) if d.app==AppId::Dns)
+        );
+    }
+    assert!(
+        !matches!(super::identify(query,super::IPPROTO_TCP,53), Outcome::Identified(d) if d.app==AppId::Dns)
+    );
+    assert!(
+        matches!(super::identify(query,super::IPPROTO_UDP,53), Outcome::Identified(d) if d.app==AppId::Dns)
+    );
 }
 
 #[test]

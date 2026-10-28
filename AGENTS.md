@@ -60,6 +60,14 @@ CYTHSEC_ALLOW_PUSH=1 git push …             # push：只有用户明确授权�
 3. 并入 `main` 前必须贴出两条门禁的**实际退出码**；没跑过就说没跑过。
 4. 门禁里出现「未核验 / SKIPPED」时如实转述，不许写成通过。
 
+## 协议适配状态记录（强制）
+
+新增或修改流量协议适配，必须同批更新 `configs/registry/protocol-adaptation.json` 中对应ID的
+支持范围、实现/测试/独立对照证据及未完成项，并运行 `python3 tools/codegen/gen-protocol-adaptation.py`
+更新 [协议适配清单](docs/protocols/ADAPTATION-STATUS.md)。不得只手改生成表的勾选。
+实现审查、本地测试、独立对照和完整适配分别记录；资料目录、候选承载、上下文接口或父协议命中
+不能当作完整适配。完整适配只在本行验收范围已完成且缺口清空后勾选。
+
 ## 前端开发标准（强制）
 
 前端控制台统一采用 **Ant Design Pro 官方工程体系**（Umi Max + React + TypeScript +

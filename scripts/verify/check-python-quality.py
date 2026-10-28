@@ -23,6 +23,8 @@ SUPPORT = (
     'scripts/verify/check-training-project.py',
     'scripts/verify/check-python-quality.py',
     'services/routerd/internal/networkcfg/netplan_projection.py',
+    'tools/codegen/gen-protocol-adaptation.py',
+    'scripts/verify/check-dns-tcp.py',
 )
 
 
