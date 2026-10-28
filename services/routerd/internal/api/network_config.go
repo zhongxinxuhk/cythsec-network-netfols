@@ -24,7 +24,7 @@ func registerNetworkConfig(mux *http.ServeMux, store *networkcfg.Store) {
 			state = store.Read()
 		}
 		w.Header().Set("ETag", `"`+strconv.FormatUint(state.Revision, 10)+`"`)
-		apiresp.JSON(w, r, 200, map[string]any{"snapshot": state, "capabilities": map[string]any{"platform": runtime.GOOS, "can_observe": true, "can_preflight": true, "can_preview": true, "can_save": canSave(r), "can_apply": false, "store_enabled": store != nil, "preview_backends": []string{"netplan", "networkmanager", "openwrt"}}})
+		apiresp.JSON(w, r, 200, map[string]any{"snapshot": state, "capabilities": map[string]any{"platform": runtime.GOOS, "can_observe": true, "can_preflight": true, "can_validate_native": true, "can_preview": true, "can_save": canSave(r), "can_apply": false, "store_enabled": store != nil, "preview_backends": []string{"netplan", "networkmanager", "openwrt"}}})
 	})
 	controlplane.Handle(mux, "POST /api/v1/network/configuration/preview", func(w http.ResponseWriter, r *http.Request) {
 		var c networkcfg.Config

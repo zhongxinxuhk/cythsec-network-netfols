@@ -1,6 +1,6 @@
 import { ProDescriptions, ProTable, type ProColumns } from '@ant-design/pro-components';
 import { Alert, Button, Collapse, Empty, Space, Tabs, Tag, Typography } from 'antd';
-import type { NetworkFieldDifference, NetworkCheckIssue, NetworkObservation, NetworkPreflight, ObservedNetworkInterface } from '@/api/network-config';
+import type { NetworkFieldDifference, NetworkCheckIssue, NetworkObservation, NetworkPreflight, ObservedNetworkInterface, NetworkNativeValidation } from '@/api/network-config';
 const managerNames: Record<string, string> = { networkmanager: 'NetworkManager', netplan: 'Netplan/networkd', networkd: 'systemd-networkd', openwrt: 'OpenWrt/netifd' };
 const managerStates: Record<string, string> = { active: '可读取', inactive: '未运行', partial: '读取不完整', unavailable: '不可读取', unsupported: '不适用' };
 const kinds: Record<string, string> = { physical_ethernet: '物理以太网', bridge: '桥接口', bond: 'Bond', vlan: 'VLAN', master_member: '组合接口成员', wireless: '无线', tunnel: '隧道', loopback: '回环', virtual_or_unknown: '虚拟/待核对', unknown: '未知' };
@@ -58,6 +58,26 @@ export function NetworkPreflightResult({ report }: { report: NetworkPreflight })
         { title: '说明', dataIndex: 'message' },
       ]} /> },
       { key: 'differences', label: '运行态差异', children: <ProTable<NetworkFieldDifference> headerTitle="运行值与静态草稿比较" rowKey={d => `${d.device}:${d.field}`} columns={differences} dataSource={report.differences} search={false} options={false} pagination={{ pageSize: 10, showSizeChanger: false }} scroll={{ x: 1200 }} /> },
+    ]} />
+  </div>;
+}
+
+export function NetworkNativeValidationResult({ report }: { report: NetworkNativeValidation }) {
+  const states = { passed: '通过', rejected: '配置被拒绝', unavailable: '未完成', unsupported: '不支持' };
+  return <div className="page-stack">
+    <Alert showIcon type={report.status === 'passed' ? 'success' : report.status === 'rejected' ? 'error' : 'warning'} title={`原生解析校验：${states[report.status]}`} />
+    <ProDescriptions column={{ xs: 1, md: 2 }} dataSource={{}} columns={[
+      { title: '目标管理器', render: () => managerNames[report.backend] },
+      { title: '平台', render: () => report.platform },
+      { title: '校验范围', render: () => report.scope === 'offline_profile' ? '离线连接配置解析' : '配置语法解析' },
+      { title: '工具版本', render: () => report.tool_version || '未提供' },
+      { title: '校验时间', render: () => new Date(report.checked_at).toLocaleString() },
+      { title: '配置摘要', render: () => <Typography.Text copyable style={{ wordBreak: 'break-all' }}>{report.draft_digest}</Typography.Text> },
+    ]} />
+    <ProTable<NetworkNativeValidation['checks'][number]> headerTitle="配置文件检查" rowKey="artifact" dataSource={report.checks} search={false} options={false} pagination={false} scroll={{ x: 720 }} columns={[
+      { title: '配置文件', dataIndex: 'artifact', width: 240 },
+      { title: '结果', dataIndex: 'state', width: 120, render: (_, c) => <Tag color={c.state === 'passed' ? 'success' : c.state === 'rejected' ? 'error' : 'warning'}>{states[c.state]}</Tag> },
+      { title: '说明', dataIndex: 'message' },
     ]} />
   </div>;
 }

@@ -36,7 +36,11 @@
 
 Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入进程锁、版本冲突、重启恢复、损坏拒绝、匿名/只读写入拒绝、CORS版本头与共享权限边界。
 前端测试覆盖只读预览、管理员草稿确认、412保留编辑、同源路径和If-Match。
-原生解析器验证、目标机接管、真实应用、断线回滚和CPU/发行版兼容性仍独立未核验。
+目标机原生命令验收、接管、真实应用、断线回滚和CPU/发行版兼容性仍独立未核验。
 
 
 新增GET `/api/v1/network/configuration/observation`与POST `/api/v1/network/configuration/preflight`为只读契约；观测繁忙返回429，草稿无效时不启动原生查询。管理器响应字段是tool_version，不冒充运行daemon版本。
+
+新增 POST `/api/v1/network/configuration/native-validation`，严格请求模型、固定非特权原生命令、
+逐文件解析结果与不可应用契约见[NC-02B1](../console-design/network-native-validation.md)。
+成功HTTP不代表校验通过，须检查status与checks；原生平台和工具不满足时明确unsupported/unavailable。

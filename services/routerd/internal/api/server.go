@@ -31,9 +31,10 @@ const ServiceName = "routerd"
 //
 // 所有字段均为可选：零值即使用默认行为，便于测试与最小化启动。
 type ServerOptions struct {
-	Access         *controlplane.Access
-	NetworkConfig  *networkcfg.Store
-	NetworkObserve func(context.Context) (networkcfg.Observation, error)
+	Access          *controlplane.Access
+	NetworkConfig   *networkcfg.Store
+	NetworkObserve  func(context.Context) (networkcfg.Observation, error)
+	NetworkValidate func(context.Context, networkcfg.Config) (networkcfg.NativeValidation, error)
 	// CORSAllowedOrigins 允许跨域的源列表；为空时使用默认 ["http://localhost:5173"]。
 	// 支持特殊值 "*" 表示允许任意源（仅建议开发/演示环境使用）。
 	CORSAllowedOrigins []string
@@ -58,14 +59,18 @@ func RegisterRoutes(mux *http.ServeMux) {
 }
 
 func RegisterRoutesWithNetworkConfig(mux *http.ServeMux, store *networkcfg.Store) {
-	registerRouterRoutes(mux, store, nil)
+	registerRouterRoutes(mux, store, nil, nil)
 }
 
-func registerRouterRoutes(mux *http.ServeMux, store *networkcfg.Store, observe func(context.Context) (networkcfg.Observation, error)) {
+func registerRouterRoutes(mux *http.ServeMux, store *networkcfg.Store, observe func(context.Context) (networkcfg.Observation, error), validate func(context.Context, networkcfg.Config) (networkcfg.NativeValidation, error)) {
 	if observe == nil {
 		observe = networkcfg.NewObserver().Capture
 	}
 	registerNetworkObservation(mux, observe)
+	if validate == nil {
+		validate = networkcfg.NewNativeValidator().Validate
+	}
+	registerNetworkValidation(mux, validate)
 	registerNetworkConfig(mux, store)
 	// v1 控制面 API（供 Web Console 对接）
 	controlplane.Handle(mux, "GET /api/v1/system", handleSystem)
@@ -85,7 +90,9 @@ func NewServer(opts ServerOptions) http.Handler {
 		Registry:              opts.Registry,
 		RuntimeMetricsRefresh: opts.RuntimeMetricsRefresh,
 		DisableMetrics:        opts.DisableMetrics,
-	}, func(mux *http.ServeMux) { registerRouterRoutes(mux, opts.NetworkConfig, opts.NetworkObserve) })
+	}, func(mux *http.ServeMux) {
+		registerRouterRoutes(mux, opts.NetworkConfig, opts.NetworkObserve, opts.NetworkValidate)
+	})
 }
 
 // handleSystem 处理 GET /api/v1/system，返回主机基础信息

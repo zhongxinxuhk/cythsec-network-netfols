@@ -159,6 +159,10 @@ func TestNetworkConfigurationAccessIsNarrow(t *testing.T) {
 		}{
 			{"routerd", "POST", "/api/v1/network/configuration/preview", true},
 			{"routerd", "POST", "/api/v1/network/configuration/preflight", true},
+			{"routerd", "POST", "/api/v1/network/configuration/native-validation", true},
+			{"telemetryd", "POST", "/api/v1/network/configuration/native-validation", false},
+			{"routerd", "PUT", "/api/v1/network/configuration/native-validation", false},
+			{"routerd", "POST", "/api/v1/network/configuration/native-validation/execute", false},
 			{"telemetryd", "POST", "/api/v1/network/configuration/preflight", false},
 			{"routerd", "PUT", "/api/v1/network/configuration", role == "admin"},
 			{"routerd", "DELETE", "/api/v1/network/configuration", false},

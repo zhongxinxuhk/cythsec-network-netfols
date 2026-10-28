@@ -372,10 +372,19 @@ func (b *limitedProbeBuffer) Write(p []byte) (int, error) {
 	return b.buffer.Write(p)
 }
 func captureReadCommand(ctx context.Context, path string, args []string) ([]byte, error) {
+	return captureProbeCommand(ctx, path, args, "", "")
+}
+
+func captureProbeCommand(ctx context.Context, path string, args []string, input, dir string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "LANG=C", "SYSTEMD_PAGER=cat", "SYSTEMD_COLORS=0"}
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Dir = dir
+	if dir != "" {
+		cmd.Env = append(cmd.Env, "HOME="+dir, "TMPDIR="+dir)
+	}
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = 100 * time.Millisecond
 	output := &limitedProbeBuffer{limit: 1024 * 1024}

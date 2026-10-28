@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/http';
 import { networkConfig, type NetworkState, type NetworkObservation, type NetworkPreflight } from '@/api/network-config';
-vi.mock('@/api/network-config', () => ({ networkConfig: { read: vi.fn(), preview: vi.fn(), save: vi.fn(), observe: vi.fn(), preflight: vi.fn() } }));
+vi.mock('@/api/network-config', () => ({ networkConfig: { read: vi.fn(), preview: vi.fn(), save: vi.fn(), observe: vi.fn(), preflight: vi.fn(), validateNative: vi.fn() } }));
 vi.mock('@/api/client', () => ({ api: { interfaces: vi.fn(async () => []) } }));
 import NetworkConfigurationPage from './NetworkConfigurationPage';
 const state: NetworkState = { snapshot: { revision: 3, updated_at: null, stage: 'draft_saved', config: { backend: 'netplan', interfaces: [{ id: 'lan', device: 'eth0', mtu: 1500, addresses: ['192.0.2.10/24'], dns: ['192.0.2.53'], search: [], routes: [] }] } }, capabilities: { platform: 'linux', can_preview: true, can_observe: true, can_preflight: true, can_save: false, can_apply: false, store_enabled: true, preview_backends: ['netplan', 'networkmanager', 'openwrt'] } };
@@ -10,7 +10,7 @@ afterEach(() => { cleanup(); vi.resetAllMocks(); });
 it('预览使用真实表单值，只读身份不能保存，也不显示未实现的应用动作', async () => {
   vi.mocked(networkConfig.read).mockResolvedValue(state);
   vi.mocked(networkConfig.preview).mockResolvedValue({ digest: 'a'.repeat(64), stage: 'validated_preview', artifacts: [{ name: '90-cythsec.yaml', content: '{"network":{}}' }] });
-  render(<NetworkConfigurationPage />);
+  await act(async () => { render(<NetworkConfigurationPage />); });
   await screen.findByDisplayValue('eth0');
   expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled();
   fireEvent.click(screen.getByRole('button', { name: '校验并预览' }));
@@ -24,7 +24,7 @@ it('预览使用真实表单值，只读身份不能保存，也不显示未实�
 it('管理员保存版本与冲突分别反馈，冲突保留编辑内容并阻止覆盖', async () => {
   vi.mocked(networkConfig.read).mockResolvedValue({ ...state, capabilities: { ...state.capabilities, can_save: true } });
   vi.mocked(networkConfig.save).mockResolvedValueOnce({ ...state.snapshot, revision: 4 }).mockRejectedValue(new ApiError('conflict', 412));
-  render(<NetworkConfigurationPage />);
+  await act(async () => { render(<NetworkConfigurationPage />); });
   await screen.findByDisplayValue('eth0');
   fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
   await screen.findByText('草稿已保存 · 版本 4');
@@ -44,20 +44,20 @@ it('应用前检查绑定当前草稿，未知DNS不变为空集合或可应用�
   const report: NetworkPreflight = { draft_digest: 'a'.repeat(64), observation: observed, status: 'review_required', can_apply: false, issues: [{ severity: 'review', device: '', code: 'native_validation_pending', message: '原生配置校验与事务应用尚未发布' }], differences: [{ device: 'eth0', field: 'dns', current: null, desired: ['192.0.2.53'], state: 'unknown', source: 'unavailable' }] };
   vi.mocked(networkConfig.read).mockResolvedValue({ ...state, capabilities: { ...state.capabilities, can_preflight: true } });
   vi.mocked(networkConfig.preflight).mockResolvedValue(report);
-  render(<NetworkConfigurationPage />);
+  await act(async () => { render(<NetworkConfigurationPage />); });
   await screen.findByDisplayValue('eth0');
   fireEvent.click(screen.getByRole('button', { name: '应用前检查' }));
   const dialog = await screen.findByRole('dialog', { name: '应用前检查' });
   expect(networkConfig.preflight).toHaveBeenCalledWith(state.snapshot.config);
   fireEvent.click(within(dialog).getByRole('tab', { name: '运行态差异' }));
-  const row = within(dialog).getByRole('row', { name: /链路DNS/ });
+  const row = within(dialog).getByText('链路DNS', { exact: true }).closest('tr');
   expect(row).toHaveTextContent('未取得'); expect(row).toHaveTextContent('未知'); expect(row).not.toHaveTextContent('空集合');
   expect(screen.queryByRole('button', { name: '应用配置' })).not.toBeInTheDocument();
 }, 15000);
 it('环境刷新失败清除旧接口快照，不显示零接口成功', async () => {
   vi.mocked(networkConfig.read).mockResolvedValue(state);
   vi.mocked(networkConfig.observe).mockResolvedValueOnce(observed).mockRejectedValue(new Error('读取超时'));
-  render(<NetworkConfigurationPage />);
+  await act(async () => { render(<NetworkConfigurationPage />); });
   await screen.findByDisplayValue('eth0');
   fireEvent.click(screen.getByText('网络环境与接口归属', { exact: true }));
   fireEvent.click(screen.getByRole('button', { name: '读取环境' }));
@@ -66,4 +66,20 @@ it('环境刷新失败清除旧接口快照，不显示零接口成功', async (
   await screen.findByText('读取超时');
   expect(screen.queryByText('接口快照 · 1 项')).not.toBeInTheDocument();
   expect(screen.queryByText('接口快照 · 0 项')).not.toBeInTheDocument();
+}, 15000);
+
+it('原生工具不可用保持未完成，编辑后移除旧报告', async () => {
+  vi.mocked(networkConfig.read).mockResolvedValue({ ...state, capabilities: { ...state.capabilities, can_validate_native: true } });
+  vi.mocked(networkConfig.validateNative).mockResolvedValue({ draft_digest: 'a'.repeat(64), backend: 'netplan', platform: 'darwin', checked_at: '2026-10-27T01:00:00Z', status: 'unsupported', scope: 'parser', tool_version: '', can_apply: false, checks: [{ artifact: '90-cythsec.yaml', state: 'unsupported', code: 'unsupported_platform', message: '当前平台不支持目标原生工具' }] });
+  await act(async () => { render(<NetworkConfigurationPage />); });
+  expect(screen.getByDisplayValue('eth0')).toBeInTheDocument();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '原生工具校验' })); });
+  const dialog = screen.getByRole('dialog', { name: '原生工具校验' });
+  expect(networkConfig.validateNative).toHaveBeenCalledWith(state.snapshot.config);
+  expect(within(dialog).getByText('原生解析校验：不支持')).toBeInTheDocument();
+  expect(within(dialog).queryByText('原生解析校验：通过')).not.toBeInTheDocument();
+  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: '关闭' })); });
+  await act(async () => { fireEvent.change(screen.getByDisplayValue('eth0'), { target: { value: 'eth1' } }); });
+  expect(screen.queryByRole('dialog', { name: '原生工具校验' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '应用配置' })).not.toBeInTheDocument();
 }, 15000);

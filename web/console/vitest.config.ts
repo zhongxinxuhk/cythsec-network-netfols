@@ -19,6 +19,10 @@ export default defineConfig({
     ],
   },
   test: {
+    // DOM-heavy Pro pages run serially to avoid timer starvation on shared hosts.
+    maxWorkers: 1,
+    // Real Pro component flows use a UI integration budget; request deadlines stay explicit.
+    testTimeout: 15000,
     // 组件测试需要 DOM 环境。
     environment: 'jsdom',
     // 不开启 globals：测试文件显式 import { describe, it, expect }，类型更清晰、无需额外的 tsconfig types 配置。

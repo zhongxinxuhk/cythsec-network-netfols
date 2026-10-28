@@ -4,8 +4,8 @@ import { Alert, AutoComplete, Button, Col, Drawer, Empty, Form, Input, InputNumb
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '@/api/client';
 import { ApiError } from '@/api/http';
-import { networkConfig, type NetworkDraft, type NetworkPreview, type NetworkObservation, type NetworkPreflight } from '@/api/network-config';
-import { NetworkEnvironmentPanel, NetworkPreflightResult } from '@/components/NetworkObservation';
+import { networkConfig, type NetworkDraft, type NetworkPreview, type NetworkObservation, type NetworkPreflight, type NetworkNativeValidation } from '@/api/network-config';
+import { NetworkEnvironmentPanel, NetworkPreflightResult, NetworkNativeValidationResult } from '@/components/NetworkObservation';
 import { useApi } from '@/hooks/useApi';
 
 const managers = [
@@ -26,14 +26,16 @@ export default function NetworkConfigurationPage() {
   const [environment, setEnvironment] = useState<NetworkObservation | null>(null);
   const [environmentError, setEnvironmentError] = useState('');
   const [report, setReport] = useState<NetworkPreflight | null>(null);
+  const [nativeValidation, setNativeValidation] = useState<NetworkNativeValidation | null>(null);
   const generation = useRef(0);
   useEffect(() => {
-    if (state.data) { form.setFieldsValue(state.data.snapshot.config); setRevision(state.data.snapshot.revision); setConflict(false); setError(''); setNotice(''); setPreview(null); setReport(null); generation.current++; }
+    if (state.data) { form.setFieldsValue(state.data.snapshot.config); setRevision(state.data.snapshot.revision); setConflict(false); setError(''); setNotice(''); setPreview(null); setReport(null); setNativeValidation(null); generation.current++; }
   }, [state.data, form]);
-  async function submit(mode: 'save' | 'preview' | 'preflight') {
+  async function submit(mode: 'save' | 'preview' | 'preflight' | 'native') {
     let draft: NetworkDraft;
     try { draft = await form.validateFields(); } catch { return; }
     setBusy(true); setError(''); setNotice('');
+    if (mode === 'native') setNativeValidation(null);
     const epoch = generation.current;
     try {
       if (mode === 'save') {
@@ -42,6 +44,9 @@ export default function NetworkConfigurationPage() {
       } else if (mode === 'preflight') {
         const result = await networkConfig.preflight(draft);
         if (epoch === generation.current) { setReport(result); setEnvironment(result.observation); setEnvironmentError(''); }
+      } else if (mode === 'native') {
+        const result = await networkConfig.validateNative(draft);
+        if (epoch === generation.current) setNativeValidation(result);
       } else {
         const result = await networkConfig.preview(draft);
         if (epoch === generation.current) setPreview(result);
@@ -73,7 +78,7 @@ export default function NetworkConfigurationPage() {
       { title: '保存权限', render: () => state.data?.capabilities.can_save ? '管理员' : '当前连接不可保存' },
     ]} /></ProCard>}
     {state.data?.capabilities.can_observe && <NetworkEnvironmentPanel observation={environment} error={environmentError} loading={busy} onRefresh={() => void readEnvironment()} />}
-    {state.data && <Form className="page-stack" form={form} layout="vertical" disabled={busy || !ready} onValuesChange={() => { generation.current++; setPreview(null); setReport(null); setNotice(''); }}>
+    {state.data && <Form className="page-stack" form={form} layout="vertical" disabled={busy || !ready} onValuesChange={() => { generation.current++; setPreview(null); setReport(null); setNativeValidation(null); setNotice(''); }}>
       <ProCard title="目标管理器" variant="outlined">
         <Form.Item name="backend" label="网络管理器" rules={[{ required: true }]}><Select options={managers} /></Form.Item>
       </ProCard>
@@ -108,11 +113,13 @@ export default function NetworkConfigurationPage() {
             <Button icon={<PlusOutlined />} disabled={!ready || busy || fields.length >= 32} onClick={() => add({ id: `lan${fields.length + 1}`, device: '', mtu: 1500, addresses: [], dns: [], search: [], routes: [] })}>添加接口配置</Button>
             <Button type="primary" loading={busy} disabled={!ready || !state.data?.capabilities.can_preview} onClick={() => void submit('preview')}>校验并预览</Button>
             {state.data?.capabilities.can_preflight && <Button loading={busy} disabled={!ready} onClick={() => void submit('preflight')}>应用前检查</Button>}
+            {state.data?.capabilities.can_validate_native && <Button loading={busy} disabled={!ready} onClick={() => void submit('native')}>原生工具校验</Button>}
             <Tooltip title={state.data?.capabilities.can_save ? '' : '需要管理员认证并启用配置存储'}><Button disabled={!ready || !state.data?.capabilities.can_save || conflict || busy} onClick={() => void submit('save')}>保存草稿</Button></Tooltip>
           </Space>
         </div>}
       </Form.List>
     </Form>}
+    <Drawer title="原生工具校验" size="min(860px, 100vw)" open={Boolean(nativeValidation)} onClose={() => setNativeValidation(null)} destroyOnHidden>{nativeValidation && <NetworkNativeValidationResult report={nativeValidation} />}</Drawer>
     <Drawer title="应用前检查" size="min(960px, 100vw)" open={Boolean(report)} onClose={() => setReport(null)} destroyOnHidden>{report && <NetworkPreflightResult report={report} />}</Drawer>
     <Drawer title="原生配置预览" size="min(760px, 100vw)" open={Boolean(preview)} onClose={() => setPreview(null)} destroyOnHidden>
       {preview && <Space orientation="vertical" size="large" style={{ width: '100%' }}>

@@ -13,4 +13,7 @@
 
 验证证据保留在本机 `build/typescript-interop/`：两套 `tsc --noEmit`、关闭互操作选项的
 Node 配置回归检查、CLion 文件诊断、完整 lint、默认完整测试与生产构建。
-本记录的门禁结果在验证结束后补齐。
+TS主项目、Node项目、关闭互操作选项的Node检查均退出0；CLion文件诊断无错误。
+首轮完整lint退出0、默认测试退出1、生产构建退出0；前端用例出现多项超时，未据此合入main。
+后续原生校验功能与测试资源调整的最终验证单列于
+[NC-02B1验证记录](../console-design/network-native-validation-verification.md)。

@@ -3,7 +3,7 @@ export interface StaticRoute { destination: string; gateway: string; metric: num
 export interface NetworkInterfaceDraft { id: string; device: string; mtu: number; addresses: string[]; dns: string[]; search: string[]; routes: StaticRoute[] }
 export interface NetworkDraft { backend: 'netplan' | 'networkmanager' | 'openwrt'; interfaces: NetworkInterfaceDraft[] }
 export interface NetworkSnapshot { revision: number; stage: 'unconfigured' | 'draft_saved'; updated_at: string | null; config: NetworkDraft }
-export interface NetworkState { snapshot: NetworkSnapshot; capabilities: { platform: string; can_preview: boolean; can_observe?: boolean; can_preflight?: boolean; can_save: boolean; can_apply: boolean; store_enabled: boolean; preview_backends: string[] } }
+export interface NetworkState { snapshot: NetworkSnapshot; capabilities: { platform: string; can_preview: boolean; can_observe?: boolean; can_preflight?: boolean; can_validate_native?: boolean; can_save: boolean; can_apply: boolean; store_enabled: boolean; preview_backends: string[] } }
 export interface NetworkPreview { digest: string; stage: 'validated_preview'; artifacts: { name: string; content: string }[] }
 async function request<T>(method: string, suffix: string, body?: NetworkDraft, revision?: number): Promise<T> {
   const headers = new Headers();
@@ -28,6 +28,12 @@ export const networkConfig = {
     if (!['blocked', 'review_required'].includes(value.status) || value.can_apply !== false || !Array.isArray(value.issues) || !Array.isArray(value.differences) || value.differences.some(d => !['same', 'different', 'unknown'].includes(d.state) || (d.state === 'unknown' && d.current !== null))) throw new ApiError('应用前检查响应无效');
     return value;
   },
+  validateNative: async (draft: NetworkDraft) => {
+    const value = await request<NetworkNativeValidation>('POST', '/native-validation', draft);
+    const names = draft.backend === 'networkmanager' ? draft.interfaces.map(p => `cythsec-${p.id}.nmconnection`) : [draft.backend === 'netplan' ? '90-cythsec.yaml' : 'network.cythsec.uci'];
+    if (!value || value.backend !== draft.backend || typeof value.platform !== 'string' || !value.platform || typeof value.tool_version !== 'string' || !/^[a-f0-9]{64}$/.test(value.draft_digest) || value.can_apply !== false || !Number.isFinite(Date.parse(value.checked_at)) || !['parser', 'offline_profile'].includes(value.scope) || !['passed', 'rejected', 'unavailable', 'unsupported'].includes(value.status) || !Array.isArray(value.checks) || value.checks.length !== names.length || value.checks.some((c, i) => !c || c.artifact !== names[i] || !['passed', 'rejected', 'unavailable', 'unsupported'].includes(c.state) || typeof c.message !== 'string' || !c.message || typeof c.code !== 'string') || (value.status === 'passed' && value.checks.some(c => c.state !== 'passed')) || (value.status !== 'passed' && value.checks.every(c => c.state === 'passed'))) throw new ApiError('原生配置校验响应无效');
+    return value;
+  },
   preview: (draft: NetworkDraft) => request<NetworkPreview>('POST', '/preview', draft),
   save: (draft: NetworkDraft, revision: number) => request<NetworkSnapshot>('PUT', '', draft, revision),
 };
@@ -49,4 +55,10 @@ export interface NetworkPreflight { draft_digest: string; observation: NetworkOb
 
 function validateObservation(value: NetworkObservation) {
   if (!value || !/^[a-f0-9]{64}$/.test(value.id) || !['partial', 'observed'].includes(value.status) || typeof value.inventory_available !== 'boolean' || !Array.isArray(value.interfaces) || !Array.isArray(value.managers) || !Number.isFinite(Date.parse(value.observed_at)) || value.interfaces.some(p => !p.known || !p.sources || !Array.isArray(p.owners))) throw new ApiError('网络环境响应无效');
+}
+
+export interface NetworkNativeValidation {
+  draft_digest: string; backend: NetworkDraft['backend']; platform: string; checked_at: string;
+  status: 'passed' | 'rejected' | 'unavailable' | 'unsupported'; scope: 'parser' | 'offline_profile'; tool_version: string; can_apply: false;
+  checks: { artifact: string; state: NetworkNativeValidation['status']; code: string; message: string }[];
 }
