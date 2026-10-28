@@ -62,3 +62,7 @@ Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入�
 
 来源快照增加可选 `profiles[].routing_comparison`，见[NC-02B3B3](../console-design/network-route-evidence.md)。
 路由查询独立失败，保留基础字段结果；只比较目标/下一跳/Metric声明及重复数量，不代表内核路由或策略等价。
+
+Netplan来源快照增加可选 `netplan_source_index` 与 `profiles[].field_origins`，见
+[NC-02B3B4A](../console-design/netplan-source-provenance.md)。仅输出字段路径与当前来源ID；不返回来源字段值或原始YAML，
+字段索引不能将profile级origin_verified改成true，也不增加接管/应用许可。

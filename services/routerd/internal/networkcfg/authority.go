@@ -211,6 +211,9 @@ func assessAuthority(r PersistentInspection) *AuthorityReport {
 	if len(r.Profiles) == 0 {
 		add("", "", "blocker", "profile_inventory_unavailable", "未取得可核对的接口配置声明")
 	}
+	if r.Backend == "netplan" && (r.NetplanIndex == nil || r.NetplanIndex.State != "indexed") {
+		add("", "", "blocker", "netplan_sources_untraced", "Netplan字段声明来源尚未完成核对")
+	}
 	for _, s := range r.Sources {
 		if s.State != "read" {
 			add(s.ID, "", "blocker", "source_not_read", "源文件未完整读取或格式未兼容")
@@ -239,6 +242,14 @@ func assessAuthority(r PersistentInspection) *AuthorityReport {
 		}
 		if !profile.OriginVerified {
 			add(sourceID, profile.Reference, "blocker", "field_origin_unverified", "合并字段尚未归因到明确源文件")
+		}
+		if profile.FieldOrigins != nil {
+			for _, field := range profile.FieldOrigins.Fields {
+				if field.State != "traced" {
+					add(sourceID, profile.Reference, "blocker", "netplan_projection_unreconciled", "Netplan字段声明未能与原生合并投影对齐")
+					break
+				}
+			}
 		}
 		if profile.Binding != "declared" {
 			add(sourceID, profile.Reference, "blocker", "device_binding_unresolved", "设备匹配或重命名规则尚未解析")

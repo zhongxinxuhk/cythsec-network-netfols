@@ -128,13 +128,17 @@ func TestPersistentNetplanCopiesAllLayersAndKeepsOriginUnverified(t *testing.T) 
 			}
 			return []byte("netplan YAML"), nil
 		}
+		if reflect.DeepEqual(args, []string{"-I", "-c", netplanProjection, "--source-trace", workspace}) {
+			// Source trace is an independent extension; failure must preserve merged profiles.
+			return nil, os.ErrPermission
+		}
 		if filepath.Base(path) != "python3" || len(args) != 3 || args[0] != "-I" || args[1] != "-c" || args[2] != netplanProjection || input != "netplan YAML" {
 			t.Fatal("unregistered projection command")
 		}
 		return []byte(`{"eth0":{"addresses":["192.0.2.10/24"],"dhcp4":false,"nameservers":{"addresses":[]},"routes":[{"to":"default","via":"192.0.2.1"}]},"uplink":{"match_supported":false}}`), nil
 	}
 	r, err := p.Inspect(context.Background(), "netplan")
-	if err != nil || calls != 2 || r.Status != "observed" || len(r.Profiles) != 2 || len(r.Sources) != 3 {
+	if err != nil || calls != 3 || r.Status != "observed" || len(r.Profiles) != 2 || len(r.Sources) != 3 || r.NetplanIndex == nil || r.NetplanIndex.State != "unavailable" {
 		t.Fatal(r, err)
 	}
 	if r.Profiles[0].OriginVerified || len(r.Profiles[0].SourceIDs) != 3 || r.Profiles[0].Routes[0].Metric != nil || r.Profiles[1].Binding != "unresolved" || r.Profiles[0].DNS == nil {

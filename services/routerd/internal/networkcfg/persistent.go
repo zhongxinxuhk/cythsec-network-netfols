@@ -37,37 +37,39 @@ type ConfigSource struct {
 	Safety     *SourceSafety `json:"safety,omitempty"`
 }
 type PersistentProfile struct {
-	Reference      string             `json:"reference"`
-	Device         string             `json:"device"`
-	Binding        string             `json:"binding"`
-	Methods        map[string]string  `json:"methods"`
-	MTU            *int               `json:"mtu"`
-	Addresses      []string           `json:"addresses"`
-	DNS            []string           `json:"dns"`
-	Search         []string           `json:"search"`
-	Routes         []ConfiguredRoute  `json:"routes"`
-	FieldStates    map[string]string  `json:"field_states"`
-	SourceIDs      []string           `json:"source_ids"`
-	OriginVerified bool               `json:"origin_verified"`
-	LoadReference  string             `json:"load_reference,omitempty"`
-	Association    *DeviceAssociation `json:"device_association,omitempty"`
-	Loaded         *LoadedComparison  `json:"loaded_comparison,omitempty"`
-	Routing        *RoutingComparison `json:"routing_comparison,omitempty"`
+	Reference      string                `json:"reference"`
+	Device         string                `json:"device"`
+	Binding        string                `json:"binding"`
+	Methods        map[string]string     `json:"methods"`
+	MTU            *int                  `json:"mtu"`
+	Addresses      []string              `json:"addresses"`
+	DNS            []string              `json:"dns"`
+	Search         []string              `json:"search"`
+	Routes         []ConfiguredRoute     `json:"routes"`
+	FieldStates    map[string]string     `json:"field_states"`
+	SourceIDs      []string              `json:"source_ids"`
+	OriginVerified bool                  `json:"origin_verified"`
+	LoadReference  string                `json:"load_reference,omitempty"`
+	Association    *DeviceAssociation    `json:"device_association,omitempty"`
+	Loaded         *LoadedComparison     `json:"loaded_comparison,omitempty"`
+	Routing        *RoutingComparison    `json:"routing_comparison,omitempty"`
+	FieldOrigins   *NetplanProfileOrigin `json:"field_origins,omitempty"`
 }
 type PersistentInspection struct {
-	ID         string              `json:"id"`
-	Backend    string              `json:"backend"`
-	Platform   string              `json:"platform"`
-	Scope      string              `json:"scope"`
-	ObservedAt time.Time           `json:"observed_at"`
-	Status     string              `json:"status"`
-	CanApply   bool                `json:"can_apply"`
-	Sources    []ConfigSource      `json:"sources"`
-	Profiles   []PersistentProfile `json:"profiles"`
-	Warnings   []string            `json:"warnings"`
-	Manager    *ManagerReferences  `json:"manager,omitempty"`
-	Authority  *AuthorityReport    `json:"authority,omitempty"`
-	Devices    *DeviceEvidence     `json:"device_evidence,omitempty"`
+	ID           string              `json:"id"`
+	Backend      string              `json:"backend"`
+	Platform     string              `json:"platform"`
+	Scope        string              `json:"scope"`
+	ObservedAt   time.Time           `json:"observed_at"`
+	Status       string              `json:"status"`
+	CanApply     bool                `json:"can_apply"`
+	Sources      []ConfigSource      `json:"sources"`
+	Profiles     []PersistentProfile `json:"profiles"`
+	Warnings     []string            `json:"warnings"`
+	Manager      *ManagerReferences  `json:"manager,omitempty"`
+	Authority    *AuthorityReport    `json:"authority,omitempty"`
+	Devices      *DeviceEvidence     `json:"device_evidence,omitempty"`
+	NetplanIndex *NetplanSourceIndex `json:"netplan_source_index,omitempty"`
 }
 type sourceFile struct {
 	meta    ConfigSource
@@ -208,6 +210,9 @@ func (p *PersistentReader) Inspect(ctx context.Context, backend string) (Persist
 		}
 		if err == nil {
 			r.Profiles, err = parseNetplanProjection(raw, r.Sources)
+		}
+		if err == nil {
+			p.traceNetplanSources(ctx, dir, raw, &r)
 		}
 	} else {
 		file := filepath.Join(dir, "network")
