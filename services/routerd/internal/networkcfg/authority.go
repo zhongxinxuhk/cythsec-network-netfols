@@ -94,12 +94,15 @@ func stableSource(before, after, current os.FileInfo) bool {
 func (p *PersistentReader) correlateManager(ctx context.Context, r *PersistentInspection) {
 	e := &ManagerReferences{State: "not_checked", Scope: "visible_profile_references", ObservedAt: time.Now().UTC(), Diagnostic: "backend_not_supported"}
 	r.Manager = e
+	r.Devices = &DeviceEvidence{State: "not_checked", Scope: "visible_nm_device_associations", ObservedAt: time.Now().UTC(), Diagnostic: "backend_not_supported"}
 	for i := range r.Profiles {
 		r.Profiles[i].LoadReference = "unknown"
+		r.Profiles[i].Association = &DeviceAssociation{State: "unknown"}
 	}
 	if p.platform != "linux" {
 		e.State = "unsupported"
 		e.Diagnostic = "unsupported_platform"
+		r.Devices.State, r.Devices.Diagnostic = "unsupported", "unsupported_platform"
 		return
 	}
 	if r.Backend != "networkmanager" {
@@ -107,15 +110,18 @@ func (p *PersistentReader) correlateManager(ctx context.Context, r *PersistentIn
 	}
 	e.State = "unavailable"
 	e.Diagnostic = "service_state_unavailable"
+	r.Devices.State, r.Devices.Diagnostic = "unavailable", "service_state_unavailable"
 	state, err := p.execute(ctx, "systemctl", []string{"--no-pager", "is-active", "NetworkManager"}, "", "")
 	if strings.TrimSpace(string(state)) == "inactive" {
 		e.State = "inactive"
 		e.Diagnostic = "service_inactive"
+		r.Devices.State, r.Devices.Diagnostic = "inactive", "service_inactive"
 		return
 	}
 	if err != nil || strings.TrimSpace(string(state)) != "active" {
 		return
 	}
+	p.correlateNMDevices(ctx, r)
 	e.Diagnostic = "profile_references_unavailable"
 	raw, err := p.execute(ctx, "nmcli", []string{"-t", "-f", "UUID,FILENAME", "connection", "show"}, "", "")
 	if err != nil {
@@ -249,6 +255,13 @@ func assessAuthority(r PersistentInspection) *AuthorityReport {
 				severity = "blocker"
 			}
 			add(sourceID, profile.Reference, severity, "loaded_reference_"+profile.LoadReference, "管理器加载引用尚未匹配当前源文件")
+		}
+		if profile.Association == nil || profile.Association.State != "active" {
+			state := "unknown"
+			if profile.Association != nil {
+				state = profile.Association.State
+			}
+			add(sourceID, profile.Reference, "blocker", "device_association_"+state, "设备受管状态与当前配置的激活关联尚未核对通过")
 		}
 	}
 	return a

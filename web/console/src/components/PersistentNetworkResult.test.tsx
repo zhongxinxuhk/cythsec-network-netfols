@@ -39,3 +39,25 @@ it('引用匹配不冒充内容同步，接管检查始终不可执行', async (
   expect(within(panel).getByText('尚未核验内容同步与激活状态')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '确认接管' })).not.toBeInTheDocument();
 });
+
+it('设备关联区分激活、配置冲突、未知与未受管，旧后端不回填否', async () => {
+  const source = { id: 'b'.repeat(64), path: '/etc/NetworkManager/system-connections/lan.nmconnection', storage: 'persistent' as const, version_tag: 'c'.repeat(64), bytes: 60, state: 'read' as const };
+  const profile: PersistentNetworkInspection['profiles'][number] = { reference: 'nm:12345678-1234-1234-1234-123456789abc', device: 'eth0', binding: 'declared', methods: {}, mtu: null, addresses: null, dns: null, search: null, routes: null, field_states: { mtu: 'unset', addresses: 'unset', dns: 'unset', search: 'unset', routes: 'unset' }, source_ids: [source.id], origin_verified: true };
+  const report: PersistentNetworkInspection = { id: 'a'.repeat(64), backend: 'networkmanager', platform: 'linux', scope: 'keyfile_profiles', observed_at: '2026-10-29T01:00:00Z', status: 'partial', can_apply: false, sources: [source], warnings: [], profiles: [
+    { ...profile, device_association: { state: 'active', device_state: 100, managed: true, active_profile_matches: true } },
+    { ...profile, reference: 'nm:other', device_association: { state: 'conflicting', device_state: 100, managed: true, active_profile_matches: false } },
+    { ...profile, reference: 'nm:unmanaged', device_association: { state: 'unmanaged', device_state: 10, managed: false, active_profile_matches: null } },
+    { ...profile, reference: 'nm:old' },
+  ], device_evidence: { state: 'observed', scope: 'visible_nm_device_associations', observed_at: '2026-10-29T01:00:00Z', diagnostic: '' } };
+  await act(async () => { render(<PersistentNetworkResult report={report} />); });
+  await act(async () => { fireEvent.click(screen.getByRole('tab', { name: '设备关联' })); });
+  const panel = screen.getByRole('tabpanel', { name: '设备关联' });
+  expect(within(panel).getByText('当前配置已激活')).toBeInTheDocument();
+  expect(within(panel).getByText('设备正在使用其他配置')).toBeInTheDocument();
+  expect(within(panel).getByText('NM 未管理')).toBeInTheDocument();
+  const old = within(panel).getByText('nm:old').closest('tr');
+  expect(old).not.toHaveTextContent('否');
+  expect(old).not.toHaveTextContent('未激活');
+  expect(within(old as HTMLElement).getAllByText('未知')).toHaveLength(4);
+  expect(screen.queryByRole('button', { name: /应用|接管/ })).not.toBeInTheDocument();
+});

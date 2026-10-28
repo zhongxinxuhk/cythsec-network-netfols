@@ -61,3 +61,32 @@ it('拒绝权限未知伪装和接管许可，兼容未提供接管报告的旧�
     { sources: [{ id: 'b'.repeat(64), path: '/etc/netplan/a.yaml', storage: 'persistent', bytes: 10, state: 'read', version_tag: 'c'.repeat(64), safety: { uid: -1, gid: 0, mode: '0600', stable: true, status: 'meets_baseline', codes: [] } }] },
   ]) { respond(patch); await expect(networkConfig.inspectPersistent('netplan')).rejects.toThrow('持久配置来源响应无效'); }
 });
+
+it('设备关联必须包含明确的受管状态、状态码和UUID匹配证据', async () => {
+  const source = { id: 'b'.repeat(64), path: '/etc/NetworkManager/system-connections/lan.nmconnection', storage: 'persistent', version_tag: 'c'.repeat(64), bytes: 60, state: 'read' };
+  const active = { state: 'active', device_state: 100, managed: true, active_profile_matches: true };
+  const profile = { reference: 'nm:12345678-1234-1234-1234-123456789abc', device: 'eth0', binding: 'declared', methods: {}, mtu: null, addresses: null, dns: null, search: null, routes: null, field_states: { mtu: 'unset', addresses: 'unset', dns: 'unset', search: 'unset', routes: 'unset' }, source_ids: [source.id], origin_verified: true, device_association: active };
+  const evidence = { state: 'observed', scope: 'visible_nm_device_associations', observed_at: '2026-10-29T01:00:00Z', diagnostic: 'contents_and_exclusive_ownership_not_verified' };
+  const base = { id: 'a'.repeat(64), backend: 'networkmanager', platform: 'linux', scope: 'keyfile_profiles', observed_at: evidence.observed_at, status: 'partial', can_apply: false, sources: [source], profiles: [profile], warnings: [], device_evidence: evidence };
+  const respond = (patch: object) => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: { ...base, ...patch } }), { status: 200 })));
+  for (const association of [active, { state: 'unknown', device_state: 0, managed: null, active_profile_matches: null }, { state: 'unmanaged', device_state: 10, managed: false, active_profile_matches: null }, { state: 'not_observed', device_state: null, managed: null, active_profile_matches: null }, { state: 'conflicting', device_state: 100, managed: true, active_profile_matches: false }]) {
+    respond({ profiles: [{ ...profile, device_association: association }] });
+    await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ profiles: [{ device_association: association }] });
+  }
+  for (const patch of [
+    { profiles: [{ ...profile, device_association: { ...active, active_profile_matches: null } }] },
+    { profiles: [{ ...profile, device_association: { ...active, managed: false } }] },
+    { profiles: [{ ...profile, device_association: { ...active, device_state: 40 } }] },
+    { profiles: [{ ...profile, device_association: { ...active, device_state: 101 } }] },
+    { profiles: [{ ...profile, device_association: { state: 'unknown', device_state: null, managed: false, active_profile_matches: null } }] },
+    { profiles: [{ ...profile, binding: 'unresolved' }] },
+    { profiles: [{ ...profile, reference: 'nm:------------------------------------' }] },
+    { device_evidence: { ...evidence, state: 'unavailable' } },
+    { device_evidence: { ...evidence, scope: 'exclusive_ownership' } },
+    { device_evidence: { ...evidence, observed_at: 'invalid' } },
+    { platform: 'darwin' },
+  ]) {
+    respond(patch);
+    await expect(networkConfig.inspectPersistent('networkmanager')).rejects.toThrow('持久配置来源响应无效');
+  }
+});

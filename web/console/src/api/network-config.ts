@@ -76,11 +76,13 @@ export interface PersistentNetworkProfile {
   routes: { destination: string; gateway: string; metric: number | null }[] | null;
   field_states: Record<PersistentField, 'configured' | 'unset' | 'unsupported'>;
   source_ids: string[]; origin_verified: boolean; load_reference?: 'matched' | 'not_observed' | 'conflicting' | 'unknown';
+  device_association?: NetworkDeviceAssociation;
 }
 export interface PersistentNetworkInspection {
   id: string; backend: NetworkDraft['backend']; platform: string; scope: 'merged_ethernets' | 'keyfile_profiles' | 'committed_network';
   observed_at: string; status: 'observed' | 'partial' | 'unavailable' | 'unsupported'; can_apply: false;
   authority?: NetworkAuthorityReport; manager?: NetworkManagerReferences;
+  device_evidence?: NetworkDeviceEvidence;
   sources: PersistentNetworkSource[]; profiles: PersistentNetworkProfile[]; warnings: string[];
 }
 function validatePersistentInspection(value: PersistentNetworkInspection, backend: NetworkDraft['backend']) {
@@ -100,6 +102,20 @@ function validatePersistentInspection(value: PersistentNetworkInspection, backen
   for (const p of value.profiles) {
     if (!p || typeof p.reference !== 'string' || !p.reference || p.reference.length > 256 || typeof p.device !== 'string' || !['declared', 'unresolved'].includes(p.binding) || typeof p.origin_verified !== 'boolean' || !Array.isArray(p.source_ids) || !p.source_ids.length || p.source_ids.some(id => !ids.has(id)) || (p.origin_verified && (backend === 'netplan' || p.source_ids.length !== 1 || value.sources.some(s => p.source_ids.includes(s.id) && s.state !== 'read'))) || !p.methods || typeof p.methods !== 'object' || Array.isArray(p.methods) || Object.values(p.methods).some(m => typeof m !== 'string') || !p.field_states) fail();
     if (p.load_reference !== undefined && !['matched', 'not_observed', 'conflicting', 'unknown'].includes(p.load_reference)) fail();
+    if (p.device_association) {
+      const a = p.device_association;
+      const state = a.device_state;
+      if (!['active', 'inactive', 'transitioning', 'unmanaged', 'unavailable_device', 'not_observed', 'conflicting', 'unknown'].includes(a.state) || !(state === null || Number.isInteger(state) && state >= 0 && state <= 120 && state % 10 === 0) || ![a.managed, a.active_profile_matches].every(v => v === null || typeof v === 'boolean')) fail();
+      if (state === null || state === 0) {
+        if (a.managed !== null || a.active_profile_matches !== null || !['unknown', 'not_observed'].includes(a.state) || a.state === 'not_observed' && state !== null) fail();
+      } else {
+        if (a.managed !== (state !== 10)) fail();
+        const expected = state === 10 ? 'unmanaged' : a.active_profile_matches === false ? 'conflicting' : state === 100 ? a.active_profile_matches === true ? 'active' : 'unknown' : state === 20 ? 'unavailable_device' : state === 30 || state === 120 ? 'inactive' : 'transitioning';
+        if (a.state !== expected) fail();
+      }
+      if ((a.state !== 'unknown' || state !== null) && (backend !== 'networkmanager' || p.binding !== 'declared' || !p.device || !/^nm:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(p.reference) || value.device_evidence?.state !== 'observed')) fail();
+      if (value.device_evidence?.state !== 'observed' && state !== null) fail();
+    }
     for (const key of ['mtu', 'addresses', 'dns', 'search', 'routes'] as const) {
       if (!['configured', 'unset', 'unsupported'].includes(p.field_states[key])) fail();
       const field = p[key];
@@ -111,6 +127,10 @@ function validatePersistentInspection(value: PersistentNetworkInspection, backen
     }
   }
   if (value.manager && (!['observed', 'inactive', 'unavailable', 'unsupported', 'not_checked'].includes(value.manager.state) || value.manager.scope !== 'visible_profile_references' || typeof value.manager.observed_at !== 'string' || !Number.isFinite(Date.parse(value.manager.observed_at)) || typeof value.manager.diagnostic !== 'string')) fail();
+  if (value.device_evidence) {
+    const e = value.device_evidence;
+    if (!['observed', 'inactive', 'unavailable', 'unsupported', 'not_checked'].includes(e.state) || e.scope !== 'visible_nm_device_associations' || typeof e.observed_at !== 'string' || !Number.isFinite(Date.parse(e.observed_at)) || typeof e.diagnostic !== 'string' || e.state === 'observed' && (backend !== 'networkmanager' || value.platform !== 'linux')) fail();
+  }
   if (value.authority) {
     const a = value.authority;
     if (!['blocked', 'review_required'].includes(a.status) || a.can_adopt !== false || !Array.isArray(a.issues) || a.issues.some(i => !i || !['blocker', 'review'].includes(i.severity) || typeof i.code !== 'string' || typeof i.message !== 'string' || typeof i.reference !== 'string' || (i.source_id !== '' && !ids.has(i.source_id))) || a.status === 'review_required' && a.issues.some(i => i.severity === 'blocker')) fail();
@@ -127,4 +147,12 @@ export interface NetworkManagerReferences {
 export interface NetworkAuthorityReport {
   status: 'blocked' | 'review_required'; can_adopt: false;
   issues: { source_id: string; reference: string; severity: 'blocker' | 'review'; code: string; message: string }[];
+}
+
+export interface NetworkDeviceEvidence {
+  state: 'observed' | 'inactive' | 'unavailable' | 'unsupported' | 'not_checked'; scope: 'visible_nm_device_associations'; observed_at: string; diagnostic: string;
+}
+export interface NetworkDeviceAssociation {
+  state: 'active' | 'inactive' | 'transitioning' | 'unmanaged' | 'unavailable_device' | 'not_observed' | 'conflicting' | 'unknown';
+  device_state: number | null; managed: boolean | null; active_profile_matches: boolean | null;
 }

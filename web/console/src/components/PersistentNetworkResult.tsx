@@ -4,6 +4,8 @@ import type { PersistentField, PersistentNetworkInspection, PersistentNetworkPro
 
 const statuses = { observed: '已取得来源快照', partial: '部分信息未取得', unavailable: '读取未完成', unsupported: '当前平台不支持' };
 const scopes = { keyfile_profiles: 'NetworkManager keyfile', merged_ethernets: 'Netplan Ethernet 合并视图', committed_network: 'UCI 已提交配置' };
+const associationStates = { active: '当前配置已激活', inactive: '设备未激活', transitioning: '设备状态转换中', unmanaged: 'NM 未管理', unavailable_device: '设备暂不可用', not_observed: '当前身份未观察到设备', conflicting: '设备正在使用其他配置', unknown: '未知' };
+const evidenceStates = { observed: '已取得关联快照', inactive: '服务未运行', unavailable: '不可读取', unsupported: '当前平台不支持', not_checked: '当前适配器未提供' };
 const warnings: Record<string, string> = {
   non_atomic_file_snapshot: '各源文件分次读取', runtime_and_adoption_not_verified: '运行归属与接管未核验', unsupported_platform: '当前主机不支持目标管理器配置读取',
   source_read_incomplete: '部分源文件不可读取或超出限制', legacy_ifcfg_and_plugins_not_inspected: 'ifcfg 与其他插件来源未读取', no_supported_source_files: '未发现可读取的受支持源文件',
@@ -43,6 +45,21 @@ export function PersistentNetworkResult({ report }: { report: PersistentNetworkI
           { title: '目标网络', dataIndex: 'destination' }, { title: '下一跳', dataIndex: 'gateway' }, { title: 'Metric', key: 'metric', render: (_, r) => r.metric === null ? '未显式配置' : r.metric },
         ]} /> : <Typography.Text type="secondary">路由：{fieldValue(p, 'routes')}</Typography.Text>}
       </div> }} /> },
+      { key: 'devices', label: '设备关联', children: <div className="page-stack">
+        <ProDescriptions column={{ xs: 1, md: 2 }} dataSource={{}} columns={[
+          { title: '关联查询', render: () => report.device_evidence ? evidenceStates[report.device_evidence.state] : '未取得' },
+          { title: '观察范围', render: () => '当前服务身份可见的 NetworkManager 设备' },
+          { title: '关联观察时间', render: () => report.device_evidence ? new Date(report.device_evidence.observed_at).toLocaleString() : '未取得' },
+        ]} />
+        <ProTable<PersistentNetworkProfile> headerTitle="配置与设备关联" rowKey={p => `${p.source_ids.join(':')}:${p.reference}`} dataSource={report.profiles} search={false} options={false} pagination={{ pageSize: 8, showSizeChanger: false }} scroll={{ x: 1100 }} locale={{ emptyText: '未取得可核对的配置声明' }} columns={[
+          { title: '配置标识', dataIndex: 'reference', width: 260 },
+          { title: '设备声明', key: 'device', width: 140, render: (_, p) => p.device || '未核对' },
+          { title: '关联状态', key: 'state', width: 220, render: (_, p) => <Tag color={p.device_association?.state === 'conflicting' || p.device_association?.state === 'unmanaged' ? 'error' : 'default'}>{associationStates[p.device_association?.state ?? 'unknown']}</Tag> },
+          { title: 'NM 设备状态码', key: 'code', width: 150, render: (_, p) => p.device_association?.device_state ?? '未知' },
+          { title: 'NM 受管', key: 'managed', width: 120, render: (_, p) => p.device_association?.managed === true ? '是' : p.device_association?.managed === false ? '否' : '未知' },
+          { title: '活动配置 UUID 匹配', key: 'match', width: 190, render: (_, p) => p.device_association?.active_profile_matches === true ? '匹配' : p.device_association?.active_profile_matches === false ? '不匹配' : '未知' },
+        ]} />
+      </div> },
       { key: 'sources', label: '来源证据', children: <ProTable<PersistentNetworkInspection['sources'][number]> headerTitle="源文件快照" rowKey="id" dataSource={report.sources} search={false} options={false} scroll={{ x: 1500 }} pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: '未取得配置来源' }} columns={[
         { title: '配置文件', dataIndex: 'path', width: 390 },
         { title: '存储类别', key: 'storage', width: 120, render: (_, s) => ({ persistent: '持久文件', runtime: '临时文件', vendor: '厂商文件' }[s.storage]) },

@@ -51,3 +51,7 @@ Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入�
 
 来源快照增加可选权限/一致性、可见加载引用和authority检查，见[NC-02B3A](../console-design/network-source-authority.md)。
 引用匹配不是内容同步或激活证明，can_adopt固定false。
+
+来源快照增加可选 `device_evidence` 与 `profiles[].device_association`，见
+[NC-02B3B1](../console-design/network-device-association.md)。单独描述NM设备状态与活动UUID匹配，
+失败保留unavailable/unknown，旧后端不提供时显示未知；不扩展访问权限、接管或应用能力。

@@ -1195,5 +1195,6 @@ flowchart LR
 | NC-02B1 | 三管理器原生解析校验、结果抽屉与固定执行边界 | 已实现，见[规格与验收](network-native-validation.md)；目标Linux运行待验 |
 | NC-02B2 | 三类源文件快照、网络字段白名单、来源证据与控制台 | 实现见[规格](network-persistent-inspection.md)；目标矩阵与未覆盖格式待核验 |
 | NC-02B3A | 文件权限、捕获一致性、NM加载引用与接管条件 | 实现见[规格](network-source-authority.md)，不能发放接管或应用许可 |
-| NC-02B3B | 实际加载内容、归因、插件/ifcfg与明确接管 | 待开发，引用匹配不代表内容一致 |
+| NC-02B3B1 | NM设备受管状态与活动配置关联 | 实现见[规格](network-device-association.md)；仅NM当前身份视图，不证明内容同步或独占归属 |
+| NC-02B3B（后续） | 实际加载内容、字段归因、插件/ifcfg与明确接管 | 待开发，引用/设备关联匹配不代表内容一致 |
 | NC-03—05 | 实际应用、确认、回滚与目标系统矩阵 | 未发布/未核验 |

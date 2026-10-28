@@ -37,19 +37,20 @@ type ConfigSource struct {
 	Safety     *SourceSafety `json:"safety,omitempty"`
 }
 type PersistentProfile struct {
-	Reference      string            `json:"reference"`
-	Device         string            `json:"device"`
-	Binding        string            `json:"binding"`
-	Methods        map[string]string `json:"methods"`
-	MTU            *int              `json:"mtu"`
-	Addresses      []string          `json:"addresses"`
-	DNS            []string          `json:"dns"`
-	Search         []string          `json:"search"`
-	Routes         []ConfiguredRoute `json:"routes"`
-	FieldStates    map[string]string `json:"field_states"`
-	SourceIDs      []string          `json:"source_ids"`
-	OriginVerified bool              `json:"origin_verified"`
-	LoadReference  string            `json:"load_reference,omitempty"`
+	Reference      string             `json:"reference"`
+	Device         string             `json:"device"`
+	Binding        string             `json:"binding"`
+	Methods        map[string]string  `json:"methods"`
+	MTU            *int               `json:"mtu"`
+	Addresses      []string           `json:"addresses"`
+	DNS            []string           `json:"dns"`
+	Search         []string           `json:"search"`
+	Routes         []ConfiguredRoute  `json:"routes"`
+	FieldStates    map[string]string  `json:"field_states"`
+	SourceIDs      []string           `json:"source_ids"`
+	OriginVerified bool               `json:"origin_verified"`
+	LoadReference  string             `json:"load_reference,omitempty"`
+	Association    *DeviceAssociation `json:"device_association,omitempty"`
 }
 type PersistentInspection struct {
 	ID         string              `json:"id"`
@@ -64,6 +65,7 @@ type PersistentInspection struct {
 	Warnings   []string            `json:"warnings"`
 	Manager    *ManagerReferences  `json:"manager,omitempty"`
 	Authority  *AuthorityReport    `json:"authority,omitempty"`
+	Devices    *DeviceEvidence     `json:"device_evidence,omitempty"`
 }
 type sourceFile struct {
 	meta    ConfigSource
