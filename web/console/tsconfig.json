@@ -30,12 +30,17 @@
       "@umijs/max": [
         "node_modules/umi"
       ]
-    }
+    },
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
   },
   "include": [
     "src",
     "tests",
-    "compat/**/*.d.ts"
+    "compat/**/*.d.ts",
+    "config/**/*.ts",
+    "*.config.ts",
+    "version-source.ts"
   ],
   "extends": "./src/.umi/tsconfig.json"
 }

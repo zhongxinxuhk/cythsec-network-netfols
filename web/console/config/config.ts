@@ -1,5 +1,5 @@
 import { defineConfig } from '@umijs/max';
-import type WebpackChain from '@umijs/bundler-webpack/compiled/webpack-5-chain';
+import type { IConfig as WebpackConfig } from '@umijs/bundler-webpack';
 import { resolve } from 'node:path';
 import { readRootVersion } from '../version-source';
 import routes from './routes';
@@ -12,7 +12,7 @@ export default defineConfig({
   outputPath: process.env.CONSOLE_OUTPUT_PATH || 'dist',
   routes,
   // Preserve v7 package exports (including /dom); Umi's directory alias bypasses them.
-  chainWebpack(config: WebpackChain) { config.resolve.alias.delete('react-router'); },
+  chainWebpack(config: Parameters<NonNullable<WebpackConfig['chainWebpack']>>[0]) { config.resolve.alias.delete('react-router'); },
   layout: { title: 'CythSec', locale: false },
   antd: {
     appConfig: {},
