@@ -4,7 +4,8 @@ import { Alert, AutoComplete, Button, Col, Drawer, Empty, Form, Input, InputNumb
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { api } from '@/api/client';
 import { ApiError } from '@/api/http';
-import { networkConfig, type NetworkDraft, type NetworkPreview } from '@/api/network-config';
+import { networkConfig, type NetworkDraft, type NetworkPreview, type NetworkObservation, type NetworkPreflight } from '@/api/network-config';
+import { NetworkEnvironmentPanel, NetworkPreflightResult } from '@/components/NetworkObservation';
 import { useApi } from '@/hooks/useApi';
 
 const managers = [
@@ -22,19 +23,25 @@ export default function NetworkConfigurationPage() {
   const [notice, setNotice] = useState('');
   const [conflict, setConflict] = useState(false);
   const [preview, setPreview] = useState<NetworkPreview | null>(null);
+  const [environment, setEnvironment] = useState<NetworkObservation | null>(null);
+  const [environmentError, setEnvironmentError] = useState('');
+  const [report, setReport] = useState<NetworkPreflight | null>(null);
   const generation = useRef(0);
   useEffect(() => {
-    if (state.data) { form.setFieldsValue(state.data.snapshot.config); setRevision(state.data.snapshot.revision); setConflict(false); setError(''); setNotice(''); setPreview(null); generation.current++; }
+    if (state.data) { form.setFieldsValue(state.data.snapshot.config); setRevision(state.data.snapshot.revision); setConflict(false); setError(''); setNotice(''); setPreview(null); setReport(null); generation.current++; }
   }, [state.data, form]);
-  async function submit(save: boolean) {
+  async function submit(mode: 'save' | 'preview' | 'preflight') {
     let draft: NetworkDraft;
     try { draft = await form.validateFields(); } catch { return; }
     setBusy(true); setError(''); setNotice('');
     const epoch = generation.current;
     try {
-      if (save) {
+      if (mode === 'save') {
         const result = await networkConfig.save(draft, revision);
         if (epoch === generation.current) { setRevision(result.revision); setNotice(`草稿已保存 · 版本 ${result.revision}`); }
+      } else if (mode === 'preflight') {
+        const result = await networkConfig.preflight(draft);
+        if (epoch === generation.current) { setReport(result); setEnvironment(result.observation); setEnvironmentError(''); }
       } else {
         const result = await networkConfig.preview(draft);
         if (epoch === generation.current) setPreview(result);
@@ -46,6 +53,12 @@ export default function NetworkConfigurationPage() {
         setError(changed ? '服务端配置版本已变化，当前编辑已保留。请重新读取后比较。' : cause instanceof Error ? cause.message : '配置请求失败');
       }
     } finally { setBusy(false); }
+  }
+  async function readEnvironment() {
+    setBusy(true); setEnvironmentError(''); setReport(null);
+    try { setEnvironment(await networkConfig.observe()); }
+    catch (cause) { setEnvironment(null); setEnvironmentError(cause instanceof Error ? cause.message : '环境读取失败'); }
+    finally { setBusy(false); }
   }
   const ready = Boolean(state.data && !state.error && !state.loading);
   return <PageContainer content="接口静态地址、DNS 与静态路由" extra={[
@@ -59,7 +72,8 @@ export default function NetworkConfigurationPage() {
       { title: '系统应用', render: () => <Tag>未发布</Tag> },
       { title: '保存权限', render: () => state.data?.capabilities.can_save ? '管理员' : '当前连接不可保存' },
     ]} /></ProCard>}
-    {state.data && <Form className="page-stack" form={form} layout="vertical" disabled={busy || !ready} onValuesChange={() => { generation.current++; setPreview(null); setNotice(''); }}>
+    {state.data?.capabilities.can_observe && <NetworkEnvironmentPanel observation={environment} error={environmentError} loading={busy} onRefresh={() => void readEnvironment()} />}
+    {state.data && <Form className="page-stack" form={form} layout="vertical" disabled={busy || !ready} onValuesChange={() => { generation.current++; setPreview(null); setReport(null); setNotice(''); }}>
       <ProCard title="目标管理器" variant="outlined">
         <Form.Item name="backend" label="网络管理器" rules={[{ required: true }]}><Select options={managers} /></Form.Item>
       </ProCard>
@@ -92,12 +106,14 @@ export default function NetworkConfigurationPage() {
           <Form.ErrorList errors={errors} />
           <Space wrap>
             <Button icon={<PlusOutlined />} disabled={!ready || busy || fields.length >= 32} onClick={() => add({ id: `lan${fields.length + 1}`, device: '', mtu: 1500, addresses: [], dns: [], search: [], routes: [] })}>添加接口配置</Button>
-            <Button type="primary" loading={busy} disabled={!ready || !state.data?.capabilities.can_preview} onClick={() => void submit(false)}>校验并预览</Button>
-            <Tooltip title={state.data?.capabilities.can_save ? '' : '需要管理员认证并启用配置存储'}><Button disabled={!ready || !state.data?.capabilities.can_save || conflict || busy} onClick={() => void submit(true)}>保存草稿</Button></Tooltip>
+            <Button type="primary" loading={busy} disabled={!ready || !state.data?.capabilities.can_preview} onClick={() => void submit('preview')}>校验并预览</Button>
+            {state.data?.capabilities.can_preflight && <Button loading={busy} disabled={!ready} onClick={() => void submit('preflight')}>应用前检查</Button>}
+            <Tooltip title={state.data?.capabilities.can_save ? '' : '需要管理员认证并启用配置存储'}><Button disabled={!ready || !state.data?.capabilities.can_save || conflict || busy} onClick={() => void submit('save')}>保存草稿</Button></Tooltip>
           </Space>
         </div>}
       </Form.List>
     </Form>}
+    <Drawer title="应用前检查" size="min(960px, 100vw)" open={Boolean(report)} onClose={() => setReport(null)} destroyOnHidden>{report && <NetworkPreflightResult report={report} />}</Drawer>
     <Drawer title="原生配置预览" size="min(760px, 100vw)" open={Boolean(preview)} onClose={() => setPreview(null)} destroyOnHidden>
       {preview && <Space orientation="vertical" size="large" style={{ width: '100%' }}>
         <Alert type="info" title="校验已完成，配置尚未应用" showIcon />

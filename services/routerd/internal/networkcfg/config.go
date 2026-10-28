@@ -1,5 +1,5 @@
-// Package networkcfg validates desired network settings and compiles native previews.
-// It never executes commands or writes operating-system network configuration.
+// Package networkcfg validates desired settings, compiles native previews, and reads
+// bounded runtime observations. It never modifies operating-system networking.
 package networkcfg
 
 import (

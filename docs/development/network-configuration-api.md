@@ -1,7 +1,7 @@
 # routerd网络配置草稿API
 
 日期：2026-10-27。平台选型、字段、阶段与界面见[网络配置专项](../console-design/network-configuration.md)。
-当前只实现草稿及预览，不调用netplan、NetworkManager、ubus或ip命令，不写系统网络文件。
+草稿保存与预览不执行命令、不写系统网络文件。新增[只读运行态观测与应用前检查](../console-design/network-preflight.md)只调用固定读取查询，未发布系统应用/确认/回滚。
 
 | 入口 | 成功数据 | HTTP失败与语义 |
 | --- | --- | --- |
@@ -37,3 +37,6 @@
 Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入进程锁、版本冲突、重启恢复、损坏拒绝、匿名/只读写入拒绝、CORS版本头与共享权限边界。
 前端测试覆盖只读预览、管理员草稿确认、412保留编辑、同源路径和If-Match。
 原生解析器验证、目标机接管、真实应用、断线回滚和CPU/发行版兼容性仍独立未核验。
+
+
+新增GET `/api/v1/network/configuration/observation`与POST `/api/v1/network/configuration/preflight`为只读契约；观测繁忙返回429，草稿无效时不启动原生查询。管理器响应字段是tool_version，不冒充运行daemon版本。

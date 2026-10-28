@@ -98,7 +98,7 @@ secrets/
 
 # --- 本地工具状态（Mimosa 审计：finding-ledger / history / hook-state / reports） ---
 .mimosa/
-
+.workbuddy
 # --- 日志 ---
 *.log
 logs/

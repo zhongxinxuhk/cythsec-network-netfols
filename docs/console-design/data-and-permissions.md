@@ -272,3 +272,12 @@ UI按钮权限只用于交互；服务端对每次请求重新检查主体、范
 | N26 | 网络系统应用/确认/回滚（尚未发布） | Netplan / NetworkManager / UCI原生事务与运行态核对 | NC-02—NC-05完成前can_apply=false；后续需独立应用权限、任务、审计与断线回滚 |
 
 P53配置模型、原生映射、发行版选型和后续门禁见[网络配置专项](network-configuration.md)及[API说明](../development/network-configuration-api.md)。
+
+## 9. P53只读观测与预检查增量
+
+| ID | 实际入口 | 内容与状态 | 权限 |
+| --- | --- | --- | --- |
+| A19 | routerd GET /api/v1/network/configuration/observation | 内核运行态、管理器响应与工具版本、接口归属；known区分未知与空集合 | 读取权限；单并发、超时、输出限额、固定只读查询 |
+| A20 | routerd POST /api/v1/network/configuration/preflight | 绑定当前草稿与新快照的五字段比较、阻断/待核对项 | 读取角色；不改变保存权限，不授予系统应用 |
+
+完整字段、原生数据源、快照限制和剩余NC-02任务见[运行态预检查](network-preflight.md)。报告不是审批或应用令牌，不能把差异项直接作为删除/写入计划。
