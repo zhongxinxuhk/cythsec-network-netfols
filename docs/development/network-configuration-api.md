@@ -48,3 +48,6 @@ Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入�
 新增POST `/api/v1/network/configuration/persistent-inspection`，仅接受backend。
 返回来源版本、存储类别、字段投影与未知状态；权限及边界见[NC-02B2](../console-design/network-persistent-inspection.md)。
 此入口不修改草稿、源文件或系统网络，不返回原始配置。
+
+来源快照增加可选权限/一致性、可见加载引用和authority检查，见[NC-02B3A](../console-design/network-source-authority.md)。
+引用匹配不是内容同步或激活证明，can_adopt固定false。

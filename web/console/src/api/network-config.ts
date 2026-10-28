@@ -68,18 +68,19 @@ export interface NetworkNativeValidation {
   checks: { artifact: string; state: NetworkNativeValidation['status']; code: string; message: string }[];
 }
 
-export interface PersistentNetworkSource { id: string; path: string; storage: 'persistent' | 'runtime' | 'vendor'; version_tag: string; bytes: number; state: 'read' | 'unavailable' | 'unsupported' }
+export interface PersistentNetworkSource { id: string; path: string; storage: 'persistent' | 'runtime' | 'vendor'; version_tag: string; bytes: number; state: 'read' | 'unavailable' | 'unsupported'; safety?: NetworkSourceSafety }
 export type PersistentField = 'mtu' | 'addresses' | 'dns' | 'search' | 'routes';
 export interface PersistentNetworkProfile {
   reference: string; device: string; binding: 'declared' | 'unresolved'; methods: Record<string, string>;
   mtu: number | null; addresses: string[] | null; dns: string[] | null; search: string[] | null;
   routes: { destination: string; gateway: string; metric: number | null }[] | null;
   field_states: Record<PersistentField, 'configured' | 'unset' | 'unsupported'>;
-  source_ids: string[]; origin_verified: boolean;
+  source_ids: string[]; origin_verified: boolean; load_reference?: 'matched' | 'not_observed' | 'conflicting' | 'unknown';
 }
 export interface PersistentNetworkInspection {
   id: string; backend: NetworkDraft['backend']; platform: string; scope: 'merged_ethernets' | 'keyfile_profiles' | 'committed_network';
   observed_at: string; status: 'observed' | 'partial' | 'unavailable' | 'unsupported'; can_apply: false;
+  authority?: NetworkAuthorityReport; manager?: NetworkManagerReferences;
   sources: PersistentNetworkSource[]; profiles: PersistentNetworkProfile[]; warnings: string[];
 }
 function validatePersistentInspection(value: PersistentNetworkInspection, backend: NetworkDraft['backend']) {
@@ -90,10 +91,15 @@ function validatePersistentInspection(value: PersistentNetworkInspection, backen
   const ids = new Set<string>();
   for (const s of value.sources) {
     if (!s || !hash(s.id) || ids.has(s.id) || typeof s.path !== 'string' || !s.path.startsWith('/') || s.path.length > 4096 || !['persistent', 'runtime', 'vendor'].includes(s.storage) || !['read', 'unavailable', 'unsupported'].includes(s.state) || !Number.isInteger(s.bytes) || s.bytes < 0 || s.bytes > 1048576 || (s.state === 'unavailable' ? s.version_tag !== '' : !hash(s.version_tag))) fail();
+    if (s.safety) {
+      const a = s.safety;
+      if (![a.uid, a.gid].every(v => v === null || Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 4294967295) || !(a.mode === '' || /^0[0-7]{3}$/.test(a.mode)) || !(a.stable === null || typeof a.stable === 'boolean') || !['meets_baseline', 'review', 'blocked', 'unknown'].includes(a.status) || !Array.isArray(a.codes) || a.codes.some(c => typeof c !== 'string')) fail();
+    }
     ids.add(s.id);
   }
   for (const p of value.profiles) {
     if (!p || typeof p.reference !== 'string' || !p.reference || p.reference.length > 256 || typeof p.device !== 'string' || !['declared', 'unresolved'].includes(p.binding) || typeof p.origin_verified !== 'boolean' || !Array.isArray(p.source_ids) || !p.source_ids.length || p.source_ids.some(id => !ids.has(id)) || (p.origin_verified && (backend === 'netplan' || p.source_ids.length !== 1 || value.sources.some(s => p.source_ids.includes(s.id) && s.state !== 'read'))) || !p.methods || typeof p.methods !== 'object' || Array.isArray(p.methods) || Object.values(p.methods).some(m => typeof m !== 'string') || !p.field_states) fail();
+    if (p.load_reference !== undefined && !['matched', 'not_observed', 'conflicting', 'unknown'].includes(p.load_reference)) fail();
     for (const key of ['mtu', 'addresses', 'dns', 'search', 'routes'] as const) {
       if (!['configured', 'unset', 'unsupported'].includes(p.field_states[key])) fail();
       const field = p[key];
@@ -104,4 +110,21 @@ function validatePersistentInspection(value: PersistentNetworkInspection, backen
       }
     }
   }
+  if (value.manager && (!['observed', 'inactive', 'unavailable', 'unsupported', 'not_checked'].includes(value.manager.state) || value.manager.scope !== 'visible_profile_references' || typeof value.manager.observed_at !== 'string' || !Number.isFinite(Date.parse(value.manager.observed_at)) || typeof value.manager.diagnostic !== 'string')) fail();
+  if (value.authority) {
+    const a = value.authority;
+    if (!['blocked', 'review_required'].includes(a.status) || a.can_adopt !== false || !Array.isArray(a.issues) || a.issues.some(i => !i || !['blocker', 'review'].includes(i.severity) || typeof i.code !== 'string' || typeof i.message !== 'string' || typeof i.reference !== 'string' || (i.source_id !== '' && !ids.has(i.source_id))) || a.status === 'review_required' && a.issues.some(i => i.severity === 'blocker')) fail();
+  }
+}
+
+export interface NetworkSourceSafety {
+  uid: number | null; gid: number | null; mode: string; stable: boolean | null;
+  status: 'meets_baseline' | 'review' | 'blocked' | 'unknown'; codes: string[];
+}
+export interface NetworkManagerReferences {
+  state: 'observed' | 'inactive' | 'unavailable' | 'unsupported' | 'not_checked'; scope: 'visible_profile_references'; observed_at: string; diagnostic: string;
+}
+export interface NetworkAuthorityReport {
+  status: 'blocked' | 'review_required'; can_adopt: false;
+  issues: { source_id: string; reference: string; severity: 'blocker' | 'review'; code: string; message: string }[];
 }

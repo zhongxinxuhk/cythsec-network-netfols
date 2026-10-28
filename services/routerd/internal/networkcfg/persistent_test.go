@@ -20,7 +20,10 @@ func inspectionReader(t *testing.T) *PersistentReader {
 	p.root = t.TempDir()
 	p.platform = "linux"
 	p.find = func(tool string) (string, error) { return "/usr/bin/" + tool, nil }
-	p.run = func(context.Context, string, []string, string, string) ([]byte, error) {
+	p.run = func(_ context.Context, path string, args []string, _, _ string) ([]byte, error) {
+		if filepath.Base(path) == "systemctl" && reflect.DeepEqual(args, []string{"--no-pager", "is-active", "NetworkManager"}) {
+			return nil, os.ErrNotExist
+		}
 		t.Fatal("unexpected native query")
 		return nil, errNativeSchema
 	}

@@ -49,3 +49,15 @@ it('持久配置只提交backend，并拒绝来源伪造、缺失字段与空值
     await expect(networkConfig.inspectPersistent('networkmanager')).rejects.toThrow('持久配置来源响应无效');
   }
 });
+
+it('拒绝权限未知伪装和接管许可，兼容未提供接管报告的旧后端', async () => {
+  const base = { id: 'a'.repeat(64), backend: 'netplan', platform: 'linux', scope: 'merged_ethernets', observed_at: '2026-10-28T01:00:00Z', status: 'observed', can_apply: false, sources: [], profiles: [], warnings: [] };
+  const respond = (patch: object) => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: { ...base, ...patch } }), { status: 200 })));
+  respond({}); await expect(networkConfig.inspectPersistent('netplan')).resolves.toMatchObject({ status: 'observed' });
+  for (const patch of [
+    { authority: { status: 'review_required', can_adopt: true, issues: [] } },
+    { authority: { status: 'review_required', can_adopt: false, issues: [{ source_id: '', reference: '', severity: 'blocker', code: 'x', message: 'blocked' }] } },
+    { manager: { state: 'observed', scope: 'all_profiles', observed_at: base.observed_at, diagnostic: '' } },
+    { sources: [{ id: 'b'.repeat(64), path: '/etc/netplan/a.yaml', storage: 'persistent', bytes: 10, state: 'read', version_tag: 'c'.repeat(64), safety: { uid: -1, gid: 0, mode: '0600', stable: true, status: 'meets_baseline', codes: [] } }] },
+  ]) { respond(patch); await expect(networkConfig.inspectPersistent('netplan')).rejects.toThrow('持久配置来源响应无效'); }
+});

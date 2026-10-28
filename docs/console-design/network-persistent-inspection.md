@@ -84,3 +84,6 @@ capabilities.can_inspect_persistent表示可发起读取，不代表宿主适配
 NC-02B3继续处理字段级合并归因、ifcfg/插件能力、管理器实际加载、配置权限、设备绑定、
 明确接管与一致性复核；NC-03再处理事务应用、管理链路确认与独立回滚。
 验证见[本轮记录](network-persistent-inspection-verification.md)。
+
+NC-02B3A增加[权限、捕获一致性与可见加载引用检查](network-source-authority.md)。
+原有接口保留，增加可选safety/manager/load_reference/authority字段；完整接管仍未发布。

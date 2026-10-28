@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import type { PersistentNetworkInspection } from '@/api/network-config';
 import { PersistentNetworkResult } from './PersistentNetworkResult';
@@ -22,6 +22,20 @@ it('来源投影区分未配置、空集合与默认Metric，保留持久和临�
   expect(screen.getByText('持久文件')).toBeInTheDocument();
   expect(screen.getByText('临时文件')).toBeInTheDocument();
   expect(screen.getByText('不可读取')).toBeInTheDocument();
-  expect(screen.getAllByText('未取得')).toHaveLength(2);
+  const missing = screen.getByText('/run/source').closest('tr');
+  expect(missing).toHaveTextContent('未取得');
   expect(screen.queryByText('0 B')).not.toBeInTheDocument();
+});
+
+it('引用匹配不冒充内容同步，接管检查始终不可执行', async () => {
+  const report: PersistentNetworkInspection = { id: 'a'.repeat(64), backend: 'networkmanager', platform: 'linux', scope: 'keyfile_profiles', observed_at: '2026-10-28T01:00:00Z', status: 'partial', can_apply: false, sources: [], profiles: [], warnings: [],
+    manager: { state: 'observed', scope: 'visible_profile_references', observed_at: '2026-10-28T01:00:00Z', diagnostic: 'contents_and_activation_not_verified' },
+    authority: { status: 'blocked', can_adopt: false, issues: [{ source_id: '', reference: '', severity: 'blocker', code: 'source_inventory_incomplete', message: '来源清单尚未完整核验' }] } };
+  await act(async () => { render(<PersistentNetworkResult report={report} />); });
+  await act(async () => { fireEvent.click(screen.getByRole('tab', { name: '接管条件' })); });
+  const panel = screen.getByRole('tabpanel', { name: '接管条件' });
+  expect(within(panel).getByText('存在接管阻断项')).toBeInTheDocument();
+  expect(within(panel).getByText('已取得可见引用')).toBeInTheDocument();
+  expect(within(panel).getByText('尚未核验内容同步与激活状态')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '确认接管' })).not.toBeInTheDocument();
 });

@@ -28,12 +28,13 @@ type ConfiguredRoute struct {
 	Metric      *uint32 `json:"metric"`
 }
 type ConfigSource struct {
-	ID         string `json:"id"`
-	Path       string `json:"path"`
-	Storage    string `json:"storage"`
-	VersionTag string `json:"version_tag"`
-	Bytes      int    `json:"bytes"`
-	State      string `json:"state"`
+	ID         string        `json:"id"`
+	Path       string        `json:"path"`
+	Storage    string        `json:"storage"`
+	VersionTag string        `json:"version_tag"`
+	Bytes      int           `json:"bytes"`
+	State      string        `json:"state"`
+	Safety     *SourceSafety `json:"safety,omitempty"`
 }
 type PersistentProfile struct {
 	Reference      string            `json:"reference"`
@@ -48,6 +49,7 @@ type PersistentProfile struct {
 	FieldStates    map[string]string `json:"field_states"`
 	SourceIDs      []string          `json:"source_ids"`
 	OriginVerified bool              `json:"origin_verified"`
+	LoadReference  string            `json:"load_reference,omitempty"`
 }
 type PersistentInspection struct {
 	ID         string              `json:"id"`
@@ -60,6 +62,8 @@ type PersistentInspection struct {
 	Sources    []ConfigSource      `json:"sources"`
 	Profiles   []PersistentProfile `json:"profiles"`
 	Warnings   []string            `json:"warnings"`
+	Manager    *ManagerReferences  `json:"manager,omitempty"`
+	Authority  *AuthorityReport    `json:"authority,omitempty"`
 }
 type sourceFile struct {
 	meta    ConfigSource
@@ -102,6 +106,8 @@ func (p *PersistentReader) Inspect(ctx context.Context, backend string) (Persist
 	defer cancel()
 	r := PersistentInspection{Backend: backend, Platform: p.platform, Scope: map[string]string{"netplan": "merged_ethernets", "networkmanager": "keyfile_profiles", "openwrt": "committed_network"}[backend], Status: "observed", Sources: []ConfigSource{}, Profiles: []PersistentProfile{}, Warnings: []string{"non_atomic_file_snapshot", "runtime_and_adoption_not_verified"}}
 	finish := func() (PersistentInspection, error) {
+		p.correlateManager(ctx, &r)
+		r.Authority = assessAuthority(r)
 		r.Warnings = stringSet(r.Warnings)
 		r.ObservedAt = time.Now().UTC()
 		raw, _ := json.Marshal(r)
@@ -241,13 +247,23 @@ func (p *PersistentReader) readSources(ctx context.Context, backend string) ([]s
 		if err == nil {
 			defer f.Close()
 			st, e := f.Stat()
+			file.meta.Safety = sourceSafety(st, backend)
 			if e == nil && st.Mode().IsRegular() && st.Size() <= 1024*1024 {
 				file.content, err = io.ReadAll(io.LimitReader(f, 1024*1024+1))
 				if err == nil && len(file.content) <= 1024*1024 && total+len(file.content) <= 2*1024*1024 {
-					file.meta.State = "read"
-					file.meta.VersionTag = p.fingerprint(file.content)
-					file.meta.Bytes = len(file.content)
-					total += len(file.content)
+					after, ae := f.Stat()
+					current, ce := os.Lstat(path)
+					stable := ae == nil && ce == nil && int64(len(file.content)) == after.Size() && stableSource(st, after, current)
+					file.meta.Safety.Stable = &stable
+					if !stable {
+						file.meta.Safety.Status = "blocked"
+						file.meta.Safety.Codes = append(file.meta.Safety.Codes, "source_changed_during_read")
+					} else {
+						file.meta.State = "read"
+						file.meta.VersionTag = p.fingerprint(file.content)
+						file.meta.Bytes = len(file.content)
+						total += len(file.content)
+					}
 				}
 			}
 		}
