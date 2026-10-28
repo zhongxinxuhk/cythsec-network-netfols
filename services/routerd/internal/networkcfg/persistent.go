@@ -51,6 +51,7 @@ type PersistentProfile struct {
 	OriginVerified bool               `json:"origin_verified"`
 	LoadReference  string             `json:"load_reference,omitempty"`
 	Association    *DeviceAssociation `json:"device_association,omitempty"`
+	Loaded         *LoadedComparison  `json:"loaded_comparison,omitempty"`
 }
 type PersistentInspection struct {
 	ID         string              `json:"id"`
@@ -109,6 +110,7 @@ func (p *PersistentReader) Inspect(ctx context.Context, backend string) (Persist
 	r := PersistentInspection{Backend: backend, Platform: p.platform, Scope: map[string]string{"netplan": "merged_ethernets", "networkmanager": "keyfile_profiles", "openwrt": "committed_network"}[backend], Status: "observed", Sources: []ConfigSource{}, Profiles: []PersistentProfile{}, Warnings: []string{"non_atomic_file_snapshot", "runtime_and_adoption_not_verified"}}
 	finish := func() (PersistentInspection, error) {
 		p.correlateManager(ctx, &r)
+		p.compareLoadedSettings(ctx, &r)
 		r.Authority = assessAuthority(r)
 		r.Warnings = stringSet(r.Warnings)
 		r.ObservedAt = time.Now().UTC()

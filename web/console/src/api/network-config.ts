@@ -77,6 +77,7 @@ export interface PersistentNetworkProfile {
   field_states: Record<PersistentField, 'configured' | 'unset' | 'unsupported'>;
   source_ids: string[]; origin_verified: boolean; load_reference?: 'matched' | 'not_observed' | 'conflicting' | 'unknown';
   device_association?: NetworkDeviceAssociation;
+  loaded_comparison?: NetworkLoadedComparison;
 }
 export interface PersistentNetworkInspection {
   id: string; backend: NetworkDraft['backend']; platform: string; scope: 'merged_ethernets' | 'keyfile_profiles' | 'committed_network';
@@ -115,6 +116,25 @@ function validatePersistentInspection(value: PersistentNetworkInspection, backen
       }
       if ((a.state !== 'unknown' || state !== null) && (backend !== 'networkmanager' || p.binding !== 'declared' || !p.device || !/^nm:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(p.reference) || value.device_evidence?.state !== 'observed')) fail();
       if (value.device_evidence?.state !== 'observed' && state !== null) fail();
+    }
+    if (p.loaded_comparison) {
+      const c = p.loaded_comparison;
+      const names = ['device', 'mtu', 'ipv4_method', 'ipv6_method', 'addresses', 'dns', 'search'];
+      if (!['partial', 'different', 'unavailable', 'unsupported', 'not_checked'].includes(c.state) || c.scope !== 'nm_profile_scalar_and_sets' || typeof c.observed_at !== 'string' || !Number.isFinite(Date.parse(c.observed_at)) || typeof c.diagnostic !== 'string' || !Array.isArray(c.fields)) fail();
+      const observed = c.state === 'partial' || c.state === 'different';
+      if (observed && (backend !== 'networkmanager' || value.platform !== 'linux' || p.load_reference !== 'matched' || !p.origin_verified || !/^nm:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(p.reference)) || c.fields.length !== (observed ? names.length : 0)) fail();
+      for (const [i, f] of c.fields.entries()) {
+        if (!f || f.field !== names[i] || !['same', 'different', 'unknown'].includes(f.state) || !['compared', 'source_unset_or_unsupported', 'loaded_field_unsupported'].includes(f.reason)) fail();
+        const valid = (v: unknown, loaded: boolean) => v === null || (f.field === 'mtu' ? typeof v === 'number' && Number.isInteger(v) && v >= (loaded ? 0 : 1) && v <= 65536 : ['addresses', 'dns', 'search'].includes(f.field) ? Array.isArray(v) && v.length <= 256 && v.every(s => typeof s === 'string' && s.length <= 253) : typeof v === 'string' && v.length > 0 && v.length <= 64);
+        if (!valid(f.source, false) || !valid(f.loaded, true)) fail();
+        const method = p.methods[f.field === 'ipv4_method' ? 'ipv4' : 'ipv6'];
+        const expectedSource = f.field === 'device' ? p.binding === 'declared' ? p.device : null : f.field === 'mtu' ? p.field_states.mtu === 'configured' ? p.mtu : null : ['ipv4_method', 'ipv6_method'].includes(f.field) ? method && !['unknown', 'unspecified'].includes(method) ? method : null : p.field_states[f.field as PersistentField] === 'configured' ? [...new Set(p[f.field as 'addresses' | 'dns' | 'search'] ?? [])].sort() : null;
+        if (JSON.stringify(f.source) !== JSON.stringify(expectedSource)) fail();
+        if (f.state === 'unknown') {
+          if (f.reason === 'compared' || f.reason === 'source_unset_or_unsupported' && f.source !== null || f.reason === 'loaded_field_unsupported' && f.loaded !== null) fail();
+        } else if (f.source === null || f.loaded === null || f.reason !== 'compared' || (f.state === 'same') !== (JSON.stringify(f.source) === JSON.stringify(f.loaded))) fail();
+      }
+      if (observed && (c.state === 'different') !== c.fields.some(f => f.state === 'different')) fail();
     }
     for (const key of ['mtu', 'addresses', 'dns', 'search', 'routes'] as const) {
       if (!['configured', 'unset', 'unsupported'].includes(p.field_states[key])) fail();
@@ -155,4 +175,9 @@ export interface NetworkDeviceEvidence {
 export interface NetworkDeviceAssociation {
   state: 'active' | 'inactive' | 'transitioning' | 'unmanaged' | 'unavailable_device' | 'not_observed' | 'conflicting' | 'unknown';
   device_state: number | null; managed: boolean | null; active_profile_matches: boolean | null;
+}
+
+export interface NetworkLoadedComparison {
+  state: 'partial' | 'different' | 'unavailable' | 'unsupported' | 'not_checked'; scope: 'nm_profile_scalar_and_sets'; observed_at: string; diagnostic: string;
+  fields: { field: 'device' | 'mtu' | 'ipv4_method' | 'ipv6_method' | 'addresses' | 'dns' | 'search'; state: 'same' | 'different' | 'unknown'; reason: string; source: number | string | string[] | null; loaded: number | string | string[] | null }[];
 }

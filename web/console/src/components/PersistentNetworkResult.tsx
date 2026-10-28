@@ -6,6 +6,15 @@ const statuses = { observed: '已取得来源快照', partial: '部分信息未�
 const scopes = { keyfile_profiles: 'NetworkManager keyfile', merged_ethernets: 'Netplan Ethernet 合并视图', committed_network: 'UCI 已提交配置' };
 const associationStates = { active: '当前配置已激活', inactive: '设备未激活', transitioning: '设备状态转换中', unmanaged: 'NM 未管理', unavailable_device: '设备暂不可用', not_observed: '当前身份未观察到设备', conflicting: '设备正在使用其他配置', unknown: '未知' };
 const evidenceStates = { observed: '已取得关联快照', inactive: '服务未运行', unavailable: '不可读取', unsupported: '当前平台不支持', not_checked: '当前适配器未提供' };
+const loadedStates = { partial: '基础字段已比较', different: '存在加载差异', unavailable: '加载字段不可读取', unsupported: '当前平台不支持', not_checked: '尚未比较' };
+const loadedLabels = { device: '设备名称', mtu: 'MTU 声明', ipv4_method: 'IPv4 地址方式', ipv6_method: 'IPv6 地址方式', addresses: '静态地址集合', dns: 'DNS 地址集合', search: '搜索域集合' };
+const loadedReasons: Record<string, string> = { compared: '已比较', source_unset_or_unsupported: '来源未显式配置或格式未解析', loaded_field_unsupported: '加载字段格式未解析' };
+const loadedDiagnostics: Record<string, string> = { reference_not_matched: '加载引用未匹配', unsupported_platform: '当前平台不支持', backend_not_supported: '当前适配器未提供', settings_unavailable: '查询未完成，请核对工具与读取权限', settings_schema_unsupported: '加载响应格式未兼容', profile_not_observed: '当前身份未观察到该配置', partial_scope_not_full_sync: '标量与集合成员比较' };
+function loadedValue(value: number | string | string[] | null, field: string) {
+  if (value === null) return '未核验';
+  if (field === 'mtu' && value === 0) return '自动';
+  return Array.isArray(value) ? value.length ? value.join('；') : '空集合' : String(value);
+}
 const warnings: Record<string, string> = {
   non_atomic_file_snapshot: '各源文件分次读取', runtime_and_adoption_not_verified: '运行归属与接管未核验', unsupported_platform: '当前主机不支持目标管理器配置读取',
   source_read_incomplete: '部分源文件不可读取或超出限制', legacy_ifcfg_and_plugins_not_inspected: 'ifcfg 与其他插件来源未读取', no_supported_source_files: '未发现可读取的受支持源文件',
@@ -60,6 +69,18 @@ export function PersistentNetworkResult({ report }: { report: PersistentNetworkI
           { title: '活动配置 UUID 匹配', key: 'match', width: 190, render: (_, p) => p.device_association?.active_profile_matches === true ? '匹配' : p.device_association?.active_profile_matches === false ? '不匹配' : '未知' },
         ]} />
       </div> },
+      { key: 'loaded', label: '加载差异', children: <ProTable<PersistentNetworkProfile> headerTitle="源文件与加载配置比较" rowKey={p => `${p.source_ids.join(':')}:${p.reference}`} dataSource={report.profiles} search={false} options={false} pagination={{ pageSize: 8, showSizeChanger: false }} scroll={{ x: 1100 }} locale={{ emptyText: report.platform === 'linux' ? '未取得可比较的配置声明' : '当前平台不支持加载配置比较' }} columns={[
+        { title: '配置标识', dataIndex: 'reference', width: 260 },
+        { title: '比较状态', key: 'state', width: 200, render: (_, p) => <Tag color={p.loaded_comparison?.state === 'different' ? 'error' : 'default'}>{p.loaded_comparison ? loadedStates[p.loaded_comparison.state] : '未取得'}</Tag> },
+        { title: '检查时间', key: 'time', width: 200, render: (_, p) => p.loaded_comparison ? new Date(p.loaded_comparison.observed_at).toLocaleString() : '未取得' },
+        { title: '检查说明', key: 'diagnostic', width: 300, render: (_, p) => p.loaded_comparison ? loadedDiagnostics[p.loaded_comparison.diagnostic] ?? '待核验' : '未取得' },
+      ]} expandable={{ rowExpandable: p => Boolean(p.loaded_comparison?.fields.length), expandedRowRender: p => <ProTable<NonNullable<PersistentNetworkProfile['loaded_comparison']>['fields'][number]> rowKey="field" headerTitle="基础字段与集合成员" dataSource={p.loaded_comparison?.fields} search={false} options={false} pagination={false} scroll={{ x: 1100 }} columns={[
+        { title: '字段', key: 'field', width: 160, render: (_, f) => loadedLabels[f.field] },
+        { title: '源文件声明', key: 'source', width: 260, render: (_, f) => loadedValue(f.source, f.field) },
+        { title: '管理器加载值', key: 'loaded', width: 260, render: (_, f) => loadedValue(f.loaded, f.field) },
+        { title: '比较结果', key: 'state', width: 130, render: (_, f) => <Tag color={f.state === 'different' ? 'error' : 'default'}>{{ same: '一致', different: '不同', unknown: '未核验' }[f.state]}</Tag> },
+        { title: '依据', key: 'reason', width: 250, render: (_, f) => loadedReasons[f.reason] ?? '未核验' },
+      ]} /> }} /> },
       { key: 'sources', label: '来源证据', children: <ProTable<PersistentNetworkInspection['sources'][number]> headerTitle="源文件快照" rowKey="id" dataSource={report.sources} search={false} options={false} scroll={{ x: 1500 }} pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: '未取得配置来源' }} columns={[
         { title: '配置文件', dataIndex: 'path', width: 390 },
         { title: '存储类别', key: 'storage', width: 120, render: (_, s) => ({ persistent: '持久文件', runtime: '临时文件', vendor: '厂商文件' }[s.storage]) },
@@ -76,7 +97,7 @@ export function PersistentNetworkResult({ report }: { report: PersistentNetworkI
           { title: '管理器引用查询', render: () => ({ observed: '已取得可见引用', inactive: '服务未运行', unavailable: '不可读取', unsupported: '当前平台不支持', not_checked: '当前适配器未提供' }[report.manager?.state ?? 'not_checked']) },
           { title: '引用范围', render: () => '当前服务身份可见的配置引用' },
           { title: '查询时间', render: () => report.manager ? new Date(report.manager.observed_at).toLocaleString() : '未取得' },
-          { title: '运行内容', render: () => '尚未核验内容同步与激活状态' },
+          { title: '完整内容同步', render: () => '待核验' },
         ]} />
         <ProTable<NonNullable<PersistentNetworkInspection['authority']>['issues'][number]> headerTitle="接管检查项" rowKey={issue => `${issue.source_id}:${issue.reference}:${issue.severity}:${issue.code}`} dataSource={report.authority.issues} search={false} options={false} pagination={{ pageSize: 8, showSizeChanger: false }} scroll={{ x: 850 }} columns={[
           { title: '级别', key: 'severity', width: 100, render: (_, i) => <Tag color={i.severity === 'blocker' ? 'error' : 'warning'}>{i.severity === 'blocker' ? '阻断' : '待复核'}</Tag> },

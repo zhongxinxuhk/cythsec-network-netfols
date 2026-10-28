@@ -90,3 +90,34 @@ it('设备关联必须包含明确的受管状态、状态码和UUID匹配证据
     await expect(networkConfig.inspectPersistent('networkmanager')).rejects.toThrow('持久配置来源响应无效');
   }
 });
+
+it('加载比较拒绝伪一致、来源错绑、未知转空与汇总掩盖差异', async () => {
+  const source = { id: 'b'.repeat(64), path: '/etc/NetworkManager/system-connections/lan.nmconnection', storage: 'persistent', version_tag: 'c'.repeat(64), bytes: 60, state: 'read' };
+  const fields = [
+    { field: 'device', state: 'same', reason: 'compared', source: 'eth0', loaded: 'eth0' },
+    { field: 'mtu', state: 'different', reason: 'compared', source: 1500, loaded: 0 },
+    { field: 'ipv4_method', state: 'same', reason: 'compared', source: 'manual', loaded: 'manual' },
+    { field: 'ipv6_method', state: 'unknown', reason: 'source_unset_or_unsupported', source: null, loaded: 'auto' },
+    ...['addresses', 'dns', 'search'].map(field => ({ field, state: 'unknown', reason: 'source_unset_or_unsupported', source: null, loaded: [] })),
+  ];
+  const comparison = { state: 'different', scope: 'nm_profile_scalar_and_sets', observed_at: '2026-10-29T01:00:00Z', diagnostic: 'partial_scope_not_full_sync', fields };
+  const profile = { reference: 'nm:12345678-1234-1234-1234-123456789abc', device: 'eth0', binding: 'declared', methods: { ipv4: 'manual', ipv6: 'unspecified' }, mtu: 1500, addresses: null, dns: null, search: null, routes: null, field_states: { mtu: 'configured', addresses: 'unset', dns: 'unset', search: 'unset', routes: 'unset' }, source_ids: [source.id], origin_verified: true, load_reference: 'matched', loaded_comparison: comparison };
+  const base = { id: 'a'.repeat(64), backend: 'networkmanager', platform: 'linux', scope: 'keyfile_profiles', observed_at: comparison.observed_at, status: 'partial', can_apply: false, sources: [source], profiles: [profile], warnings: [] };
+  const respond = (patch: object) => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: { ...base, ...patch } }), { status: 200 })));
+  respond({}); await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ profiles: [{ loaded_comparison: { state: 'different' } }] });
+  for (const c of [
+    { ...comparison, state: 'partial' }, { ...comparison, state: 'passed' }, { ...comparison, fields: [] },
+    { ...comparison, fields: fields.map(f => f.field === 'mtu' ? { ...f, state: 'same' } : f) },
+    { ...comparison, fields: fields.map(f => f.field === 'device' ? { ...f, source: 'eth1', loaded: 'eth1' } : f) },
+    { ...comparison, fields: fields.map(f => f.field === 'dns' ? { ...f, source: [], state: 'same', reason: 'compared' } : f) },
+    { ...comparison, fields: fields.map(f => f.field === 'mtu' ? { ...f, loaded: null } : f) },
+    { ...comparison, state: 'unavailable' }, { ...comparison, scope: 'full_sync' },
+  ]) {
+    respond({ profiles: [{ ...profile, loaded_comparison: c }] });
+    await expect(networkConfig.inspectPersistent('networkmanager')).rejects.toThrow('持久配置来源响应无效');
+  }
+  respond({ profiles: [{ ...profile, load_reference: 'conflicting' }] });
+  await expect(networkConfig.inspectPersistent('networkmanager')).rejects.toThrow('持久配置来源响应无效');
+  respond({ profiles: [{ ...profile, loaded_comparison: { ...comparison, state: 'unavailable', fields: [] } }] });
+  await expect(networkConfig.inspectPersistent('networkmanager')).resolves.toMatchObject({ profiles: [{ loaded_comparison: { state: 'unavailable' } }] });
+});

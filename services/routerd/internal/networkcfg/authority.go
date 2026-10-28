@@ -263,6 +263,9 @@ func assessAuthority(r PersistentInspection) *AuthorityReport {
 			}
 			add(sourceID, profile.Reference, "blocker", "device_association_"+state, "设备受管状态与当前配置的激活关联尚未核对通过")
 		}
+		if profile.Loaded != nil && profile.Loaded.State == "different" {
+			add(sourceID, profile.Reference, "blocker", "loaded_settings_different", "源文件声明与管理器加载字段存在差异")
+		}
 	}
 	return a
 }

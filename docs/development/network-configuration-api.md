@@ -55,3 +55,7 @@ Go测试覆盖三个原生预览、模型注入/边界、私有目录、写入�
 来源快照增加可选 `device_evidence` 与 `profiles[].device_association`，见
 [NC-02B3B1](../console-design/network-device-association.md)。单独描述NM设备状态与活动UUID匹配，
 失败保留unavailable/unknown，旧后端不提供时显示未知；不扩展访问权限、接管或应用能力。
+
+来源快照增加可选 `profiles[].loaded_comparison`，七项标量与集合成员比较见
+[NC-02B3B2](../console-design/network-loaded-settings.md)。仅在明确UUID与来源文件引用匹配后查询；
+字段差异形成接管阻断，HTTP成功、部分字段一致均不发放配置应用许可。
