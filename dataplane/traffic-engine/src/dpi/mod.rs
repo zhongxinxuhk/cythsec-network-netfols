@@ -23,6 +23,7 @@ pub mod dhcp;
 pub mod dhcpv6;
 pub mod dns;
 pub mod http;
+pub mod mdns;
 pub mod tls;
 pub mod wire;
 
@@ -84,6 +85,20 @@ fn order(proto: u8, dst_port: u16) -> [fn(&[u8]) -> Detect; 3] {
 ///   * `Malformed`  —— 载荷自称是某协议但自相矛盾，计入解析失败；
 ///   * `Unknown`    —— 所有检测器都明确说"不是我"，计入 unknown。
 pub fn identify(payload: &[u8], proto: u8, dst_port: u16) -> Outcome {
+    identify_with_ports(payload, proto, 0, dst_port)
+}
+
+/// Full observed UDP port context, needed for mDNS legacy unicast responses.
+/// The legacy identify API remains compatible with callers that only know dport.
+pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u16) -> Outcome {
+    if proto == IPPROTO_UDP && mdns::transport(payload, src_port, dst_port) {
+        return match mdns::detect(payload) {
+            Detect::Hit(d) => Outcome::Identified(d),
+            Detect::NeedMore => Outcome::NeedMore,
+            Detect::Malformed => Outcome::Malformed,
+            Detect::Rejected => Outcome::Unknown,
+        };
+    }
     if proto == IPPROTO_UDP && dhcp::has_cookie(payload) {
         return match dhcp::detect(payload) {
             Detect::Hit(d) => Outcome::Identified(d),

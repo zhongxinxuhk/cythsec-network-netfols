@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-29.3",
+  "revision": "2026-10-29.4",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3795,15 +3795,29 @@
     {
       "id": "B017",
       "name": "mDNS",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "UDP5353双端口上下文中的mDNS结构候选；多问题/主动响应、QU/cache-flush、UTF-8及常见DNS-SD记录有界解析",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/mdns.rs#parse",
+        "dataplane/traffic-engine/src/dpi/dns.rs#parse_mdns_name",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify_with_ports",
+        "dataplane/traffic-engine/src/pipeline.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/mdns.rs#multi_question_qu_and_transport_context",
+        "dataplane/traffic-engine/src/dpi/mdns.rs#unsolicited_records_dns_sd_and_goodbye",
+        "dataplane/traffic-engine/src/dpi/mdns.rs#utf8_and_shared_dns_name_contract",
+        "dataplane/traffic-engine/src/dpi/mdns.rs#truncated_rdata_compression_loops_and_budgets",
+        "scripts/verify/check-mdns.py"
+      ],
+      "reference": [
+        "scripts/verify/check-mdns.sh",
+        "docs/planning/protocol-b017-mdns-verification.md"
+      ],
+      "gap": "明细未接FlowRecord/存储；8192字节/64问题与记录/128TXT字符串预算；链路本地性、缓存/冲突/服务生命周期、完整记录、IP重组、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B018",

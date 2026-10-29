@@ -40,3 +40,7 @@ python3 tools/codegen/gen-protocol-adaptation.py --check --self-test
 下一项B016 DHCPv6的有界消息、中继与IA选项识别见
 [B016验收记录](../planning/protocol-b016-dhcpv6-verification.md)。使用当前RFC 9915，DUID按不透明标识保存；
 完整事务、明细输出与真实语料验收仍有缺口，不沿用B015门禁结果。
+
+B017 mDNS的多问题、主动响应、DNS-SD常见记录及UTF-8名称解析见
+[B017验收记录](../planning/protocol-b017-mdns-verification.md)。双端口上下文通过兼容的DPI入口传入，
+普通DNS名称归一化保持原契约；链路本地性、缓存/冲突状态和明细输出仍未完成。
