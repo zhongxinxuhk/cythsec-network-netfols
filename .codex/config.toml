@@ -1,2 +1,6 @@
   [mcp_servers.clion]
-    url = "http://127.0.0.1:64362/stream"
+    command = "/Applications/CLion.app/Contents/MacOS/clion"
+    args = ["stdioMcpServer"]
+
+    [mcp_servers.clion.env]
+      IJ_MCP_SERVER_PORT = "64362"

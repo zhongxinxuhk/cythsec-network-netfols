@@ -18,8 +18,10 @@
 //    全部数据**；丢掉"没有 FIN 的会话"会让一整条大流量的记录消失，而统计上看不出
 //    少了什么。在线路径相反：那里靠 `SessionManager::expire` 按超时回收。
 //
-// 3. **DTO 只跑首包**，每个方向第一个非空载荷各一次，与 DPI 的定位一致
-//    （不等重组，见 dpi/mod.rs）。把重组结果喂给 DPI 是后续步骤。
+// 3. Most classifiers inspect one payload per direction. DNS/TCP on service
+//    port 53 additionally uses bounded SYN-anchored first-frame reassembly.
+
+mod dns_tcp;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -230,6 +232,7 @@ struct PipelineState {
     features: BTreeMap<FlowKey, FeatureExtractor>,
     probes: BTreeMap<FlowKey, Probe>,
     payload_start_unknown: u64,
+    dns_tcp: dns_tcp::DnsTcpStreams,
 }
 
 impl PipelineState {
@@ -239,6 +242,7 @@ impl PipelineState {
             features: BTreeMap::new(),
             probes: BTreeMap::new(),
             payload_start_unknown: 0,
+            dns_tcp: dns_tcp::DnsTcpStreams::new(opts.inspect_bytes, opts.session.max_sessions),
         }
     }
 
@@ -297,6 +301,32 @@ impl PipelineState {
         };
         let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false)
             || native_tunnel && inspect_payload.len() < d.ip_payload_len as usize;
+        if d.key.proto.number() == dpi::IPPROTO_TCP
+            && (d.key.src_port == 53 || d.key.dst_port == 53)
+        {
+            let end = d
+                .l4_offset
+                .saturating_add(d.ip_payload_len as usize)
+                .min(pkt.data.len());
+            let segment = pkt
+                .data
+                .get(d.l4_offset..end)
+                .and_then(|bytes| crate::reassembly::tcp::parse(bytes).ok());
+            let seen = self.probes.get(&key).is_some_and(|p| p.is_done(obs.side));
+            if let Some(segment) = segment {
+                let update =
+                    self.dns_tcp
+                        .observe(&obs, &segment, pkt.timestamp_us, seen, d.is_fragmented);
+                let probe = self.probes.entry(key).or_default();
+                if update.reset {
+                    *probe = Probe::default();
+                }
+                if let Some(info) = update.info {
+                    *probe.slot(obs.side) = Some(info);
+                }
+            }
+            return;
+        }
         let probe = self.probes.entry(key).or_default();
         if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
             let mut n = inspect_payload.len().min(opts.inspect_bytes);
