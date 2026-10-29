@@ -299,9 +299,27 @@ impl PipelineState {
             || native_tunnel && inspect_payload.len() < d.ip_payload_len as usize;
         let probe = self.probes.entry(key).or_default();
         if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
-            let n = inspect_payload.len().min(opts.inspect_bytes);
-            let outcome =
-                dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port);
+            let mut n = inspect_payload.len().min(opts.inspect_bytes);
+            let dhcp =
+                d.key.proto.number() == dpi::IPPROTO_UDP && dpi::dhcp::has_cookie(inspect_payload);
+            let outcome = if dhcp && (d.is_fragmented || truncated) {
+                Outcome::NeedMore
+            } else if dhcp {
+                // Keep the datagram boundary: IP/Ethernet padding is not DHCP options.
+                let udp_len = pkt
+                    .data
+                    .get(d.l4_offset + 4..d.l4_offset + 6)
+                    .map(|v| usize::from(u16::from_be_bytes([v[0], v[1]])));
+                match udp_len {
+                    Some(len) if len >= 8 && len <= d.ip_payload_len as usize => {
+                        n = n.min(len - 8);
+                        dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port)
+                    }
+                    _ => Outcome::Malformed,
+                }
+            } else {
+                dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port)
+            };
             // 截断捕获必须导向「还需要更多字节」：我们自己少拷了字节，不能算「不认识」。
             let info = if truncated && matches!(outcome, Outcome::Unknown) {
                 AppInfo::from_outcome(&Outcome::NeedMore, n)

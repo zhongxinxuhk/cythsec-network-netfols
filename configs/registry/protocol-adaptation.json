@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-29.1",
+  "revision": "2026-10-29.2",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3742,15 +3742,28 @@
     {
       "id": "B015",
       "name": "DHCPv4",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "UDP承载DHCPv4基础消息1–8有界识别；固定头及选项提取，overload/拼接，保留分片/截断/预算状态",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#parse",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify",
+        "dataplane/traffic-engine/src/dpi/types.rs",
+        "dataplane/traffic-engine/src/pipeline.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#message_types_fields_and_transport",
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#overload_concatenation_keeps_field_boundaries",
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#truncation_negative_and_budget_semantics",
+        "scripts/verify/check-dhcpv4.py"
+      ],
+      "reference": [
+        "scripts/verify/check-dhcpv4.sh",
+        "docs/planning/protocol-b015-dhcpv4-verification.md"
+      ],
+      "gap": "详细字段尚未进入FlowRecord/存储；4096字节/256选项预算；完整租约事务、扩展消息/选项、IP重组、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B016",

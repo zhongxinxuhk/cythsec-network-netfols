@@ -175,6 +175,10 @@ test_rust() {
     echo "✗ [protocol-adaptation] 清单或DNS/TCP回归失败" >&2
     return 1
   fi
+  if ! bash scripts/verify/check-dhcpv4.sh; then
+    echo "✗ [B015] DHCPv4回归失败" >&2
+    return 1
+  fi
   echo "✓ [rust] 测试通过（含特征 parity、识别 CLI 与独立聚合观测）"
 }
 
@@ -862,6 +866,7 @@ failed=0
 [[ $BUILD_RUST -eq 1 ]]  && { test_rust  || failed=$((failed+1)); }
 # CYS-MLT-001: isolated packaging gate runs in the default suite; standalone entry below.
 if [[ ${ALL} -eq 1 ]]; then
+  bash scripts/verify/check-dhcpv4.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-dns-tcp.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-vpn-identification.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-aggregate-observability.sh --tshark || failed=$((failed+1))

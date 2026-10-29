@@ -32,3 +32,7 @@ python3 tools/codegen/gen-protocol-adaptation.py --check --self-test
 
 此表只记录现状和通用解析工作；本轮没有新增公众规避审查协议指纹、主动探测或封锁实现。
 本轮验收见[记录](../planning/protocol-adaptation-verification.md)。
+
+基础/补充项顺序接B014推进B015 DHCPv4，本轮范围、测试与未完成项见
+[B015验收记录](../planning/protocol-b015-dhcpv4-verification.md)。门禁退出码单独实跑，
+不沿用上轮DNS/TCP结果；DHCPv4详细字段尚未进入FlowRecord，完整适配保持未勾选。

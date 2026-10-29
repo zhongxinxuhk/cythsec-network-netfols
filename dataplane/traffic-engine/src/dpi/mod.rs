@@ -19,6 +19,7 @@
 // 标准隧道结构解析先于原有三个应用检测器，返回中等置信的结构级 AppId。
 // 它不等于产品归因或密码学认证；双向确认、可信上下文和 A/B/C/U 在 identification 中处理。
 pub mod attributes;
+pub mod dhcp;
 pub mod dns;
 pub mod http;
 pub mod tls;
@@ -82,8 +83,17 @@ fn order(proto: u8, dst_port: u16) -> [fn(&[u8]) -> Detect; 3] {
 ///   * `Malformed`  —— 载荷自称是某协议但自相矛盾，计入解析失败；
 ///   * `Unknown`    —— 所有检测器都明确说"不是我"，计入 unknown。
 pub fn identify(payload: &[u8], proto: u8, dst_port: u16) -> Outcome {
+    if proto == IPPROTO_UDP && dhcp::has_cookie(payload) {
+        return match dhcp::detect(payload) {
+            Detect::Hit(d) => Outcome::Identified(d),
+            Detect::NeedMore => Outcome::NeedMore,
+            Detect::Malformed => Outcome::Malformed,
+            Detect::Rejected => Outcome::Unknown,
+        };
+    }
     let structural = wire::inspect_standard(payload, proto, 0, dst_port);
-    let mut saw_need_more = matches!(structural, wire::Verdict::NeedMore);
+    let mut saw_need_more = matches!(structural, wire::Verdict::NeedMore)
+        || proto == IPPROTO_UDP && matches!(dhcp::detect(payload), Detect::NeedMore);
     let mut saw_malformed = matches!(structural, wire::Verdict::Malformed);
     if let wire::Verdict::Match(f) = structural {
         let app = match f.id {
