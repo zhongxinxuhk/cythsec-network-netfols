@@ -194,7 +194,7 @@ cythsec/
 技术文档：`architecture/`（架构）、`dataplane/`、`controlplane/`、`dpi/`、`ml/`、`api/`（接口）、`deployment/`（部署）、`performance/`（性能）、`security/`（安全）。
 
 ### CI/CD `.github/`
-- `workflows/`：GitHub Actions 流水线（构建、测试、发布、安全扫描）。
+- `workflows/`：由 `ci.yml` 统一编排，每次推送依次执行静态检查、安全扫描、多语言构建测试、Linux 默认全集和端到端验收；执行顺序与必需检查见 [流水线说明](.github/workflows/README.md)。
 
 ---
 

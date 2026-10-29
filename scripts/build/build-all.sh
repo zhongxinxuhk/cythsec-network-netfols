@@ -8,7 +8,7 @@
 #   bash scripts/build/build-all.sh --help       # 查看帮助
 #
 # 行为：
-#   - 开头做工具链版本预检（cmake≥3.20 / cargo / go≥1.22 / node≥22.12（或 ≥24）），不足则可读报错并退出。
+#   - 仅预检所选分组工具链（cmake≥3.20 / cargo + Python / go≥1.22 / node≥22.12（或 ≥24））。
 #   - 任一栈失败不影响其它栈继续；结尾汇总，整体以「失败栈数」为退出码（全成功=0）。
 #   - 幂等，可重复执行。
 set -euo pipefail
@@ -47,28 +47,36 @@ need_cmd() {
 }
 
 check_toolchain() {
-  need_cmd cmake
-  need_cmd cargo
-  need_cmd go
-  need_cmd node
-  need_cmd npm
-
-  local cmake_ver go_ver node_ver
-  cmake_ver="$(cmake --version | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
-  go_ver="$(go version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
-  node_ver="$(node --version | tr -d 'v')"
-
   local ok=1
-  # 变量引用一律加花括号：macOS bash 3.2 会把紧跟 $VAR 的多字节字符并入变量名，
-  # 在 set -u 下直接报 unbound variable 并中断（即在最需要提示时反而失去提示）。
-  ver_ge "$cmake_ver" "3.20" || { echo "✗ cmake 版本过低: ${cmake_ver}（要求 ≥ 3.20）" >&2; ok=0; }
-  ver_ge "$go_ver" "1.22" || { echo "✗ go 版本过低: ${go_ver}（要求 ≥ 1.22）" >&2; ok=0; }
-  ver_ge "$node_ver" "22.12.0" && [[ "${node_ver%%.*}" != "23" ]] || { echo "✗ node 版本不满足前端要求: ${node_ver}（要求 ^22.12.0 或 ≥24；CI 版本见 .node-version）" >&2; ok=0; }
+  if [[ $BUILD_CPP -eq 1 ]]; then
+    need_cmd cmake
+    need_cmd c++
+    local cmake_ver
+    cmake_ver="$(cmake --version | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
+    ver_ge "$cmake_ver" "3.20" || { echo "✗ cmake 版本过低: ${cmake_ver}（要求 ≥ 3.20）" >&2; ok=0; }
+  fi
+  if [[ $BUILD_RUST -eq 1 ]]; then
+    need_cmd cargo
+    need_cmd "${PYTHON:-python3}"
+  fi
+  if [[ $BUILD_GO -eq 1 ]]; then
+    need_cmd go
+    local go_ver
+    go_ver="$(go version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
+    ver_ge "$go_ver" "1.22" || { echo "✗ go 版本过低: ${go_ver}（要求 ≥ 1.22）" >&2; ok=0; }
+  fi
+  if [[ $BUILD_NODE -eq 1 ]]; then
+    need_cmd node
+    need_cmd npm
+    local node_ver
+    node_ver="$(node --version | tr -d 'v')"
+    ver_ge "$node_ver" "22.12.0" && [[ "${node_ver%%.*}" != "23" ]] || { echo "✗ node 版本不满足前端要求: ${node_ver}（要求 ^22.12.0 或 ≥24）" >&2; ok=0; }
+  fi
   if [[ $ok -eq 0 ]]; then
     echo "工具链预检未通过，终止构建。" >&2
     exit 1
   fi
-  echo "✓ 工具链预检通过 (cmake $cmake_ver / go $go_ver / node $node_ver / cargo $(cargo --version | grep -oE '[0-9]+\.[0-9]+' | head -1))"
+  echo "✓ 本次所选构建分组的工具链预检通过"
 }
 
 # ---------- 各栈构建 ----------
@@ -86,6 +94,7 @@ build_cpp() {
 }
 
 build_rust() {
+  bash scripts/test/prepare-rust-fixtures.sh || return 1
   echo "==> [rust] cargo build --offline --workspace"
   if ! cargo build --offline --workspace; then
     echo "✗ [rust] 构建失败（检查 Cargo 离线缓存 / 网络）" >&2

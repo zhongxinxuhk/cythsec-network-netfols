@@ -1,18 +1,13 @@
 name: Lint
 run-name: "Lint · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}"
 
-# 触发条件：推送到 main 或 PR 时运行静态检查。
+# 自动检查由 ci.yml 串行调用；保留手动入口。
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: lint-${{ github.event_name }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
 
 # 静态检查统一收敛在 scripts/lint/lint-all.sh（CYS-INF-007）：
 #   clang-format --dry-run --Werror / cargo fmt --check / gofmt -l / npm run lint。
@@ -23,6 +18,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt

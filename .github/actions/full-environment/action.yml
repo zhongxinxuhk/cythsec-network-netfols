@@ -1,0 +1,35 @@
+name: Full validation environment
+description: Prepare the complete toolchain and locked offline dependencies.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.11'
+    - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+    - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      with:
+        go-version: stable
+        cache: false
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version-file: .node-version
+        cache: npm
+        cache-dependency-path: web/console/package-lock.json
+    - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      with:
+        version: '0.12.1'
+        enable-cache: true
+        cache-dependency-glob: ml/training/uv.lock
+    - name: Bootstrap locked dependencies before offline acceptance
+      shell: bash
+      run: |
+        cargo fetch --locked
+        uv python install "$(cat ml/training/.python-version)"
+        uv sync --project ml/training --locked --group quality
+        python3 -m pip install "clang-format==$(cat .clang-format-version)"
+        npm ci --prefix web/console
+        make hooks

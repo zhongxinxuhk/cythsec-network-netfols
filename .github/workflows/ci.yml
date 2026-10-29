@@ -1,32 +1,82 @@
 name: CI
 run-name: "CI · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}"
 
-# 触发条件：推送到 main 或开启/更新 PR 时运行。
+# 唯一自动入口：每个分支/tag 的 push 都执行同一条流水线，不取消较早的推送。
 on:
   push:
-    branches: [main]
   pull_request:
+  merge_group:
+  workflow_dispatch:
 
-# 四语言矩阵：cpp / rust / go / node，各自 build + test。
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# 阶段以 needs 串联；同一阶段内部的跨平台矩阵保留并行。
 # 构建与测试逻辑全部收敛在 scripts/ 下，本 workflow 只负责环境准备与调用（CYS-INF-007）。
 jobs:
+  workflow-tests:
+    name: 工作流契约与语法
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: stable
+          cache: false
+      - name: 安装工作流校验器
+        run: |
+          python3 -m pip install -r tests/ci/requirements.txt
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: 校验表达式、依赖、失败传播与 Shell 语法
+        run: |
+          actionlint -shellcheck= -pyflakes=
+          python3 -m unittest discover -s tests/ci -v
+          git ls-files -z '*.sh' | xargs -0 -n 1 bash -n
+
+  lint:
+    needs: workflow-tests
+    uses: ./.github/workflows/lint.yml
+
+  security:
+    needs: lint
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/security.yml
+
   cpp:
     name: C++ 多平台编译与测试
+    needs: security
     uses: ./.github/workflows/cmake-multi-platform.yml
     permissions:
       contents: read
 
   rust:
     name: Rust 构建、测试与跨语言契约
+    needs: cpp
     uses: ./.github/workflows/rust.yml
     permissions:
       contents: read
 
   python:
     name: Python 锁定环境与隔离安装验收
-    runs-on: ubuntu-latest
+    needs: rust
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.1"
@@ -43,35 +93,42 @@ jobs:
 
   go:
     name: Go 构建与测试
-    runs-on: ubuntu-latest
+    needs: python
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.22"
-      - name: 缓存 Go 构建与模块
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          cache: false
       - name: 构建并测试 (Go)
         run: |
           bash scripts/build/build-all.sh --go
           bash scripts/test/test-all.sh --go
+      - name: 全部 Go 模块的 vet 与 race 检查
+        run: |
+          for manifest in services/*/go.mod; do
+            module="$(dirname "$manifest")"
+            (cd "$module" && GOWORK=off GOPROXY=off GOTOOLCHAIN=local go vet ./...)
+            (cd "$module" && GOWORK=off GOPROXY=off GOTOOLCHAIN=local go test -race -count=1 ./...)
+          done
 
   e2e:
     name: 控制面端到端验证
-    runs-on: ubuntu-latest
-    needs: go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: full-validation
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.22"
+          cache: false
       - name: 生成四服务二进制（含版本注入）
         run: bash scripts/build/build-all.sh --go
       - name: 安装 jq（日志结构化校验用）
@@ -80,7 +137,7 @@ jobs:
         # WORK_DIR 固定路径 + 失败保留，使下面的 artifact 上传有实际内容可传。
         env:
           WORK_DIR: ${{ runner.temp }}/e2e-work
-        run: bash scripts/verify/e2e-control-plane.sh
+        run: bash scripts/ci/run-check.sh build/ci/control-plane.log bash scripts/verify/e2e-control-plane.sh
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: stable
@@ -88,21 +145,29 @@ jobs:
         with:
           python-version: '3.11'
       - name: 聚合结果持久化与重启查询
-        run: bash scripts/verify/check-aggregate-storage.sh
+        run: |
+          bash scripts/test/prepare-rust-fixtures.sh
+          cargo fetch --locked
+          bash scripts/verify/check-aggregate-storage.sh
       - name: 失败时上传四服务日志与指标
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-workdir
           path: ${{ runner.temp }}/e2e-work
           if-no-files-found: warn
+          retention-days: 7
 
   node:
     name: 前端类型、测试与构建
-    runs-on: ubuntu-latest
+    needs: go
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: .node-version
           cache: "npm"
@@ -112,10 +177,33 @@ jobs:
           cd web/console
           npm ci
           npm run typecheck:all
-          npm test
+          npm run lint
+          bash ../../scripts/test/test-all.sh --node
           npm run build
       - name: 上传 dist 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: web-console-dist
           path: web/console/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  full-validation:
+    name: Linux 默认全集与特权抓包验收
+    needs: node
+    uses: ./.github/workflows/full-validation.yml
+
+  ci-required:
+    name: CI required
+    if: ${{ always() }}
+    needs: [workflow-tests, lint, security, cpp, rust, python, go, node, full-validation, e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: 汇总全部阶段，失败、取消、跳过均不通过
+        env:
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/check-results.py

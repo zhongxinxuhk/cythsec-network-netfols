@@ -8,10 +8,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: rust-${{ github.event_name }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
-
 defaults:
   run:
     shell: bash
@@ -68,6 +64,7 @@ jobs:
           if-no-files-found: warn
 
   build-test:
+    needs: quality
     name: Rust 构建与测试 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -145,6 +142,7 @@ jobs:
           if-no-files-found: error
 
   interoperability:
+    needs: build-test
     name: Rust 与 C++ / tshark 互操作
     runs-on: ubuntu-24.04
     timeout-minutes: 30
