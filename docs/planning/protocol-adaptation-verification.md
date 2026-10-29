@@ -25,3 +25,15 @@
 既有DPI14、TCP重组2、FlowRecord8项裁判例外继续未核验；不合main、不推送。
 依用户要求跳过macOS网关兼容适配，不做unsupported界面复验；保留通用开发门禁。
 本地evidence-manifest.json绑定提交、变更文件与完成日志的SHA-256；未签名，不代替第三方验收或可信时间证明。
+
+后续基础/补充清单从B015 DHCPv4继续，独立的本轮结果见
+[DHCPv4验收记录](protocol-b015-dhcpv4-verification.md)，不以此页历史退出码替代本轮门禁。
+
+B016 DHCPv6继续按基础清单顺序推进，范围与本轮实跑结果见
+[DHCPv6验收记录](protocol-b016-dhcpv6-verification.md)。
+
+B017 mDNS的范围、专项/独立对照及本轮门禁见
+[mDNS验收记录](protocol-b017-mdns-verification.md)，不使用本页历史结果替代。
+
+B018 DoT的显式TLS明文入口、受控TLS字节对照及本轮门禁见
+[DoT验收记录](protocol-b018-dot-verification.md)。

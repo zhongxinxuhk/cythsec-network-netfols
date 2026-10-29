@@ -32,3 +32,19 @@ python3 tools/codegen/gen-protocol-adaptation.py --check --self-test
 
 此表只记录现状和通用解析工作；本轮没有新增公众规避审查协议指纹、主动探测或封锁实现。
 本轮验收见[记录](../planning/protocol-adaptation-verification.md)。
+
+基础/补充项顺序接B014推进B015 DHCPv4，本轮范围、测试与未完成项见
+[B015验收记录](../planning/protocol-b015-dhcpv4-verification.md)。门禁退出码单独实跑，
+不沿用上轮DNS/TCP结果；DHCPv4详细字段尚未进入FlowRecord，完整适配保持未勾选。
+
+下一项B016 DHCPv6的有界消息、中继与IA选项识别见
+[B016验收记录](../planning/protocol-b016-dhcpv6-verification.md)。使用当前RFC 9915，DUID按不透明标识保存；
+完整事务、明细输出与真实语料验收仍有缺口，不沿用B015门禁结果。
+
+B017 mDNS的多问题、主动响应、DNS-SD常见记录及UTF-8名称解析见
+[B017验收记录](../planning/protocol-b017-mdns-verification.md)。双端口上下文通过兼容的DPI入口传入，
+普通DNS名称归一化保持原契约；链路本地性、缓存/冲突状态和明细输出仍未完成。
+
+B018 DoT在显式TLS应用明文入口中解析长度帧，见[B018验收记录](../planning/protocol-b018-dot-verification.md)。
+调用方声明来源/会话/方向，受控TLS1.2/1.3字节与tshark对照不替代生产数据源或认证。
+普通pcap入口不凭853、SNI或ALPN把TLS升级为DoT；完整适配保持未勾选。

@@ -25,6 +25,10 @@ SUPPORT = (
     'services/routerd/internal/networkcfg/netplan_projection.py',
     'tools/codegen/gen-protocol-adaptation.py',
     'scripts/verify/check-dns-tcp.py',
+    'scripts/verify/check-dhcpv4.py',
+    'scripts/verify/check-dhcpv6.py',
+    'scripts/verify/check-mdns.py',
+    'scripts/verify/check-dot.py',
 )
 
 

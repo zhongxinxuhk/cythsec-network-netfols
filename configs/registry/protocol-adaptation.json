@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-29.1",
+  "revision": "2026-10-29.5",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3742,54 +3742,107 @@
     {
       "id": "B015",
       "name": "DHCPv4",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "UDP承载DHCPv4基础消息1–8有界识别；固定头及选项提取，overload/拼接，保留分片/截断/预算状态",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#parse",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify",
+        "dataplane/traffic-engine/src/dpi/types.rs",
+        "dataplane/traffic-engine/src/pipeline.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#message_types_fields_and_transport",
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#overload_concatenation_keeps_field_boundaries",
+        "dataplane/traffic-engine/src/dpi/dhcp.rs#truncation_negative_and_budget_semantics",
+        "scripts/verify/check-dhcpv4.py"
+      ],
+      "reference": [
+        "scripts/verify/check-dhcpv4.sh",
+        "docs/planning/protocol-b015-dhcpv4-verification.md"
+      ],
+      "gap": "详细字段尚未进入FlowRecord/存储；4096字节/256选项预算；完整租约事务、扩展消息/选项、IP重组、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B016",
       "name": "DHCPv6",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "UDP承载DHCPv6基础1–11及中继12/13有界识别；DUID/IA_NA/IA_PD/中继字段解析，保留长度/分片/预算边界",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#parse",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify",
+        "dataplane/traffic-engine/src/dpi/types.rs",
+        "dataplane/traffic-engine/src/pipeline.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#base_messages_duids_and_transport",
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#ia_na_and_pd_keep_fields_and_parent_boundaries",
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#relay_encapsulation_and_global_budgets",
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#truncation_singletons_unknown_and_ia_validation",
+        "scripts/verify/check-dhcpv6.py"
+      ],
+      "reference": [
+        "scripts/verify/check-dhcpv6.sh",
+        "docs/planning/protocol-b016-dhcpv6-verification.md"
+      ],
+      "gap": "明细未接FlowRecord/存储；4096字节/256选项/8层中继预算；匿名空消息保留未知；完整事务/认证/扩展、中继拓扑、IP重组、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B017",
       "name": "mDNS",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "UDP5353双端口上下文中的mDNS结构候选；多问题/主动响应、QU/cache-flush、UTF-8及常见DNS-SD记录有界解析",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/mdns.rs#parse",
+        "dataplane/traffic-engine/src/dpi/dns.rs#parse_mdns_name",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify_with_ports",
+        "dataplane/traffic-engine/src/pipeline.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/mdns.rs#multi_question_qu_and_transport_context",
+        "dataplane/traffic-engine/src/dpi/mdns.rs#unsolicited_records_dns_sd_and_goodbye",
+        "dataplane/traffic-engine/src/dpi/mdns.rs#utf8_and_shared_dns_name_contract",
+        "dataplane/traffic-engine/src/dpi/mdns.rs#truncated_rdata_compression_loops_and_budgets",
+        "scripts/verify/check-mdns.py"
+      ],
+      "reference": [
+        "scripts/verify/check-mdns.sh",
+        "docs/planning/protocol-b017-mdns-verification.md"
+      ],
+      "gap": "明细未接FlowRecord/存储；8192字节/64问题与记录/128TXT字符串预算；链路本地性、缓存/冲突/服务生命周期、完整记录、IP重组、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B018",
       "name": "DNS over TLS",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "授权可见明文条件下的DNS消息分析",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "外层加密；需要明文终止点或授权服务侧证据，不以端口或SNI确定DNS应用"
+      "scope": "调用方声明TLS终止来源/会话/方向的应用明文入口；有界多帧DNS消息解析与独立消息事件，不推断原始TLS载荷",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/dot.rs#PlaintextStream",
+        "dataplane/traffic-engine/src/bin/analyze/dot_plaintext.rs#run",
+        "dataplane/traffic-engine/src/bin/analyze.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/dot.rs#every_split_and_coalesced_frames_preserve_provenance",
+        "dataplane/traffic-engine/src/dpi/dot.rs#malformed_frame_cannot_borrow_or_resynchronize",
+        "dataplane/traffic-engine/src/dpi/dot.rs#eof_direction_and_budgets_are_explicit",
+        "scripts/verify/check-dot.py"
+      ],
+      "reference": [
+        "scripts/verify/check-dot.sh",
+        "docs/planning/protocol-b018-dot-verification.md"
+      ],
+      "gap": "仅caller-attested明文接口；8192字节/帧、128消息，仅QDCOUNT=1及既有有界DNS字段；生产来源/授权/连接绑定、TLS解密/认证、完整DNS事务、FlowRecord/存储、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B019",

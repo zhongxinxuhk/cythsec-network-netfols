@@ -299,9 +299,48 @@ impl PipelineState {
             || native_tunnel && inspect_payload.len() < d.ip_payload_len as usize;
         let probe = self.probes.entry(key).or_default();
         if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
-            let n = inspect_payload.len().min(opts.inspect_bytes);
-            let outcome =
-                dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port);
+            let mut n = inspect_payload.len().min(opts.inspect_bytes);
+            let preliminary = dpi::identify_with_ports(
+                &inspect_payload[..n],
+                d.key.proto.number(),
+                d.key.src_port,
+                d.key.dst_port,
+            );
+            let dhcpv6 = d.key.proto.number() == dpi::IPPROTO_UDP
+                && (matches!(&preliminary, Outcome::Identified(info) if info.app == dpi::AppId::Dhcpv6)
+                    || matches!(d.key.dst_port, 546 | 547)
+                        && dpi::dhcpv6::is_message_type(inspect_payload));
+            let dhcp = d.key.proto.number() == dpi::IPPROTO_UDP
+                && (dpi::dhcp::has_cookie(inspect_payload) || dhcpv6);
+            let mdns = d.key.proto.number() == dpi::IPPROTO_UDP
+                && dpi::mdns::transport(inspect_payload, d.key.src_port, d.key.dst_port);
+            let outcome = if (dhcp || mdns) && (d.is_fragmented || truncated) {
+                Outcome::NeedMore
+            } else if dhcp || mdns {
+                // Keep datagram boundaries: IP/Ethernet padding is not application data.
+                let udp_len = pkt
+                    .data
+                    .get(d.l4_offset + 4..d.l4_offset + 6)
+                    .map(|v| usize::from(u16::from_be_bytes([v[0], v[1]])));
+                match udp_len {
+                    Some(len) if len >= 8 && len <= d.ip_payload_len as usize => {
+                        n = n.min(len - 8);
+                        if (dhcpv6 || mdns) && n < len - 8 {
+                            Outcome::NeedMore // The complete datagram has not been inspected.
+                        } else {
+                            dpi::identify_with_ports(
+                                &inspect_payload[..n],
+                                d.key.proto.number(),
+                                d.key.src_port,
+                                d.key.dst_port,
+                            )
+                        }
+                    }
+                    _ => Outcome::Malformed,
+                }
+            } else {
+                preliminary
+            };
             // 截断捕获必须导向「还需要更多字节」：我们自己少拷了字节，不能算「不认识」。
             let info = if truncated && matches!(outcome, Outcome::Unknown) {
                 AppInfo::from_outcome(&Outcome::NeedMore, n)
