@@ -44,3 +44,7 @@ python3 tools/codegen/gen-protocol-adaptation.py --check --self-test
 B017 mDNS的多问题、主动响应、DNS-SD常见记录及UTF-8名称解析见
 [B017验收记录](../planning/protocol-b017-mdns-verification.md)。双端口上下文通过兼容的DPI入口传入，
 普通DNS名称归一化保持原契约；链路本地性、缓存/冲突状态和明细输出仍未完成。
+
+B018 DoT在显式TLS应用明文入口中解析长度帧，见[B018验收记录](../planning/protocol-b018-dot-verification.md)。
+调用方声明来源/会话/方向，受控TLS1.2/1.3字节与tshark对照不替代生产数据源或认证。
+普通pcap入口不凭853、SNI或ALPN把TLS升级为DoT；完整适配保持未勾选。

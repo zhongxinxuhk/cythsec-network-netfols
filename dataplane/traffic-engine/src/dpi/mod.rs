@@ -22,6 +22,7 @@ pub mod attributes;
 pub mod dhcp;
 pub mod dhcpv6;
 pub mod dns;
+pub mod dot;
 pub mod http;
 pub mod mdns;
 pub mod tls;

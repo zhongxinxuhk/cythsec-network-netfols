@@ -34,3 +34,6 @@ B016 DHCPv6继续按基础清单顺序推进，范围与本轮实跑结果见
 
 B017 mDNS的范围、专项/独立对照及本轮门禁见
 [mDNS验收记录](protocol-b017-mdns-verification.md)，不使用本页历史结果替代。
+
+B018 DoT的显式TLS明文入口、受控TLS字节对照及本轮门禁见
+[DoT验收记录](protocol-b018-dot-verification.md)。
