@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-29.5",
+  "revision": "2026-10-29.6",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3847,15 +3847,27 @@
     {
       "id": "B019",
       "name": "DNS over HTTPS",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "授权可见明文条件下的DNS消息分析",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "外层加密；需要明文终止点或授权服务侧证据，不以端口或SNI确定DNS应用"
+      "scope": "调用方声明来源/HTTP请求标识的完整已解码HTTPS消息；GET无填充base64url、POST和2xx响应的有界DNS表示",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/doh.rs#parse_https",
+        "dataplane/traffic-engine/src/bin/analyze/doh_message.rs#run",
+        "dataplane/traffic-engine/src/bin/analyze.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/doh.rs#post_and_response_keep_http_identity_and_dns_semantics",
+        "dataplane/traffic-engine/src/dpi/doh.rs#get_encoding_is_url_safe_unpadded_and_canonical",
+        "dataplane/traffic-engine/src/dpi/doh.rs#metadata_lengths_media_and_direction_do_not_fall_back",
+        "scripts/verify/check-doh.py"
+      ],
+      "reference": [
+        "scripts/verify/check-doh.sh",
+        "docs/planning/protocol-b019-doh-verification.md"
+      ],
+      "gap": "仅caller-attested已解码消息接口；8192字节DNS/16384字节URL，仅单dns参数、identity编码、QDCOUNT=1有界字段；生产来源/授权/request绑定、HTTP2/3帧与HPACK/QPACK、完整事务/TLS认证、FlowRecord/存储、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B020",

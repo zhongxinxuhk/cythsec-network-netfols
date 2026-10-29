@@ -29,18 +29,27 @@ pub struct Context {
     session_id: String,
     direction: Direction,
 }
+pub(super) fn valid_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+}
 impl Context {
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub fn direction(&self) -> Direction {
+        self.direction
+    }
     pub fn new(
         source_id: &str,
         session_id: &str,
         direction: Direction,
     ) -> Result<Self, &'static str> {
-        let valid_identifier = |s: &str| {
-            !s.is_empty()
-                && s.len() <= 128
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
-        };
         if !valid_identifier(source_id) || !valid_identifier(session_id) {
             return Err("source/session IDs require 1..128 ASCII letters, digits, . _ : -");
         }

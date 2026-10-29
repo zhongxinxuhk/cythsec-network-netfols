@@ -45,13 +45,13 @@ def checksum(data):
     return (~total) & 65535
 
 
-def packet(data, side, seq, ack, flags=0x18):
+def packet(data, side, seq, ack, flags=0x18, server_port=853):
     src, dst = (
         (bytes([192, 0, 2, 1]), bytes([198, 51, 100, 2]))
         if side == 0
         else (bytes([198, 51, 100, 2]), bytes([192, 0, 2, 1]))
     )
-    sport, dport = (40000, 853) if side == 0 else (853, 40000)
+    sport, dport = (40000, server_port) if side == 0 else (server_port, 40000)
     tcp = bytearray(struct.pack('!HHIIBBHHH', sport, dport, seq, ack, 0x50, flags, 65535, 0, 0) + data)
     tcp[16:18] = struct.pack('!H', checksum(src + dst + struct.pack('!BBH', 0, 6, len(tcp)) + tcp))
     ip = bytearray(struct.pack('!BBHHHBBH4s4s', 0x45, 0, 20 + len(tcp), 1, 0, 64, 6, 0, src, dst))
@@ -59,11 +59,15 @@ def packet(data, side, seq, ack, flags=0x18):
     return bytes(12) + b'\x08\x00' + ip + tcp
 
 
-def pcap(path, events):
-    frames = [packet(b'', 0, 1000, 0, 2), packet(b'', 1, 2000, 1001, 0x12), packet(b'', 0, 1001, 2001, 0x10)]
+def pcap(path, events, server_port=853):
+    frames = [
+        packet(b'', 0, 1000, 0, 2, server_port),
+        packet(b'', 1, 2000, 1001, 0x12, server_port),
+        packet(b'', 0, 1001, 2001, 0x10, server_port),
+    ]
     seq = [1001, 2001]
     for side, data in events:
-        frames.append(packet(data, side, seq[side], seq[1 - side]))
+        frames.append(packet(data, side, seq[side], seq[1 - side], server_port=server_port))
         seq[side] += len(data)
     with path.open('wb') as f:
         f.write(struct.pack('<IHHIIII', 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
@@ -71,7 +75,7 @@ def pcap(path, events):
             f.write(struct.pack('<IIII', 1, i * 1000, len(frame), len(frame)) + frame)
 
 
-def tls_fixture(directory, version, query, response):
+def tls_fixture(directory, version, query, response, alpn='dot'):
     cert, key = directory / 'cert.pem', directory / 'key.pem'
     keylog = directory / ('tls-' + version.name + '.keys')
     client_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -82,7 +86,7 @@ def tls_fixture(directory, version, query, response):
     for context in (client_ctx, server_ctx):
         context.minimum_version = version
         context.maximum_version = version
-        context.set_alpn_protocols(['dot'])
+        context.set_alpn_protocols([alpn])
     client_ctx.keylog_filename = str(keylog)
     ins = [ssl.MemoryBIO(), ssl.MemoryBIO()]
     outs = [ssl.MemoryBIO(), ssl.MemoryBIO()]

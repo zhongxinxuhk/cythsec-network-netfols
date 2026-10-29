@@ -37,3 +37,5 @@ B017 mDNS的范围、专项/独立对照及本轮门禁见
 
 B018 DoT的显式TLS明文入口、受控TLS字节对照及本轮门禁见
 [DoT验收记录](protocol-b018-dot-verification.md)。
+
+B019 DoH的已解码HTTPS消息表示与原目录CLion MCP实跑见[DoH验收记录](protocol-b019-doh-verification.md)。

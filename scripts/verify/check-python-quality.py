@@ -29,6 +29,7 @@ SUPPORT = (
     'scripts/verify/check-dhcpv6.py',
     'scripts/verify/check-mdns.py',
     'scripts/verify/check-dot.py',
+    'scripts/verify/check-doh.py',
 )
 
 
