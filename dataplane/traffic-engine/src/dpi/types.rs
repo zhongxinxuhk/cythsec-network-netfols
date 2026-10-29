@@ -19,6 +19,7 @@ pub enum AppId {
     Http,
     Dns,
     Dhcpv4,
+    Dhcpv6,
     Quic,
     Ssh,
     WireGuard,
@@ -79,6 +80,7 @@ impl AppId {
             AppId::Dtls => AppId::encode(AppId::NS_BUILTIN, 22),
             AppId::Tlcp => AppId::encode(AppId::NS_BUILTIN, 23),
             AppId::Dhcpv4 => AppId::encode(AppId::NS_BUILTIN, 24),
+            AppId::Dhcpv6 => AppId::encode(AppId::NS_BUILTIN, 25),
             AppId::Unknown => AppId::encode(AppId::NS_CUSTOM, 0),
         }
     }
@@ -90,6 +92,7 @@ impl AppId {
             AppId::Http => "http",
             AppId::Dns => "dns",
             AppId::Dhcpv4 => "dhcpv4",
+            AppId::Dhcpv6 => "dhcpv6",
             AppId::Quic => "quic",
             AppId::Ssh => "ssh",
             AppId::WireGuard => "wireguard",
@@ -334,6 +337,8 @@ mod tests {
         assert_eq!(AppId::Dns.as_u32(), 0x0001_0003);
         assert_eq!(AppId::Dhcpv4.as_u32(), 0x0001_0018);
         assert_eq!(AppId::Dhcpv4.as_str(), "dhcpv4");
+        assert_eq!(AppId::Dhcpv6.as_u32(), 0x0001_0019);
+        assert_eq!(AppId::Dhcpv6.as_str(), "dhcpv6");
         // 自定义段与内置段不能撞号
         assert!(AppId::Unknown.as_u32() >= AppId::encode(AppId::NS_CUSTOM, 0));
         assert!(AppId::Tls.as_u32() < AppId::encode(AppId::NS_CUSTOM, 0));

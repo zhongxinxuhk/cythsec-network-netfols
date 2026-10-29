@@ -26,6 +26,7 @@ SUPPORT = (
     'tools/codegen/gen-protocol-adaptation.py',
     'scripts/verify/check-dns-tcp.py',
     'scripts/verify/check-dhcpv4.py',
+    'scripts/verify/check-dhcpv6.py',
 )
 
 

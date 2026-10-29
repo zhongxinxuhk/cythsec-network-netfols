@@ -36,3 +36,7 @@ python3 tools/codegen/gen-protocol-adaptation.py --check --self-test
 基础/补充项顺序接B014推进B015 DHCPv4，本轮范围、测试与未完成项见
 [B015验收记录](../planning/protocol-b015-dhcpv4-verification.md)。门禁退出码单独实跑，
 不沿用上轮DNS/TCP结果；DHCPv4详细字段尚未进入FlowRecord，完整适配保持未勾选。
+
+下一项B016 DHCPv6的有界消息、中继与IA选项识别见
+[B016验收记录](../planning/protocol-b016-dhcpv6-verification.md)。使用当前RFC 9915，DUID按不透明标识保存；
+完整事务、明细输出与真实语料验收仍有缺口，不沿用B015门禁结果。

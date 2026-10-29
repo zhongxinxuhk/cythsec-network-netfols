@@ -20,6 +20,7 @@
 // 它不等于产品归因或密码学认证；双向确认、可信上下文和 A/B/C/U 在 identification 中处理。
 pub mod attributes;
 pub mod dhcp;
+pub mod dhcpv6;
 pub mod dns;
 pub mod http;
 pub mod tls;
@@ -90,6 +91,17 @@ pub fn identify(payload: &[u8], proto: u8, dst_port: u16) -> Outcome {
             Detect::Malformed => Outcome::Malformed,
             Detect::Rejected => Outcome::Unknown,
         };
+    }
+    if proto == IPPROTO_UDP && dhcpv6::is_message_type(payload) {
+        let result = dhcpv6::detect(payload);
+        if matches!(result, Detect::Hit(_)) || matches!(dst_port, 546 | 547) {
+            return match result {
+                Detect::Hit(d) => Outcome::Identified(d),
+                Detect::NeedMore => Outcome::NeedMore,
+                Detect::Malformed => Outcome::Malformed,
+                Detect::Rejected => Outcome::Unknown,
+            };
+        }
     }
     let structural = wire::inspect_standard(payload, proto, 0, dst_port);
     let mut saw_need_more = matches!(structural, wire::Verdict::NeedMore)

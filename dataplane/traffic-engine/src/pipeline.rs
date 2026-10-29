@@ -300,8 +300,14 @@ impl PipelineState {
         let probe = self.probes.entry(key).or_default();
         if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
             let mut n = inspect_payload.len().min(opts.inspect_bytes);
-            let dhcp =
-                d.key.proto.number() == dpi::IPPROTO_UDP && dpi::dhcp::has_cookie(inspect_payload);
+            let preliminary =
+                dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port);
+            let dhcpv6 = d.key.proto.number() == dpi::IPPROTO_UDP
+                && (matches!(&preliminary, Outcome::Identified(info) if info.app == dpi::AppId::Dhcpv6)
+                    || matches!(d.key.dst_port, 546 | 547)
+                        && dpi::dhcpv6::is_message_type(inspect_payload));
+            let dhcp = d.key.proto.number() == dpi::IPPROTO_UDP
+                && (dpi::dhcp::has_cookie(inspect_payload) || dhcpv6);
             let outcome = if dhcp && (d.is_fragmented || truncated) {
                 Outcome::NeedMore
             } else if dhcp {
@@ -313,12 +319,20 @@ impl PipelineState {
                 match udp_len {
                     Some(len) if len >= 8 && len <= d.ip_payload_len as usize => {
                         n = n.min(len - 8);
-                        dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port)
+                        if dhcpv6 && n < len - 8 {
+                            Outcome::NeedMore // DHCPv6 has no END marker to prove the option area ended.
+                        } else {
+                            dpi::identify(
+                                &inspect_payload[..n],
+                                d.key.proto.number(),
+                                d.key.dst_port,
+                            )
+                        }
                     }
                     _ => Outcome::Malformed,
                 }
             } else {
-                dpi::identify(&inspect_payload[..n], d.key.proto.number(), d.key.dst_port)
+                preliminary
             };
             // 截断捕获必须导向「还需要更多字节」：我们自己少拷了字节，不能算「不认识」。
             let info = if truncated && matches!(outcome, Outcome::Unknown) {

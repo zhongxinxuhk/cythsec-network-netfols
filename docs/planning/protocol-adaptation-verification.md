@@ -28,3 +28,6 @@
 
 后续基础/补充清单从B015 DHCPv4继续，独立的本轮结果见
 [DHCPv4验收记录](protocol-b015-dhcpv4-verification.md)，不以此页历史退出码替代本轮门禁。
+
+B016 DHCPv6继续按基础清单顺序推进，范围与本轮实跑结果见
+[DHCPv6验收记录](protocol-b016-dhcpv6-verification.md)。

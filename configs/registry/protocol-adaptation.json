@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-29.2",
+  "revision": "2026-10-29.3",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3768,15 +3768,29 @@
     {
       "id": "B016",
       "name": "DHCPv6",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "UDP承载DHCPv6基础1–11及中继12/13有界识别；DUID/IA_NA/IA_PD/中继字段解析，保留长度/分片/预算边界",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#parse",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify",
+        "dataplane/traffic-engine/src/dpi/types.rs",
+        "dataplane/traffic-engine/src/pipeline.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#base_messages_duids_and_transport",
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#ia_na_and_pd_keep_fields_and_parent_boundaries",
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#relay_encapsulation_and_global_budgets",
+        "dataplane/traffic-engine/src/dpi/dhcpv6.rs#truncation_singletons_unknown_and_ia_validation",
+        "scripts/verify/check-dhcpv6.py"
+      ],
+      "reference": [
+        "scripts/verify/check-dhcpv6.sh",
+        "docs/planning/protocol-b016-dhcpv6-verification.md"
+      ],
+      "gap": "明细未接FlowRecord/存储；4096字节/256选项/8层中继预算；匿名空消息保留未知；完整事务/认证/扩展、中继拓扑、IP重组、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B017",
