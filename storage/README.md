@@ -2,7 +2,11 @@
 
 > PostgreSQL（业务/配置）、ClickHouse（Flow/Analytics 列存）、Redis（实时状态）及统一 Schema。
 
-**状态**：🚧 **完全空骨架** —— 四个子目录仅含 `.gitkeep`，无任何 SQL / 迁移文件。规划见 `docs/planning/BACKLOG.md` 里程碑 M6（38 任务）。
+**状态**：ClickHouse 已有 [FlowRecord v1 DDL 与可复跑的 MergeTree 落盘测量](clickhouse/README.md)；
+另已实现 [native 批量写入器、背压和失败重放](clickhouse/WRITER.md)。
+采集文件持久化发布与不可变文件断点也已实现；其余存储仍为骨架，
+完整多表迁移、实时 UDP 确认和生产高吞吐尚未验收。
+规划见 `docs/planning/BACKLOG.md` 里程碑 M6（38 任务）。
 
 ## 目录规划
 

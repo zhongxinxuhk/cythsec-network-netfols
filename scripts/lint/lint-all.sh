@@ -154,12 +154,7 @@ else
 fi
 
 # ---------- 前端 : 类型检查 ----------
-# 两份配置都必须查：
-#   tsconfig.json      覆盖 src/ 与 tests/
-#   tsconfig.node.json 覆盖构建配置文件（vite.config.ts / vitest.config.ts / version-source.ts）
-# 后者此前不被任何门禁覆盖 —— `tsc --noEmit` 不解析 project references，所以构建配置里的
-# 类型错误（例如 @types/node 缺失导致 __dirname / process 未定义）可以长期无人发现，
-# 而这类缺失同时也会让 `npm run build` 挂掉。
+# Pro tsconfig 覆盖 src/tests/config；npm ci 的 prepare 负责生成 Umi 类型。
 echo "==> [node] 前端类型检查（src/tests + 构建配置）"
 if ! (cd web/console && npm run typecheck:all); then
   echo "✗ [node] 类型检查未通过" >&2
@@ -168,13 +163,13 @@ else
   echo "✓ [node] 类型检查通过"
 fi
 
-# ---------- 前端 : eslint ----------
+# ---------- 前端 : Biome ----------
 echo "==> [node] npm run lint (web/console)"
 if ! (cd web/console && npm run lint); then
-  echo "✗ [node] eslint 检查未通过" >&2
+  echo "✗ [node] Biome 检查未通过" >&2
   failed=$((failed+1))
 else
-  echo "✓ [node] eslint 检查通过"
+  echo "✓ [node] Biome 检查通过"
 fi
 
 if [[ $failed -eq 0 ]]; then

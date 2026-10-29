@@ -27,7 +27,7 @@ bash scripts/lint/lint-all.sh --help
 - cmake ≥ 3.20
 - go ≥ 1.22
 - rustc/cargo（稳定版）
-- node ≥ 18 + npm
+- node ≥ 22 + npm（CI 使用 Node 24）
 
 脚本开头会做版本预检，不足时给出可读报错并非 0 退出。
 
@@ -47,7 +47,7 @@ bash scripts/lint/lint-all.sh --help
 - **C++**：根 `CMakeLists.txt` 读取 `VERSION` 注入 `${CYTHSEC_VERSION}`（子工程应改用此变量，勿硬编码）。
 - **Rust**：根 `Cargo.toml` 的 `[workspace.package] version` 为工作区单一来源。
 - **Go**：构建脚本用 `-ldflags "-X main.version=<VER>"` 注入 `main.version`（见 `scripts/build/build-all.sh`）。
-- **前端**：`web/console/vite.config.ts` 读取根 `VERSION` 注入全局常量 `__APP_VERSION__`。
+- **前端**：`web/console/config/config.ts` 经 `version-source.ts` 读取根 `VERSION`，向 Umi Max 注入 `__APP_VERSION__`。
 
 提交前请运行 `bash scripts/release/check-version.sh` 校验四端一致（不一致非 0 退出）。
 

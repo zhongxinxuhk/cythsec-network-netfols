@@ -84,6 +84,45 @@ python3 scripts/plan/measure-storage.py \
 
 **未核验的部分（别越界引用）**
 
-- 没有真实数据库/列式格式的写入实测；21~79.4 B 都是**gzip 后的 JSONL**，不是 ClickHouse 落盘实测。
+- 上述 `storage-ratio*.json` 的 21~79.4 B 都是 **gzip 后的 JSONL**；独立的 ClickHouse 实测见下。
 - 只有 37 条（版本库内语料）这一档做了两机对照；20,182 条那档只用 macOS 量过
   （其输入 `build/bench-pipeline/bench.pcap` 需现场生成，未在两机上都跑）。
+
+## ClickHouse MergeTree（2026-10-29）
+
+`clickhouse-storage-vectors.json` 与 `clickhouse-storage-homogeneous.json` 记录
+ClickHouse 26.10.2.103 stable / macOS arm64 上的单批落盘与独立进程完整读回。
+37 条合成协议/会话向量为 **252.27 B/记录**，20,182 条同质压测记录为 **21.69 B/记录**，
+按 active parts 总字节计（包含 part 索引/元数据）。小批固定开销与同质压缩效果不可互换。
+本机两档均读回一致；Docker Desktop Linux 服务复验已于 2026-10-30 完成，见下。
+重建语料和复验命令见 [存储说明](../../../storage/clickhouse/README.md)。
+容量模型默认值继续对应 gzip(JSONL)，尚未建立常驻数据库部署的容量模型。
+
+`clickhouse-storage-compose.json`：Linux arm64 / ClickHouse 26.10.2.103 服务模式，
+37 / 20,182 条语料的 active parts 总字节与 macOS local 模式逐字节一致，
+8 项错误输入检查通过；强制重建容器后再次逐字段读回一致。
+报告包含镜像标识、命名卷、容器重建前后 ID、输入 SHA256 与表名。
+复验入口 `python3 scripts/verify/check-clickhouse-compose.py` 会从当前源码重新构建分析器和语料。
+Docker Desktop 的 Linux VM 不替代物理服务器实测；远端 CI 尚未运行。
+
+## native 写入器故障复验（2026-10-30）
+
+`clickhouse-writer.json` 记录 `cythsec-ch-write` 在独立 Compose 客户端容器中的实际结果：
+正常 37 条、两次独立同内容输入保留 74 条、停机落盘后新进程恢复 37 条、
+ACK 丢失后重试和新进程重放仍为原 37 条、20,182 条压力语料逐字段一致并最终排空。
+观测到积压 **1,417,750 B**，小于配置 **1,600,000 B**，统计确有背压等待。
+测试表启用了 10,000 个 block_id 的非复制去重窗口；不能据此承诺无限期 exactly-once。
+报告含写入器版本/二进制 SHA256、输入 SHA256 与 accepted/recovered/delivered/pending 统计。
+复验：`python3 scripts/verify/check-clickhouse-writer.py`。
+本试验含停机、客户端启动与重试，计时不作为持续吞吐基线。
+
+## 采集文件持久化交接与断点（2026-10-30）
+
+`clickhouse-resume.json`：IPFIX 采集器通过 `--durable-output` 发布 15 条 DNS 流记录，
+输出文件/目录同步后打印持久化回执；相同发布名拒绝覆盖。写入器 `--resume-file`
+绑定路径/长度/完整 SHA256，按持久化字节偏移重启，完成文件重跑零发送，等长内容修改被拒绝。
+20,182 条文件在部分接收后停机，重启先重放再续读剩余部分，最终逐字段一致；
+首批 4 条已落库、客户端仍未收到确认时 SIGKILL，恢复后仍为原 15 条。
+报告含采集发布回执、源摘要、输入高水位/累计行数、恢复/交付统计和强杀退出码。
+复验：`python3 scripts/verify/check-clickhouse-resume.py`。
+该证据针对不可变文件，不代表实时 UDP 确认、追加/轮转输入或持续吞吐已完成。

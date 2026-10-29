@@ -1,0 +1,37 @@
+{
+  "label": "版本库合成协议与会话向量（37条）",
+  "measured_at_utc": "2026-10-29T14:05:11.623719+00:00",
+  "platform": "macOS-27.2-arm64-arm-64bit",
+  "clickhouse_version": "26.10.2.103",
+  "clickhouse_binary_sha256": "96399ddf8dd9edcfaf2807b901fcda4453059ccc8852546b4e2c49144688a63d",
+  "ddl_sha256": "01ba04d0ceea10b01b0a7e713ad23502cd20083a5564405c6844440888932844",
+  "engine": "MergeTree",
+  "format": "JSONEachRow",
+  "inputs": [
+    {
+      "path": "build/storage-measurement/vectors.jsonl",
+      "records": 37,
+      "bytes": 37306,
+      "sha256": "2339c1763b08bb39e63d0fd095d02d20cb967fd133c7d9418542973f556aa064"
+    }
+  ],
+  "records": 37,
+  "roundtrip_verified": true,
+  "parts": {
+    "active_parts": 1,
+    "records": 37,
+    "bytes_on_disk": 9334,
+    "data_compressed_bytes": 3028,
+    "data_uncompressed_bytes": 16566
+  },
+  "bytes_per_record": 252.27027027027026,
+  "working_directory_file_bytes": 15447,
+  "insert_process_seconds": 0.10700583400000063,
+  "insert_records_per_second": 345.7755396775823,
+  "caveats": [
+    "单机 clickhouse local、单批写入；耗时含进程启动/打开表/解析/写入/退出，非服务持续写入吞吐。",
+    "bytes_on_disk 为 active parts（含索引/marks/part 元数据），不是仅压缩列流大小。",
+    "working_directory_file_bytes 为临时数据库文件逻辑长度；不含文件系统块取整、日志、复制、备份和合并峰值。",
+    "样本量、字段多样性、分区、批次与版本影响空间；本结果不自动替换 gzip(JSONL) 容量默认值。"
+  ]
+}

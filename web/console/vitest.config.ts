@@ -1,40 +1,63 @@
+import { join } from 'node:path';
+import { playwright } from '@vitest/browser-playwright';
 import { defineConfig } from 'vitest/config';
-import react from '@vitejs/plugin-react';
-import { resolve } from 'path';
-import { readRootVersion } from './version-source';
 
-// 与 vite.config.ts 共用同一条版本注入路径（实现见 version-source.ts）。
-//
-// 测试若不注入 __APP_VERSION__，测到的就只是降级值 'dev'，无法验证
-// 「版本号来自仓库根 VERSION」这件事本身 —— 而 version.test.ts 的全部价值就在于
-// 证明这条注入链路是通的。该文件此前自持一份副本，路径写成三级上溯（解析到仓库外）
-// 并静默回落 'dev'，于是那两个用例长期红灯；本文件现改为直接复用共享实现。
-
-// vitest 独立配置（不并入 vite.config.ts，避免把 test 字段混进生产构建配置）。
-// 复用与开发一致的 @ 别名，使测试内的 import 路径与源码写法完全一致。
 export default defineConfig({
-  plugins: [react()],
-  define: {
-    __APP_VERSION__: JSON.stringify(readRootVersion(__dirname)),
-  },
-  resolve: {
-    alias: {
-      '@': resolve(__dirname, 'src'),
+  plugins: [
+    {
+      name: 'vitest-md-raw-loader',
+      transform(code, id) {
+        if (!id.endsWith('.md')) {
+          return null;
+        }
+        return {
+          code: `export default ${JSON.stringify(String(code))};`,
+          map: null,
+        };
+      },
     },
+  ],
+  resolve: {
+    alias: [
+      { find: '@', replacement: join(__dirname, 'src') },
+      { find: '@root', replacement: join(__dirname) },
+      { find: '@@', replacement: join(__dirname, 'src', '.umi') },
+      // 浏览器测试使用 Umi 生成的客户端出口，避免导入 npm 根入口的 Node CLI / fsevents。
+      {
+        find: /^@umijs\/max$/,
+        replacement: join(__dirname, 'src', '.umi', 'exports.ts'),
+      },
+      {
+        find: /^umi$/,
+        replacement: join(__dirname, 'src', '.umi', 'exports.ts'),
+      },
+    ],
   },
   test: {
-    // 组件测试需要 DOM 环境。
-    environment: 'jsdom',
-    // 不开启 globals：测试文件显式 import { describe, it, expect }，类型更清晰、无需额外的 tsconfig types 配置。
-    globals: false,
-    setupFiles: ['./tests/setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}', 'tests/**/*.{test,spec}.{ts,tsx}'],
-    // 覆盖率：v8 provider，无需额外依赖。
+    browser: {
+      enabled: true,
+      provider: playwright(),
+      headless: true,
+      instances: [{ browser: 'chromium' }],
+    },
+    globals: true,
+    setupFiles: ['./tests/setupTests.ts'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['node_modules', 'dist', '.umi', 'src/utils/*.test.ts'],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json-summary'],
+      reporter: ['text', 'json', 'html'],
       include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/**/*.test.{ts,tsx}', 'src/vite-env.d.ts', 'src/main.tsx'],
+      exclude: [
+        'src/.umi/**',
+        'src/.umi-test/**',
+        'src/.umi-production/**',
+        'src/services/ant-design-pro/**',
+        'src/**/*.d.ts',
+        'src/**/index.style.ts',
+      ],
     },
+    passWithNoTests: false,
+    testTimeout: 15000,
   },
 });

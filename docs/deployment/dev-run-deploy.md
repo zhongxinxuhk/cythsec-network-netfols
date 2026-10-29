@@ -117,11 +117,11 @@ npm install        # 或 npm ci（有 package-lock.json）
 
 ### 开发运行（需 routerd 在 :8080 或指向它）
 ```bash
-# 默认 vite proxy 指向 http://localhost:8080；如 routerd 在别处：
-#   VITE_ROUTERD_TARGET=http://192.168.159.128:8080 npm run dev
-npm run dev        # http://localhost:5173
+# 默认 Umi proxy 指向 http://127.0.0.1:8080；如 routerd 在别处：
+#   CYTHSEC_ROUTERD_TARGET=http://192.168.159.128:8080 npm run dev
+npm run dev        # http://127.0.0.1:15173
 ```
-> vite dev proxy 已把 `/api` 与 `/healthz` 转发到 routerd，前端无需 CORS 配置。
+> Umi dev proxy 已把 `/api/v1` 与 `/healthz` 转发到 routerd；浏览器使用同源入口。
 
 ### 类型校验 + 生产构建
 ```bash
@@ -139,7 +139,7 @@ npm run preview     # 本地预览 dist
 cd services/routerd && go run ./cmd/routerd -addr :8080
 
 # 终端 B：console
-cd web/console && npm run dev   # 打开 http://localhost:5173
+cd web/console && npm run dev   # 打开 http://127.0.0.1:15173
 ```
 预期：侧栏 System/接口/路由 三页能渲染；顶栏显示 "routerd online"。
 > Windows 上 `/routes` 为空（无 /proc/net/route）属正常，真实路由需 openEuler 上的 routerd。
@@ -169,4 +169,4 @@ ssh -N -L 8080:127.0.0.1:8080 root@192.168.159.128
 - **本机 go 在 workspace 下卡死**：加 `GOWORK=off GOPROXY=off GOTOOLCHAIN=local`。
 - **cargo/npm 联网卡住**：零依赖工程用 `--offline`；npm 走 `registry.npmjs.org`（可达）。
 - **CMake 从根 configure 失败**：确认 `ml/inference` 空源时用 INTERFACE 占位（已修复）。
-- **vite 预览打不开**：vite 默认监听 IPv6 `[::1]`，用 `localhost` 而非 `127.0.0.1` 访问；沙箱对 127.0.0.1 有透明代理劫持。
+- **Pro 页面加载异常**：确认 Node >=22，执行 `npm ci` 生成 Umi 类型后再启动 `npm run dev`；统一访问 `http://127.0.0.1:15173`。

@@ -8,7 +8,7 @@
 #   bash scripts/build/build-all.sh --help       # 查看帮助
 #
 # 行为：
-#   - 开头做工具链版本预检（cmake≥3.20 / cargo / go≥1.22 / node≥18），不足则可读报错并退出。
+#   - 开头做工具链版本预检（cmake≥3.20 / cargo / go≥1.22 / node≥22），不足则可读报错并退出。
 #   - 任一栈失败不影响其它栈继续；结尾汇总，整体以「失败栈数」为退出码（全成功=0）。
 #   - 幂等，可重复执行。
 set -euo pipefail
@@ -23,7 +23,7 @@ usage() {
   --cpp    只构建 C/C++ 栈（CMake）
   --rust   只构建 Rust 栈（cargo, --offline）
   --go     只构建 Go 服务（routerd/policyd/dnsd/telemetryd）
-  --node   只构建前端（web/console: npm ci + vite build）
+  --node   只构建前端（web/console: npm ci + Umi Max build）
   --help   显示本帮助
 
 不带参数则构建全部四栈。
@@ -63,7 +63,7 @@ check_toolchain() {
   # 在 set -u 下直接报 unbound variable 并中断（即在最需要提示时反而失去提示）。
   ver_ge "$cmake_ver" "3.20" || { echo "✗ cmake 版本过低: ${cmake_ver}（要求 ≥ 3.20）" >&2; ok=0; }
   ver_ge "$go_ver" "1.22" || { echo "✗ go 版本过低: ${go_ver}（要求 ≥ 1.22）" >&2; ok=0; }
-  ver_ge "$node_ver" "18" || { echo "✗ node 版本过低: ${node_ver}（要求 ≥ 18）" >&2; ok=0; }
+  ver_ge "$node_ver" "22" || { echo "✗ node 版本过低: ${node_ver}（要求 ≥ 22）" >&2; ok=0; }
   if [[ $ok -eq 0 ]]; then
     echo "工具链预检未通过，终止构建。" >&2
     exit 1
@@ -112,7 +112,7 @@ build_go() {
 
   local rc=0
   # 第一轮：全包编译校验（不产出二进制，快速暴露编译错误）。
-  for svc in routerd policyd dnsd telemetryd; do
+  for svc in pkg routerd policyd dnsd telemetryd; do
     echo "  -> services/${svc}"
     if ! (cd "services/${svc}" && GOWORK=off GOPROXY=off GOTOOLCHAIN=local \
           go build ./...); then
@@ -136,8 +136,13 @@ build_go() {
       rc=1
     fi
   done
+  if ! (cd services/pkg && GOWORK=off GOPROXY=off GOTOOLCHAIN=local \
+        go build -ldflags "${ldflags}" -o ../../build/bin/cythsec-ch-write ./cmd/cythsec-ch-write); then
+    echo "✗ [go] ClickHouse 写入器构建失败" >&2
+    rc=1
+  fi
   if [[ $rc -eq 0 ]]; then
-    echo "✓ [go] 四个二进制已生成 build/bin/{routerd,policyd,dnsd,telemetryd}"
+    echo "✓ [go] 二进制已生成 build/bin/{routerd,policyd,dnsd,telemetryd,cythsec-ch-write}"
     echo "        version=${ver} commit=${commit} build_time=${build_time}"
   fi
   return $rc

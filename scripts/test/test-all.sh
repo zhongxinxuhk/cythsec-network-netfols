@@ -570,6 +570,12 @@ test_plan() {
   fi
   echo "  ✓ 落盘测量：手算字节数 + gzip 往返校验 + 5 项反向注入均被检出"
 
+  # 这里只验纯 Python 比对器；真实 MergeTree 写入由 CI 的 clickhouse-storage 作业执行。
+  if ! "${PYTHON:-python3}" scripts/plan/measure-clickhouse.py --self-test; then
+    echo "✗ [plan] ClickHouse 读回比对器自证失败" >&2
+    return 1
+  fi
+
   # 默认值与测量产物必须同步：只改一处时，"实测"这个词就变成假话。
   if ! "${PYTHON:-python3}" scripts/plan/collector-capacity.py --verify-defaults; then
     echo "✗ [plan] 容量模型默认落盘值与测量产物不一致" >&2

@@ -1,0 +1,110 @@
+{
+  "measured_at_utc": "2026-10-29T17:26:41.189818+00:00",
+  "database": "cythsec_writer_c6626bde2ee4",
+  "writer_version": "0.1.0",
+  "writer_binary_sha256": "51a4610a5a6ce46994487e8ae6b4607bca7fade36968dd67e8ee617713e76e94",
+  "inputs": {
+    "vectors.jsonl": "2339c1763b08bb39e63d0fd095d02d20cb967fd133c7d9418542973f556aa064",
+    "homogeneous.jsonl": "467a8e4fc641470b3001b140e256981a22917d79d60cf361cf65fec02bd75d74"
+  },
+  "clickhouse_version": "26.10.2.103",
+  "architecture": "arm64",
+  "transport": "official clickhouse-client native TCP",
+  "results": {
+    "normal": {
+      "accepted_rows": 37,
+      "recovered_rows": 0,
+      "delivered_rows": 37,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 1,
+      "failures": 0,
+      "backpressure_waits": 0
+    },
+    "repeat_first": {
+      "accepted_rows": 37,
+      "recovered_rows": 0,
+      "delivered_rows": 37,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 1,
+      "failures": 0,
+      "backpressure_waits": 0
+    },
+    "repeat_second": {
+      "accepted_rows": 37,
+      "recovered_rows": 0,
+      "delivered_rows": 37,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 1,
+      "failures": 0,
+      "backpressure_waits": 0
+    },
+    "outage": {
+      "accepted_rows": 37,
+      "recovered_rows": 0,
+      "delivered_rows": 0,
+      "pending_batches": 1,
+      "pending_bytes": 49914,
+      "attempts": 2,
+      "failures": 2,
+      "backpressure_waits": 0
+    },
+    "replay": {
+      "accepted_rows": 0,
+      "recovered_rows": 37,
+      "delivered_rows": 37,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 1,
+      "failures": 0,
+      "backpressure_waits": 0
+    },
+    "ack_loss": {
+      "accepted_rows": 37,
+      "recovered_rows": 0,
+      "delivered_rows": 0,
+      "pending_batches": 1,
+      "pending_bytes": 49914,
+      "attempts": 2,
+      "failures": 2,
+      "backpressure_waits": 0
+    },
+    "ack_replay": {
+      "accepted_rows": 0,
+      "recovered_rows": 37,
+      "delivered_rows": 37,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 1,
+      "failures": 0,
+      "backpressure_waits": 0
+    },
+    "pressure": {
+      "accepted_rows": 20182,
+      "recovered_rows": 0,
+      "delivered_rows": 20182,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 47,
+      "failures": 6,
+      "backpressure_waits": 39
+    }
+  },
+  "peak_observed_pending_bytes": 1417750,
+  "pending_limit_bytes": 1600000,
+  "pressure_elapsed_seconds_including_outage": 6.354316417,
+  "verified_rows": {
+    "normal": 37,
+    "repeat": 74,
+    "retry": 37,
+    "ack_loss": 37,
+    "pressure": 20182
+  },
+  "caveats": [
+    "去重仅在 non_replicated_deduplication_window=10000 的测试窗口内验证。",
+    "每批启动一次官方客户端；该试验含停机恢复，不作为持续吞吐承诺。",
+    "仅已持久化批次属于已接收记录；内存尾批仍由上游检查点负责。"
+  ]
+}

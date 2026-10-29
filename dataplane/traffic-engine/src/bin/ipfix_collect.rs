@@ -52,6 +52,7 @@ cythsec-ipfix-collect —— IPFIX 采集器（RFC 7011）：解模板/数据集
                              （尚未观测到时用 600 秒）。未刷新的模板到期即丢弃。
       --dedup-window <n>     去重窗口（条数，默认 4096；0 = 不去重）
       --any-port             pcap 模式不按端口 4739 过滤（联调非常规端口用）
+      --durable-output       输出须为新文件：同步内容后原子发布并同步目录，成功后打印持久化回执
   --estimate-volume  从采样后的记录**还原全量**（CYS-TRF-053 缺口③）：把样本求和 ×N
                      （N 来自 IE 34），并给出 95% 区间与相对标准误。**没有数就不给数**：
                      记录里出现多个采样间隔时直接拒绝（不同采样率的记录相加无意义）。
@@ -89,6 +90,7 @@ struct Args {
     any_port: bool,
     quiet: bool,
     estimate_volume: bool,
+    durable_output: bool,
     help: bool,
 }
 
@@ -130,6 +132,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
             "--any-port" => a.any_port = true,
             "--estimate-volume" => a.estimate_volume = true,
+            "--durable-output" => a.durable_output = true,
             "-q" | "--quiet" => a.quiet = true,
             other => return Err(format!("未知参数：{other}")),
         }
@@ -146,6 +149,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         return Err(
             "--template-timeout 0 会让模板立刻过期，等于收不到数据；请给正秒数".to_string(),
         );
+    }
+    if a.durable_output && matches!(a.output.as_deref(), None | Some("-")) {
+        return Err("--durable-output 需要 -o 指定新文件，不能使用 stdout".to_string());
     }
     Ok(a)
 }
@@ -188,8 +194,21 @@ fn main() -> ExitCode {
     // ---- 输出：还原出的记录 + 统计 ----
     let flows = collector.take_flows();
     let records: Vec<_> = flows.iter().map(|f| f.to_flow_record()).collect();
-    match write_records(&args.output, &records) {
+    match write_records(&args.output, &records, args.durable_output) {
         Ok(n) => {
+            if args.durable_output {
+                let path = args.output.as_deref().unwrap();
+                let size = match std::fs::metadata(path) {
+                    Ok(info) => info.len(),
+                    Err(e) => {
+                        eprintln!("读取已发布文件失败：{e}");
+                        return ExitCode::from(1);
+                    }
+                };
+                let mut quoted = String::new();
+                traffic_engine::record::escape_json_into(&mut quoted, path);
+                eprintln!("[cythsec-ipfix-collect] durable_output={{\"path\":{quoted},\"records\":{n},\"bytes\":{size}}}");
+            }
             if !args.quiet {
                 eprintln!("[cythsec-ipfix-collect] 写出 {n} 条记录");
             }
@@ -287,7 +306,15 @@ fn main() -> ExitCode {
 fn write_records(
     path: &Option<String>,
     records: &[traffic_engine::record::FlowRecord],
+    durable: bool,
 ) -> io::Result<usize> {
+    if durable {
+        let path = path
+            .as_deref()
+            .filter(|p| *p != "-")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "持久化输出需要文件路径"))?;
+        return write_durable(std::path::Path::new(path), records);
+    }
     match path.as_deref() {
         None | Some("-") => {
             let mut out = BufWriter::new(io::stdout().lock());
@@ -301,6 +328,101 @@ fn write_records(
             out.flush()?;
             Ok(n)
         }
+    }
+}
+
+// 先同步临时文件，再用同目录 hard_link 原子发布；已存在的发布名不会被覆盖。
+fn write_durable(
+    path: &std::path::Path,
+    records: &[traffic_engine::record::FlowRecord],
+) -> io::Result<usize> {
+    use std::fs::{self, File, OpenOptions};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    let tmp = parent.join(format!(
+        ".cythsec-output-{}-{now}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    let result = (|| {
+        let n = {
+            let mut out = BufWriter::new(&mut file);
+            let n = write_jsonl(&mut out, records)?;
+            out.flush()?;
+            n
+        };
+        file.sync_all()?;
+        fs::hard_link(&tmp, path)?;
+        File::open(parent)?.sync_all()?;
+        fs::remove_file(&tmp)?;
+        File::open(parent)?.sync_all()?;
+        Ok(n)
+    })();
+    let _ = fs::remove_file(&tmp);
+    result
+}
+
+#[cfg(test)]
+mod durable_tests {
+    use super::*;
+
+    #[test]
+    fn durable_output_publishes_complete_file_without_overwriting() {
+        let dir = std::env::temp_dir().join(format!(
+            "cythsec-publish-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("flows.jsonl");
+        assert_eq!(write_durable(&path, &[]).unwrap(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        std::fs::write(&path, b"existing").unwrap();
+        assert_eq!(
+            write_durable(&path, &[]).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn durable_flag_requires_a_named_output() {
+        let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(parse_args(&args(&["--pcap", "x", "--durable-output"])).is_err());
+        assert!(parse_args(&args(&["--pcap", "x", "--durable-output", "-o", "-"])).is_err());
+        assert!(
+            parse_args(&args(&[
+                "--pcap",
+                "x",
+                "--durable-output",
+                "-o",
+                "new.jsonl"
+            ]))
+            .unwrap()
+            .durable_output
+        );
     }
 }
 

@@ -1,0 +1,80 @@
+{
+  "measured_at_utc": "2026-10-29T17:06:55.532991+00:00",
+  "environment": "Docker Desktop Linux server（非物理 Linux 服务器）",
+  "clickhouse_version": "26.10.2.103",
+  "image": {
+    "Id": "sha256:d8b025cdd534895b3f56324c7673ab0ef68deed140ef4681fab8f6287862e60a",
+    "RepoTags": [
+      "clickhouse/clickhouse-server:26.10.2.103"
+    ],
+    "RepoDigests": [
+      "clickhouse/clickhouse-server@sha256:d8b025cdd534895b3f56324c7673ab0ef68deed140ef4681fab8f6287862e60a"
+    ],
+    "Architecture": "arm64",
+    "Os": "linux"
+  },
+  "data_volume": "cythsec-storage-test_clickhouse_data",
+  "ddl_sha256": "01ba04d0ceea10b01b0a7e713ad23502cd20083a5564405c6844440888932844",
+  "invalid_input_checks": 8,
+  "container_recreated": true,
+  "container_before": "c638da9958c4baae18d2be63684fc69bd02d4f2ef7527daa5434b61a51fa9b78",
+  "container_after": "a9f782ce4d907e3cbffd3b79cc58da5b79aaa52b03920c95a49b0de61c3b246f",
+  "measurements": [
+    {
+      "label": "合成协议/会话向量",
+      "database": "cythsec_measure_4248dad67acc",
+      "table": "flow_records_v1_10",
+      "inputs": [
+        {
+          "path": "build/storage-measurement/vectors.jsonl",
+          "records": 37,
+          "bytes": 37306,
+          "sha256": "2339c1763b08bb39e63d0fd095d02d20cb967fd133c7d9418542973f556aa064"
+        }
+      ],
+      "records": 37,
+      "roundtrip_verified": true,
+      "parts": {
+        "active_parts": 1,
+        "records": 37,
+        "bytes_on_disk": 9334,
+        "data_compressed_bytes": 3028,
+        "data_uncompressed_bytes": 16566
+      },
+      "bytes_per_record": 252.27027027027026,
+      "client_insert_seconds": 0.19424745899999962,
+      "client_records_per_second": 190.4786821432762,
+      "recreated_container_roundtrip_verified": true
+    },
+    {
+      "label": "同质压测语料",
+      "database": "cythsec_measure_4248dad67acc",
+      "table": "flow_records_v1_11",
+      "inputs": [
+        {
+          "path": "build/storage-measurement/homogeneous.jsonl",
+          "records": 20182,
+          "bytes": 21514964,
+          "sha256": "467a8e4fc641470b3001b140e256981a22917d79d60cf361cf65fec02bd75d74"
+        }
+      ],
+      "records": 20182,
+      "roundtrip_verified": true,
+      "parts": {
+        "active_parts": 1,
+        "records": 20182,
+        "bytes_on_disk": 437765,
+        "data_compressed_bytes": 427917,
+        "data_uncompressed_bytes": 8364304
+      },
+      "bytes_per_record": 21.69086314537707,
+      "client_insert_seconds": 0.5053766250000002,
+      "client_records_per_second": 39934.57354700564,
+      "recreated_container_roundtrip_verified": true
+    }
+  ],
+  "caveats": [
+    "单批服务写入；计时含 docker exec/客户端启动与传输，非服务持续吞吐。",
+    "active parts 含索引/元数据，不含日志/复制/备份/合并峰值；未替换 gzip 容量默认值。"
+  ]
+}

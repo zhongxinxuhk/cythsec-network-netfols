@@ -1,0 +1,45 @@
+name: cythsec-storage-test
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.10.2.103
+    environment:
+      CLICKHOUSE_USER: cythsec_test
+      # 仅供内部测试网络使用；没有宿主机端口映射。
+      CLICKHOUSE_PASSWORD: local_storage_test
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - storage_test
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1' >/dev/null"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  writer:
+    profiles: ["writer"]
+    image: clickhouse/clickhouse-server:26.10.2.103
+    entrypoint: ["/opt/cythsec/cythsec-ch-write-linux"]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_USER: cythsec_test
+      CLICKHOUSE_PASSWORD: local_storage_test
+    volumes:
+      - ../../build/storage-measurement:/opt/cythsec:ro
+      - writer_spool:/var/spool/cythsec
+    networks:
+      - storage_test
+
+volumes:
+  clickhouse_data:
+  writer_spool:
+
+networks:
+  storage_test:
+    internal: true

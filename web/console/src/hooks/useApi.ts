@@ -7,7 +7,10 @@ interface State<T> {
   error: string | null;
 }
 
-export function useApi<T>(fetcher: () => Promise<T>, pollMs?: number): State<T> & { reload: () => void } {
+export function useApi<T>(
+  fetcher: () => Promise<T>,
+  pollMs?: number,
+): State<T> & { reload: () => void } {
   const [state, setState] = useState<State<T>>({
     data: null,
     loading: true,
@@ -34,6 +37,7 @@ export function useApi<T>(fetcher: () => Promise<T>, pollMs?: number): State<T> 
       const id = window.setInterval(() => void load(), pollMs);
       return () => window.clearInterval(id);
     }
+    return undefined;
   }, [load, pollMs]);
 
   return { ...state, reload: load };
