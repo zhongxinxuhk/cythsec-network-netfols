@@ -262,6 +262,9 @@ jobs:
           build/e2e-live/'
         retention-days: 7
         if-no-files-found: error
+  full-validation:
+    needs: [cpp, rust, python, go, node]
+    uses: ./.github/workflows/full-validation.yml
   package:
     name: Package tested Linux distribution
     needs:
@@ -276,6 +279,7 @@ jobs:
     - security
     - clickhouse
     - linux-live
+    - full-validation
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -321,6 +325,7 @@ jobs:
     - security
     - clickhouse
     - linux-live
+    - full-validation
     - package
     runs-on: ubuntu-24.04
     timeout-minutes: 5

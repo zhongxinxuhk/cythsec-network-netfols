@@ -1,0 +1,37 @@
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { afterEach, expect, it, vi } from 'vitest';
+import { analytics, type IngestStatus } from '@/api/analytics';
+vi.mock('@umijs/max', async () => { const router = await import('react-router-dom'); return { Link: router.Link }; });
+vi.mock('@/api/analytics', () => ({ analytics: { ingest: vi.fn() } }));
+import IngestQueuePage from './IngestQueuePage';
+const status: IngestStatus = { enabled: true, running: true, state: 'backoff', pending_batches: 2, pending_bytes: 4096, max_batches: 10, max_bytes: 8192, oldest_queued_at: '2026-10-27T01:00:00Z', next_retry_at: '2026-10-27T01:01:00Z', last_error: 'storage_io', completed_this_process: 3, duplicates_this_process: 0, failures_this_process: 1, consecutive_failures: 1 };
+afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
+it('显示真实容量和阶段，手动刷新更新状态并保留历史确认语义', async () => {
+  vi.useFakeTimers();
+  vi.mocked(analytics.ingest).mockResolvedValueOnce(status).mockResolvedValue({ ...status, pending_batches: 1, state: 'writing', next_retry_at: null });
+  render(<MemoryRouter><IngestQueuePage /></MemoryRouter>);
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.getByText(/退避重试中/)).toBeInTheDocument();
+  expect(screen.getByRole('progressbar', { name: '批次容量使用率' })).toHaveAttribute('aria-valuenow', '20');
+  expect(screen.getByRole('progressbar', { name: '字节容量使用率' })).toHaveAttribute('aria-valuenow', '50');
+  expect(screen.getByText('待写数据已落盘，尚未确认写入历史。')).toBeInTheDocument();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新状态' })); await Promise.resolve(); });
+  expect(screen.getByText(/正在写入历史/)).toBeInTheDocument();
+  expect(analytics.ingest).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('link', { name: '查看聚合历史' })).toHaveAttribute('href', '/analytics');
+  expect(screen.queryByRole('button', { name: '清空队列' })).not.toBeInTheDocument();
+}, 15000);
+it('失败清除旧容量并保留上次成功读取时刻', async () => {
+  vi.useFakeTimers();
+  vi.mocked(analytics.ingest).mockResolvedValueOnce(status).mockRejectedValue(new Error('HTTP 503'));
+  render(<MemoryRouter><IngestQueuePage /></MemoryRouter>);
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.getByText(/退避重试中/)).toBeInTheDocument();
+  const observed = screen.getByText(/最近成功读取：/).textContent;
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新状态' })); await Promise.resolve(); });
+  expect(screen.getByText(/队列状态不可用：HTTP 503/)).toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  expect(screen.getByText(/最近成功读取：/).textContent).toBe(observed);
+  await act(async () => { await Promise.resolve(); });
+}, 15000);

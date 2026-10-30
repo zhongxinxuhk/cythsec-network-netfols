@@ -1,0 +1,47 @@
+name: Full validation
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  acceptance:
+    name: Linux 全量构建与默认全集
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/full-environment
+      - name: 安装独立协议、存储裁判与隔离网络工具
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo --preserve-env=DEBIAN_FRONTEND apt-get install -y cmake g++ tshark iproute2 iputils-ping
+          bash scripts/ci/install-clickhouse.sh
+      - name: 静态门禁与四栈编译
+        run: |
+          bash scripts/lint/lint-all.sh
+          bash scripts/test/prepare-rust-fixtures.sh
+          bash scripts/build/build-all.sh
+      - name: 默认测试全集（不传分组选项，隔离 veth 上执行抓包）
+        run: bash scripts/ci/run-check.sh build/ci/full-suite.log bash scripts/ci/linux-live.sh bash scripts/test/test-all.sh
+      - name: Linux 采集档位与丢包观测特权验收
+        run: bash scripts/ci/run-check.sh build/ci/capture-modes.log sudo build/dataplane/packet-engine/test_capture_modes
+      - name: 保存全量验收日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: full-validation-evidence
+          path: |
+            build/ci/
+            build/Testing/Temporary/
+            build/e2e*/
+            build/columnar*/
+          if-no-files-found: warn
+          retention-days: 7

@@ -44,6 +44,8 @@ EXT='\.(sh|bash|py|rs|c|cc|h|hpp|cpp|go|ts|tsx|js|jsx|json|toml|ini|cfg|sql|prot
 ALLOW='(^|/)(\.mimosa|\.idea|\.vscode|node_modules)/'
 ALLOW="${ALLOW}"'|^build/|^target/|^cmake-build-|^out/|^dist/|^release/'
 ALLOW="${ALLOW}"'|^datasets/|^secrets/|^logs/|^web/console/dist/|^web/console/\.vite/'
+# Umi Max 自动生成的路由、插件绑定与类型；由 max setup 重建。
+ALLOW="${ALLOW}"'|^web/console/src/\.umi(-production)?/'
 ALLOW="${ALLOW}"'|^ml/.*/(runs|wandb)/'
 # CYS-MLT-001: exact training venv, setuptools staging and egg metadata only.
 ALLOW="${ALLOW}"'|^ml/training/(\.venv/|build/|[^/]+\.egg-info/)'

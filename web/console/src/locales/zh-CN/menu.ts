@@ -1,4 +1,5 @@
 export default {
+  'menu.operations':'运维与数据', 'menu.operations.configuration':'网络配置', 'menu.operations.analytics':'聚合分析', 'menu.operations.metrics':'指标字典', 'menu.operations.queue':'写入队列',
   'menu.network': '网络与流量',
   'menu.network.overview': '运行概览',
   'menu.network.interfaces': '网络接口',

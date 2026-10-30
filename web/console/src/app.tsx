@@ -1,3 +1,4 @@
+import './global.css';
 import { LinkOutlined } from '@ant-design/icons';
 import type { Settings as LayoutSettings } from '@ant-design/pro-components';
 import { SettingDrawer } from '@ant-design/pro-components';
@@ -7,6 +8,8 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import React from 'react';
 import { CloudHeader, CloudNavigation } from '@/navigation/CloudConsole';
+import { AccessBoundary, ServiceAccess } from '@/components/ServiceAccess';
+import { HeaderStatus } from '@/components/HeaderStatus';
 import { NavigationProvider } from '@/navigation/NavigationProvider';
 
 // Initialize dayjs plugins globally
@@ -46,7 +49,7 @@ export async function getInitialState(): Promise<{
       return msg.data;
     } catch (_error) {
       const { pathname, search, hash } = history.location;
-      if (pathname.startsWith('/network/')) return undefined;
+      if (['/network/','/operations/','/analytics','/data/','/design/'].some(prefix => pathname.startsWith(prefix))) return undefined;
       history.replace(
         `${loginPath}?redirect=${encodeURIComponent(pathname + search + hash)}`,
       );
@@ -121,7 +124,7 @@ export const layout: RunTimeLayoutConfig = ({
       if (
         !initialState?.currentUser &&
         location.pathname !== loginPath &&
-        !location.pathname.startsWith('/network/')
+        !['/network/','/operations/','/analytics','/data/','/design/'].some(prefix => location.pathname.startsWith(prefix))
       ) {
         history.replace(
           `${loginPath}?redirect=${encodeURIComponent(location.pathname + location.search + location.hash)}`,
@@ -203,7 +206,7 @@ export const layout: RunTimeLayoutConfig = ({
       <CloudHeader
         actions={
           <>
-            <DocLink />
+            <HeaderStatus /><ServiceAccess /><DocLink />
             <VersionDropdown />
             <LangDropdown />
             {initialState?.currentUser && (
@@ -237,9 +240,9 @@ export function rootContainer(container: React.ReactNode) {
   return (
     <>
       <OfflineBanner />
-      <NavigationProvider>
+      <AccessBoundary><NavigationProvider>
         <ErrorBoundary>{container}</ErrorBoundary>
-      </NavigationProvider>
+      </NavigationProvider></AccessBoundary>
     </>
   );
 }

@@ -79,7 +79,7 @@ func TestYAMLMissingFileIsNoop(t *testing.T) {
 	if err := c.LoadYAML("/nonexistent/path/config.yaml"); err != nil {
 		t.Fatalf("缺失文件应被忽略, got err: %v", err)
 	}
-	if c.ListenAddr != ":8080" {
+	if c.ListenAddr != "127.0.0.1:8080" {
 		t.Errorf("默认值被破坏: %q", c.ListenAddr)
 	}
 }
@@ -90,7 +90,7 @@ func TestYAMLMissingFileIsNoop(t *testing.T) {
 func TestLoadYAMLQuotingAndComments(t *testing.T) {
 	p := writeTempYAML(t, `
 # 注释行应被忽略
-listen_addr: ":8080"
+listen_addr: "127.0.0.1:8080"
 log_format: 'text'
 empty:
 extra: "a # not a comment"
@@ -101,7 +101,7 @@ extra: "a # not a comment"
 	if err := c.LoadYAML(p); err != nil {
 		t.Fatalf("LoadYAML: %v", err)
 	}
-	if c.ListenAddr != ":8080" {
+	if c.ListenAddr != "127.0.0.1:8080" {
 		t.Errorf("listen_addr = %q, want :8080", c.ListenAddr)
 	}
 	// 单引号应被剥离。
@@ -125,5 +125,43 @@ metrics_enabled: "not-a-bool"
 	}
 	if !c.MetricsEnabled {
 		t.Error("非法布尔应保留默认值 true")
+	}
+}
+
+func TestAccessFileConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("access_file: /local/policy.json\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := Default()
+	if err := c.LoadYAML(p); err != nil {
+		t.Fatal(err)
+	}
+	if c.AccessFile != "/local/policy.json" {
+		t.Fatal("access_file not loaded")
+	}
+	t.Setenv("ROUTERD_ACCESS_FILE", "/override/policy.json")
+	c.ApplyEnv()
+	if c.AccessFile != "/override/policy.json" {
+		t.Fatal("access env did not override YAML")
+	}
+}
+
+func TestNetworkConfigurationDirectoryPrecedence(t *testing.T) {
+	c := Default()
+	if c.NetworkConfigDir != "" {
+		t.Fatal("network store enabled by default")
+	}
+	path := writeTempYAML(t, "network_config_dir: /tmp/cythsec-network-test\n")
+	if err := c.LoadYAML(path); err != nil {
+		t.Fatal(err)
+	}
+	if c.NetworkConfigDir != "/tmp/cythsec-network-test" {
+		t.Fatal("YAML setting not loaded")
+	}
+	t.Setenv("ROUTERD_NETWORK_CONFIG_DIR", "/tmp/cythsec-network-env-test")
+	c.ApplyEnv()
+	if c.NetworkConfigDir != "/tmp/cythsec-network-env-test" {
+		t.Fatal("environment did not override YAML")
 	}
 }

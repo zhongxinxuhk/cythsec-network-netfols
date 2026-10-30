@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Dedicated hosted runner only: deterministic traffic stays on a local veth pair.
+# Dedicated Linux CI runner: deterministic traffic on an isolated veth pair.
+# Run the default suite as the runner user; only capture subprocesses use sudo.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 [[ "$(uname -s)" == Linux ]] || { echo "Linux required" >&2; exit 2; }
@@ -17,5 +18,8 @@ sudo ip link set cysci0 up
 sudo ip -n "$namespace" addr add 198.18.0.2/30 dev cysci1
 sudo ip -n "$namespace" link set lo up
 sudo ip -n "$namespace" link set cysci1 up
-sudo env "PATH=$PATH" CYTHSEC_LIVE_IFACE=cysci0 CYTHSEC_LIVE_TARGET=198.18.0.2 \
-  bash scripts/verify/e2e-live-capture.sh
+export CYTHSEC_LIVE_IFACE=cysci0 CYTHSEC_LIVE_TARGET=198.18.0.2 CYTHSEC_LIVE_SUDO=1
+if [[ $# -eq 0 ]]; then
+  set -- bash scripts/verify/e2e-live-capture.sh
+fi
+"$@"

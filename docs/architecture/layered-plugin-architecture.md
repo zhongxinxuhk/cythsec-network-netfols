@@ -1,5 +1,10 @@
 # CythSec 分层解耦与插件化方案（正式版）
 
+> 2026-10-26 识别专项衔接：[VPN/ZTNA引擎](vpn-ztna-identification.md) 与
+> [逐对象算法](../protocols/README.md) 已新增；标准结构解析和上下文归因分层。
+> 本轮不等于本方案全部插件/处置能力完成，协议精度不由论文中的历史签名替代。
+
+
 > 文档域：ARC ／ 关联 DOC、TRF、PKT、POL、TIP、TEL、DEP、INF
 > **版本：v1.0.0（正式方案，2026-10-05 审核通过）** ｜ 前身：v0.1.0 评估稿（同日）
 > 适用基线：`cythsec` v0.1.0（`VERSION`=0.1.0，`docs/planning/BACKLOG.md` **367 任务 / 10 里程碑**）

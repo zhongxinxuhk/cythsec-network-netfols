@@ -11,6 +11,7 @@ cd "$ROOT"
 # Shared inventory for the actual C++ check and the Python quality self-test.
 cpp_sources() {
   find . \( -path ./build -o -path ./target -o -path ./node_modules -o -path ./.git \
+    -o -path ./.claude/worktrees -o -path ./.codex \
     -o -path ./cmake-build-debug -o -path ./web -o -path ./ml/training/.venv \) -prune -o \
     \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.c' \
        -o -name '*.h' -o -name '*.hpp' \) -print

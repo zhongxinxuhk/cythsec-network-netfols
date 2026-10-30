@@ -1,3 +1,5 @@
+vi.mock('@/components/ServiceAccess', () => ({ AccessBoundary: ({children}: any) => children, ServiceAccess: () => null }));
+vi.mock('@/components/HeaderStatus', () => ({ HeaderStatus: () => null }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/navigation/CloudConsole', () => ({ CloudHeader: () => null, CloudNavigation: () => null }));
@@ -146,3 +148,8 @@ describe('app getInitialState', () => {
     expect(user).toEqual({ name: 'Fetched User', access: 'user' });
   });
 });
+
+ it('uses the shared cloud navigation shell', async () => {
+  const { layout } = await import('./app');
+  expect(layout({} as Parameters<typeof layout>[0])).toMatchObject({ layout: 'mix', siderWidth: 272, fixedHeader: true, fixSiderbar: false, rightContentRender: false, headerRender: expect.any(Function), menuRender: expect.any(Function) });
+ });

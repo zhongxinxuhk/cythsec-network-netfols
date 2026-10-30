@@ -18,8 +18,31 @@ pub enum AppId {
     Tls,
     Http,
     Dns,
+    Dhcpv4,
+    Dhcpv6,
+    Mdns,
+    Dot,
+    Doh,
     Quic,
     Ssh,
+    WireGuard,
+    Ikev1,
+    Ikev2,
+    Esp,
+    Ah,
+    Gre,
+    Ipip,
+    Ipv6ip,
+    Etherip,
+    L2tp,
+    Pptp,
+    Vxlan,
+    Geneve,
+    OpenVpn,
+    Socks4,
+    Socks5,
+    Dtls,
+    Tlcp,
     Unknown,
 }
 
@@ -41,6 +64,29 @@ impl AppId {
             AppId::Dns => AppId::encode(AppId::NS_BUILTIN, 3),
             AppId::Quic => AppId::encode(AppId::NS_BUILTIN, 4),
             AppId::Ssh => AppId::encode(AppId::NS_BUILTIN, 5),
+            AppId::WireGuard => AppId::encode(AppId::NS_BUILTIN, 6),
+            AppId::Ikev1 => AppId::encode(AppId::NS_BUILTIN, 7),
+            AppId::Ikev2 => AppId::encode(AppId::NS_BUILTIN, 8),
+            AppId::Esp => AppId::encode(AppId::NS_BUILTIN, 9),
+            AppId::Ah => AppId::encode(AppId::NS_BUILTIN, 10),
+            AppId::Gre => AppId::encode(AppId::NS_BUILTIN, 11),
+            AppId::Ipip => AppId::encode(AppId::NS_BUILTIN, 12),
+            AppId::Ipv6ip => AppId::encode(AppId::NS_BUILTIN, 13),
+            AppId::Etherip => AppId::encode(AppId::NS_BUILTIN, 14),
+            AppId::L2tp => AppId::encode(AppId::NS_BUILTIN, 15),
+            AppId::Pptp => AppId::encode(AppId::NS_BUILTIN, 16),
+            AppId::Vxlan => AppId::encode(AppId::NS_BUILTIN, 17),
+            AppId::Geneve => AppId::encode(AppId::NS_BUILTIN, 18),
+            AppId::OpenVpn => AppId::encode(AppId::NS_BUILTIN, 19),
+            AppId::Socks4 => AppId::encode(AppId::NS_BUILTIN, 20),
+            AppId::Socks5 => AppId::encode(AppId::NS_BUILTIN, 21),
+            AppId::Dtls => AppId::encode(AppId::NS_BUILTIN, 22),
+            AppId::Tlcp => AppId::encode(AppId::NS_BUILTIN, 23),
+            AppId::Dhcpv4 => AppId::encode(AppId::NS_BUILTIN, 24),
+            AppId::Dhcpv6 => AppId::encode(AppId::NS_BUILTIN, 25),
+            AppId::Mdns => AppId::encode(AppId::NS_BUILTIN, 26),
+            AppId::Dot => AppId::encode(AppId::NS_BUILTIN, 27),
+            AppId::Doh => AppId::encode(AppId::NS_BUILTIN, 28),
             AppId::Unknown => AppId::encode(AppId::NS_CUSTOM, 0),
         }
     }
@@ -51,8 +97,31 @@ impl AppId {
             AppId::Tls => "tls",
             AppId::Http => "http",
             AppId::Dns => "dns",
+            AppId::Dhcpv4 => "dhcpv4",
+            AppId::Dhcpv6 => "dhcpv6",
+            AppId::Mdns => "mdns",
+            AppId::Dot => "dot",
+            AppId::Doh => "doh",
             AppId::Quic => "quic",
             AppId::Ssh => "ssh",
+            AppId::WireGuard => "wireguard",
+            AppId::Ikev1 => "ikev1",
+            AppId::Ikev2 => "ikev2",
+            AppId::Esp => "esp",
+            AppId::Ah => "ah",
+            AppId::Gre => "gre",
+            AppId::Ipip => "ipip",
+            AppId::Ipv6ip => "ipv6-in-ip",
+            AppId::Etherip => "etherip",
+            AppId::L2tp => "l2tp",
+            AppId::Pptp => "pptp",
+            AppId::Vxlan => "vxlan",
+            AppId::Geneve => "geneve",
+            AppId::OpenVpn => "openvpn",
+            AppId::Socks4 => "socks4",
+            AppId::Socks5 => "socks5",
+            AppId::Dtls => "dtls",
+            AppId::Tlcp => "tlcp",
             AppId::Unknown => "unknown",
         }
     }
@@ -275,6 +344,16 @@ mod tests {
         assert_eq!(AppId::Tls.as_u32(), 0x0001_0001);
         assert_eq!(AppId::Http.as_u32(), 0x0001_0002);
         assert_eq!(AppId::Dns.as_u32(), 0x0001_0003);
+        assert_eq!(AppId::Dhcpv4.as_u32(), 0x0001_0018);
+        assert_eq!(AppId::Dhcpv4.as_str(), "dhcpv4");
+        assert_eq!(AppId::Dhcpv6.as_u32(), 0x0001_0019);
+        assert_eq!(AppId::Dhcpv6.as_str(), "dhcpv6");
+        assert_eq!(AppId::Mdns.as_u32(), 0x0001_001a);
+        assert_eq!(AppId::Mdns.as_str(), "mdns");
+        assert_eq!(AppId::Dot.as_u32(), 0x0001_001b);
+        assert_eq!(AppId::Dot.as_str(), "dot");
+        assert_eq!(AppId::Doh.as_u32(), 0x0001_001c);
+        assert_eq!(AppId::Doh.as_str(), "doh");
         // 自定义段与内置段不能撞号
         assert!(AppId::Unknown.as_u32() >= AppId::encode(AppId::NS_CUSTOM, 0));
         assert!(AppId::Tls.as_u32() < AppId::encode(AppId::NS_CUSTOM, 0));

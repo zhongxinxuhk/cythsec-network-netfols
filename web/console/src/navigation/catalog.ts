@@ -24,7 +24,7 @@ export interface NavigationPage {
 }
 const labels = menu as Record<string, string>;
 const meta: Record<string, [string, string]> = {
-  network: ['ClusterOutlined', '网络'],
+  operations: ['SettingOutlined','运维'], network: ['ClusterOutlined', '网络'],
   welcome: ['DashboardOutlined', '帮助'],
   admin: ['SettingOutlined', '管理'],
   dashboard: ['DashboardOutlined', '仪表'],

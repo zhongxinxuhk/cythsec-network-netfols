@@ -2,9 +2,11 @@
 
 > 规划中的集中测试承载：单元 / 集成 / e2e / 流量 / DPI / ML / 安全 / 性能 / 兼容性。
 
-**状态**：🚧 **完全空骨架** —— 10 个子目录全部仅含 `.gitkeep`，无一个测试文件。
+**状态**：`ci/` 包含工作流与执行脚本回归，`ml/` 包含训练工程测试；其他规划目录仍按实际文件逐步补充。
 
-⚠️ 当前实际测试**就近挂在各子工程内**，本目录待后续收敛（规划见 `docs/planning/BACKLOG.md` M9，46 任务）。
+业务测试主要**就近挂在各子工程内**，本目录待后续收敛（规划见 `docs/planning/BACKLOG.md` M9，46 任务）。
+
+CI 编排检查：`python3 -m unittest discover -s tests/ci -v`。流水线与本地验证范围见 [流水线说明](../.github/workflows/README.md) 和 [验证记录](ci/VALIDATION.md)。
 
 ## 现有测试的真实位置
 

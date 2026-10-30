@@ -38,6 +38,7 @@ var DefaultCORSOrigins = []string{"http://localhost:5173"}
 // 全部字段均为可选：零值即「无日志器、无指标、默认 CORS、默认服务名」，
 // 便于最小化启动与单元测试。
 type Options struct {
+	Access *Access
 	// Service 是服务名（如 "policyd"），写入 /healthz 响应与启动日志。
 	Service string
 	// CORSAllowedOrigins 允许跨域的源列表；为空时使用 DefaultCORSOrigins。
@@ -63,6 +64,7 @@ type Options struct {
 // 模式，register 不得重复注册（http.ServeMux 会 panic，属期望的早失败）。
 func NewHandler(opts Options, register func(mux *http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/session", httpx.Route("/api/v1/session", accessSession))
 
 	mux.HandleFunc("GET /healthz", httpx.Route("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		apiresp.JSON(w, r, http.StatusOK, map[string]string{
@@ -104,6 +106,7 @@ func NewHandler(opts Options, register func(mux *http.ServeMux)) http.Handler {
 	if opts.Metrics != nil {
 		mws = append(mws, opts.Metrics.Middleware)
 	}
+	mws = append(mws, opts.Access.middleware(opts.Service))
 	return httpx.Chain(mux, mws...)
 }
 
@@ -155,8 +158,9 @@ func CORSMiddleware(allowed []string) func(http.Handler) http.Handler {
 			if origin != "" && (allowAll || originAllowed(origin, allowed)) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, Authorization, If-Match")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Request-ID")
 				w.Header().Set("Vary", "Origin")
 			}
 			if r.Method == http.MethodOptions {

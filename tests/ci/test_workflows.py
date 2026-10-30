@@ -53,6 +53,8 @@ class WorkflowTests(unittest.TestCase):
         for name in ['cpp','rust','python','go','node']: self.assertEqual(set(needs(jobs[name])), {'lint','security'})
         self.assertEqual(set(needs(jobs['clickhouse'])), {'cpp','rust','go'})
         self.assertIn('linux-live', needs(jobs['package']))
+        self.assertIn('full-validation', needs(jobs['package']))
+        self.assertEqual(set(needs(jobs['full-validation'])), {'cpp', 'rust', 'python', 'go', 'node'})
     def test_no_soft_failure_or_mutable_external_actions(self):
         for path in (ROOT/'.github/workflows').glob('*.yml'):
             w=load(path.name)

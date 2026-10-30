@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="CythSec Run Development" type="CompoundRunConfigurationType" folderName="CythSec - 4 Run">
+    <toRun name="CythSec Run routerd" type="ShConfigurationType" />
+    <toRun name="CythSec Run policyd" type="ShConfigurationType" />
+    <toRun name="CythSec Run dnsd" type="ShConfigurationType" />
+    <toRun name="CythSec Run telemetryd" type="ShConfigurationType" />
+    <toRun name="CythSec Run Console" type="ShConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>

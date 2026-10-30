@@ -10,40 +10,51 @@
  * @param icon 配置路由的图标，取值参考 https://ant.design/components/icon-cn， 注意去除风格后缀和大小写，如想要配置图标为 <StepBackwardOutlined /> 则取值应为 stepBackward 或 StepBackward，如想要配置图标为 <UserOutlined /> 则取值应为 user 或者 User
  * @doc https://umijs.org/docs/guides/routes
  */
-export default [
+const standardRoutes: ConsoleRoute[] = [
   {
     path: '/network',
     name: 'network',
     icon: 'cluster',
     routes: [
       { path: '/network', redirect: '/network/overview' },
+      { path: '/network/configuration', redirect: '/operations/network-configuration' },
       {
         path: '/network/overview',
         name: 'overview',
-        component: './network/Overview',
+        component: './DashboardPage',
       },
       {
         path: '/network/interfaces',
         name: 'interfaces',
-        component: './network/Interfaces',
+        component: './InterfacesPage',
       },
       {
         path: '/network/routes',
         name: 'routes',
-        component: './network/Routes',
+        component: './RoutesPage',
       },
       {
         path: '/network/traffic',
         name: 'traffic',
-        component: './network/Traffic',
+        component: './TrafficPage',
       },
       {
         path: '/network/system',
         name: 'system',
-        component: './network/System',
+        component: './SystemPage',
       },
     ],
   },
+  { path: '/operations', name: 'operations', icon: 'setting', routes: [
+    { path: '/operations', redirect: '/operations/network-configuration' },
+    { path: '/operations/network-configuration', name: 'configuration', component: './NetworkConfigurationPage' },
+    { path: '/operations/analytics', name: 'analytics', component: './AnalyticsPage' },
+    { path: '/operations/metrics', name: 'metrics', component: './MetricDictionaryPage' },
+    { path: '/operations/queue', name: 'queue', component: './IngestQueuePage' },
+  ] },
+  { path: '/analytics', redirect: '/operations/analytics' },
+  { path: '/analytics/metrics', redirect: '/operations/metrics' },
+  { path: '/data/queue', redirect: '/operations/queue' },
   { path: '/interfaces', redirect: '/network/interfaces' },
   { path: '/routes', redirect: '/network/routes' },
   { path: '/traffic', redirect: '/network/traffic' },
@@ -333,3 +344,10 @@ export default [
     path: '/*',
   },
 ];
+
+export interface ConsoleProduct { id: string; name: string; icon: string }
+export interface ConsoleRoute { path: string; name?: string; icon?: string; access?: string; component?: string; redirect?: string; routes?: ConsoleRoute[]; layout?: boolean; hideInMenu?: boolean; consoleProduct?: ConsoleProduct; consoleSection?: string }
+export function createConsoleRoutes(includeDesign: boolean): ConsoleRoute[] {
+  return [...standardRoutes, ...(includeDesign ? [{ path: '/design', hideInMenu: true, routes: [{ path: '/design', redirect: '/design/overview' }, ...['overview', 'topology', 'asset', 'integrations', 'incident'].map(name => ({ path: `/design/${name}`, component: '@/design/DesignWorkspacePage' }))] }] : [])];
+}
+export default createConsoleRoutes(process.env.NODE_ENV === 'development');

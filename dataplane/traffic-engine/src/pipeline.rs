@@ -18,8 +18,10 @@
 //    全部数据**；丢掉"没有 FIN 的会话"会让一整条大流量的记录消失，而统计上看不出
 //    少了什么。在线路径相反：那里靠 `SessionManager::expire` 按超时回收。
 //
-// 3. **DTO 只跑首包**，每个方向第一个非空载荷各一次，与 DPI 的定位一致
-//    （不等重组，见 dpi/mod.rs）。把重组结果喂给 DPI 是后续步骤。
+// 3. Most classifiers inspect one payload per direction. DNS/TCP on service
+//    port 53 additionally uses bounded SYN-anchored first-frame reassembly.
+
+mod dns_tcp;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -230,6 +232,7 @@ struct PipelineState {
     features: BTreeMap<FlowKey, FeatureExtractor>,
     probes: BTreeMap<FlowKey, Probe>,
     payload_start_unknown: u64,
+    dns_tcp: dns_tcp::DnsTcpStreams,
 }
 
 impl PipelineState {
@@ -239,6 +242,7 @@ impl PipelineState {
             features: BTreeMap::new(),
             probes: BTreeMap::new(),
             payload_start_unknown: 0,
+            dns_tcp: dns_tcp::DnsTcpStreams::new(opts.inspect_bytes, opts.session.max_sessions),
         }
     }
 
@@ -283,11 +287,90 @@ impl PipelineState {
             payload: payload_bytes,
         });
 
-        let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false);
+        // For native tunnels the IP payload starts at l4_offset; there is no TCP/UDP header.
+        // Keep feature bytes unchanged: this is only the protocol inspection view.
+        let native_tunnel = matches!(d.key.proto.number(), 4 | 41 | 47 | 50 | 51 | 97);
+        let inspect_payload = if native_tunnel {
+            let end = d
+                .l4_offset
+                .saturating_add(d.ip_payload_len as usize)
+                .min(pkt.data.len());
+            pkt.data.get(d.l4_offset..end).unwrap_or(&[])
+        } else {
+            payload_bytes
+        };
+        let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false)
+            || native_tunnel && inspect_payload.len() < d.ip_payload_len as usize;
+        if d.key.proto.number() == dpi::IPPROTO_TCP
+            && (d.key.src_port == 53 || d.key.dst_port == 53)
+        {
+            let end = d
+                .l4_offset
+                .saturating_add(d.ip_payload_len as usize)
+                .min(pkt.data.len());
+            let segment = pkt
+                .data
+                .get(d.l4_offset..end)
+                .and_then(|bytes| crate::reassembly::tcp::parse(bytes).ok());
+            let seen = self.probes.get(&key).is_some_and(|p| p.is_done(obs.side));
+            if let Some(segment) = segment {
+                let update =
+                    self.dns_tcp
+                        .observe(&obs, &segment, pkt.timestamp_us, seen, d.is_fragmented);
+                let probe = self.probes.entry(key).or_default();
+                if update.reset {
+                    *probe = Probe::default();
+                }
+                if let Some(info) = update.info {
+                    *probe.slot(obs.side) = Some(info);
+                }
+            }
+            return;
+        }
         let probe = self.probes.entry(key).or_default();
-        if !probe.is_done(obs.side) && !payload_bytes.is_empty() {
-            let n = payload_bytes.len().min(opts.inspect_bytes);
-            let outcome = dpi::identify(&payload_bytes[..n], d.key.proto.number(), d.key.dst_port);
+        if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
+            let mut n = inspect_payload.len().min(opts.inspect_bytes);
+            let preliminary = dpi::identify_with_ports(
+                &inspect_payload[..n],
+                d.key.proto.number(),
+                d.key.src_port,
+                d.key.dst_port,
+            );
+            let dhcpv6 = d.key.proto.number() == dpi::IPPROTO_UDP
+                && (matches!(&preliminary, Outcome::Identified(info) if info.app == dpi::AppId::Dhcpv6)
+                    || matches!(d.key.dst_port, 546 | 547)
+                        && dpi::dhcpv6::is_message_type(inspect_payload));
+            let dhcp = d.key.proto.number() == dpi::IPPROTO_UDP
+                && (dpi::dhcp::has_cookie(inspect_payload) || dhcpv6);
+            let mdns = d.key.proto.number() == dpi::IPPROTO_UDP
+                && dpi::mdns::transport(inspect_payload, d.key.src_port, d.key.dst_port);
+            let outcome = if (dhcp || mdns) && (d.is_fragmented || truncated) {
+                Outcome::NeedMore
+            } else if dhcp || mdns {
+                // Keep datagram boundaries: IP/Ethernet padding is not application data.
+                let udp_len = pkt
+                    .data
+                    .get(d.l4_offset + 4..d.l4_offset + 6)
+                    .map(|v| usize::from(u16::from_be_bytes([v[0], v[1]])));
+                match udp_len {
+                    Some(len) if len >= 8 && len <= d.ip_payload_len as usize => {
+                        n = n.min(len - 8);
+                        if (dhcpv6 || mdns) && n < len - 8 {
+                            Outcome::NeedMore // The complete datagram has not been inspected.
+                        } else {
+                            dpi::identify_with_ports(
+                                &inspect_payload[..n],
+                                d.key.proto.number(),
+                                d.key.src_port,
+                                d.key.dst_port,
+                            )
+                        }
+                    }
+                    _ => Outcome::Malformed,
+                }
+            } else {
+                preliminary
+            };
             // 截断捕获必须导向「还需要更多字节」：我们自己少拷了字节，不能算「不认识」。
             let info = if truncated && matches!(outcome, Outcome::Unknown) {
                 AppInfo::from_outcome(&Outcome::NeedMore, n)

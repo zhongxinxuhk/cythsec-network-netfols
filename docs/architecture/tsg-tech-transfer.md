@@ -1,5 +1,10 @@
 # TSG（天狗安全网关）技术解构与 CythSec 技术引入方案
 
+> 2026-10-26 识别专项衔接：[VPN/ZTNA引擎](vpn-ztna-identification.md) 与
+> [逐对象算法](../protocols/README.md) 已新增；标准结构解析和上下文归因分层。
+> 本轮不等于本方案全部插件/处置能力完成，协议精度不由论文中的历史签名替代。
+
+
 > 来源论文：*Technical Analysis of the Geedge Networks Firewall Source Code Leak*
 > （Ablove et al., 35th USENIX Security Symposium, Aug 2026, pp. 3123–3142；
 > 本地副本：`docs/TSG-docs/usenixsecurity26-ablove-en.pdf` 英文版 20 页 /

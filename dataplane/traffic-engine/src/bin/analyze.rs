@@ -16,11 +16,18 @@ use traffic_engine::pipeline::{analyze_pcap_with, AnalyzeOptions, AnalyzeStats};
 use traffic_engine::record::write_jsonl;
 use traffic_engine::{build_info, crate_version};
 
+#[path = "analyze/doh_message.rs"]
+mod doh_message;
+#[path = "analyze/dot_plaintext.rs"]
+mod dot_plaintext;
+
 const USAGE: &str = "\
 cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
 
 用法:
   cythsec-analyze -r <input.pcap> [-o <flows.jsonl>] [选项]
+  cythsec-analyze dot-plaintext --help
+  cythsec-analyze doh-message --help
 
 选项:
   -r, --read <FILE>        输入经典 pcap 文件（必填）
@@ -570,6 +577,24 @@ fn run(args: &Args) -> Result<usize, String> {
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|arg| arg == "doh-message") {
+        return match doh_message::run(&argv[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("[cythsec-analyze] {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if argv.first().is_some_and(|arg| arg == "dot-plaintext") {
+        return match dot_plaintext::run(&argv[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("[cythsec-analyze] {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match parse_args(&argv) {
         Ok(Parsed::Help) => {
             print!("{USAGE}");

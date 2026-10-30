@@ -10,7 +10,7 @@ flowchart TD
   Contracts --> Security
   Lint --> Stacks[C++ / Rust / Go / Node / Python]
   Security --> Stacks
-  Stacks --> Integration[Services / Linux capture / ClickHouse crash and resume]
+  Stacks --> Integration[Default full suite / Services / Linux capture / ClickHouse crash and resume]
   Integration --> Package[Tested exact-revision Linux package]
   Package --> Required[CI required]
 ```
@@ -22,7 +22,7 @@ Hardware-specific throughput targets are not portable CI thresholds.
 
 Checks include strict workflow/schema tests and injected bad graphs/results, exact clang-format,
 Rust format/clippy/docs plus Linux/macOS tests, Go 1.22 compatibility/current patched toolchain and races,
-Node 22/24 locked install/real Chromium/type/build, pinned Python lock/Ruff/Black/mypy, full-history secrets,
+Node 22/24 locked install/Node + business DOM + real Chromium/type/build, pinned Python lock/Ruff/Black/mypy, full-history secrets,
 full npm lock audit, all Go modules vuln scan, isolated Linux veth capture, and real ClickHouse durability.
 
 Remote actions are full-SHA pinned (the standalone SLSA reusable workflow retains its verifier-required

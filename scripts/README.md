@@ -73,7 +73,8 @@
 
 ## dev/
 
-🚧 空占位。
+`clion.sh` 为共享 CLion 配置入口，复用真实构建与测试门禁；`monitor-local.sh` 提供本机四服务健康监测。
+配置、端口、证据与停止方式见 [CLion 开发说明](../docs/development/clion.md)。
 
 ---
 

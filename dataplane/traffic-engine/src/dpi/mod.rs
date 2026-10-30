@@ -16,10 +16,18 @@
 // 那时才谈得上把多个 TCP 段拼起来。DPI 的价值恰恰在于**不等重组**：
 // 省网要在连接建立的头几百微秒内出结果，等流拼完整，SLA 早就过了。
 
+// 标准隧道结构解析先于原有三个应用检测器，返回中等置信的结构级 AppId。
+// 它不等于产品归因或密码学认证；双向确认、可信上下文和 A/B/C/U 在 identification 中处理。
 pub mod attributes;
+pub mod dhcp;
+pub mod dhcpv6;
 pub mod dns;
+pub mod doh;
+pub mod dot;
 pub mod http;
+pub mod mdns;
 pub mod tls;
+pub mod wire;
 
 mod md5;
 mod types;
@@ -55,14 +63,19 @@ const PORT_DOT: u16 = 853;
 /// 443 上优先试 TLS 而不是 DNS，不仅更快（DNS 头校验要读 12 字节），
 /// 也避免了把某个恰好前两字节非零的 TLS 报文误判成 DNS。
 fn order(proto: u8, dst_port: u16) -> [fn(&[u8]) -> Detect; 3] {
+    let dns: fn(&[u8]) -> Detect = if proto == IPPROTO_TCP {
+        dns::detect_tcp
+    } else {
+        dns::detect
+    };
     match (proto, dst_port) {
-        (IPPROTO_UDP, PORT_DNS) => [dns::detect, tls::detect, http::detect],
-        (IPPROTO_TCP, PORT_DOT) => [tls::detect, dns::detect, http::detect],
-        (IPPROTO_TCP, PORT_HTTPS) => [tls::detect, http::detect, dns::detect],
-        (IPPROTO_TCP, PORT_HTTP) => [http::detect, tls::detect, dns::detect],
+        (IPPROTO_UDP, PORT_DNS) | (IPPROTO_TCP, PORT_DNS) => [dns, tls::detect, http::detect],
+        (IPPROTO_TCP, PORT_DOT) => [tls::detect, dns, http::detect],
+        (IPPROTO_TCP, PORT_HTTPS) => [tls::detect, http::detect, dns],
+        (IPPROTO_TCP, PORT_HTTP) => [http::detect, tls::detect, dns],
         // 端口给不出线索（或端口漂移）：按"特征最强"的顺序试，TLS 的 `\x16\x03` 记录头
         // 几乎不可能与其他协议撞，放在最前面最省。
-        _ => [tls::detect, http::detect, dns::detect],
+        _ => [tls::detect, http::detect, dns],
     }
 }
 
@@ -74,8 +87,75 @@ fn order(proto: u8, dst_port: u16) -> [fn(&[u8]) -> Detect; 3] {
 ///   * `Malformed`  —— 载荷自称是某协议但自相矛盾，计入解析失败；
 ///   * `Unknown`    —— 所有检测器都明确说"不是我"，计入 unknown。
 pub fn identify(payload: &[u8], proto: u8, dst_port: u16) -> Outcome {
-    let mut saw_need_more = false;
-    let mut saw_malformed = false;
+    identify_with_ports(payload, proto, 0, dst_port)
+}
+
+/// Full observed UDP port context, needed for mDNS legacy unicast responses.
+/// The legacy identify API remains compatible with callers that only know dport.
+pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u16) -> Outcome {
+    if proto == IPPROTO_UDP && mdns::transport(payload, src_port, dst_port) {
+        return match mdns::detect(payload) {
+            Detect::Hit(d) => Outcome::Identified(d),
+            Detect::NeedMore => Outcome::NeedMore,
+            Detect::Malformed => Outcome::Malformed,
+            Detect::Rejected => Outcome::Unknown,
+        };
+    }
+    if proto == IPPROTO_UDP && dhcp::has_cookie(payload) {
+        return match dhcp::detect(payload) {
+            Detect::Hit(d) => Outcome::Identified(d),
+            Detect::NeedMore => Outcome::NeedMore,
+            Detect::Malformed => Outcome::Malformed,
+            Detect::Rejected => Outcome::Unknown,
+        };
+    }
+    if proto == IPPROTO_UDP && dhcpv6::is_message_type(payload) {
+        let result = dhcpv6::detect(payload);
+        if matches!(result, Detect::Hit(_)) || matches!(dst_port, 546 | 547) {
+            return match result {
+                Detect::Hit(d) => Outcome::Identified(d),
+                Detect::NeedMore => Outcome::NeedMore,
+                Detect::Malformed => Outcome::Malformed,
+                Detect::Rejected => Outcome::Unknown,
+            };
+        }
+    }
+    let structural = wire::inspect_standard(payload, proto, 0, dst_port);
+    let mut saw_need_more = matches!(structural, wire::Verdict::NeedMore)
+        || proto == IPPROTO_UDP && matches!(dhcp::detect(payload), Detect::NeedMore);
+    let mut saw_malformed = matches!(structural, wire::Verdict::Malformed);
+    if let wire::Verdict::Match(f) = structural {
+        let app = match f.id {
+            "V001" => AppId::Esp,
+            "V002" => AppId::Ah,
+            "V003" => AppId::Ikev1,
+            "V004" => AppId::Ikev2,
+            "V006" => AppId::L2tp,
+            "V008" => AppId::Pptp,
+            "V009" => AppId::Gre,
+            "V010" => AppId::Ipip,
+            "V011" => AppId::Ipv6ip,
+            "V013" => AppId::Etherip,
+            "V014" => AppId::Vxlan,
+            "V015" => AppId::Geneve,
+            "V017" | "V018" => AppId::OpenVpn,
+            "V021" => AppId::WireGuard,
+            "P001" => AppId::Socks4,
+            "P002" => AppId::Socks5,
+            "T005" => AppId::Dtls,
+            "T007" | "T008" => AppId::Quic,
+            "T014" => AppId::Tlcp,
+            "T016" => AppId::Ssh,
+            _ => AppId::Unknown,
+        };
+        if app != AppId::Unknown {
+            return Outcome::Identified(Detection::new(
+                app,
+                Confidence::Medium,
+                "bounded wire structure; not product attribution or authenticated session",
+            ));
+        }
+    }
 
     for detect in order(proto, dst_port) {
         match detect(payload) {
@@ -104,12 +184,20 @@ mod framework_tests {
 
     #[test]
     fn port_hint_puts_dns_first_for_udp_53() {
-        // 同一段 DNS 载荷，UDP/53 与 TCP/80 走不同顺序，但结论必须一致
+        // DNS/TCP requires its length prefix even when the service uses another
+        // port. A UDP-format message alone must not become a TCP DNS hit.
         let p: &[u8] = &[
             0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1,
         ];
         assert_eq!(identify(p, IPPROTO_UDP, PORT_DNS).word(), "identified");
-        assert_eq!(identify(p, IPPROTO_TCP, PORT_HTTP).word(), "identified");
+        assert!(
+            !matches!(identify(p, IPPROTO_TCP, PORT_HTTP), Outcome::Identified(d) if d.app == AppId::Dns)
+        );
+        let mut framed = (p.len() as u16).to_be_bytes().to_vec();
+        framed.extend_from_slice(p);
+        assert!(
+            matches!(identify(&framed, IPPROTO_TCP, PORT_HTTP), Outcome::Identified(d) if d.app == AppId::Dns)
+        );
     }
 
     #[test]

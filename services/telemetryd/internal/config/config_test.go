@@ -12,7 +12,7 @@ func TestDefault(t *testing.T) {
 
 	// 端口按服务序位分配，telemetryd 占 8083。此断言固化该约定：
 	// 若有人误改端口，本测试会失败并提醒同步更新部署文档与联调脚本。
-	if c.ListenAddr != ":8083" {
+	if c.ListenAddr != "127.0.0.1:8083" {
 		t.Errorf("ListenAddr = %q，期望 :8083", c.ListenAddr)
 	}
 	if c.ShutdownTimeout != 10*time.Second {
@@ -79,7 +79,7 @@ func TestLoadYAMLMissingFileIsNotFatal(t *testing.T) {
 	if err := c.LoadYAML(filepath.Join(t.TempDir(), "absent.yaml")); err != nil {
 		t.Fatalf("文件缺失不应报错: %v", err)
 	}
-	if c.ListenAddr != ":8083" {
+	if c.ListenAddr != "127.0.0.1:8083" {
 		t.Errorf("默认值被改动: %q", c.ListenAddr)
 	}
 }
@@ -155,7 +155,70 @@ func TestEnvPrefixIsolation(t *testing.T) {
 	t.Setenv("POLICYD_LISTEN_ADDR", ":9998")
 	t.Setenv("ROUTERD_LISTEN_ADDR", ":9997")
 	c.ApplyEnv()
-	if c.ListenAddr != ":8083" {
+	if c.ListenAddr != "127.0.0.1:8083" {
 		t.Errorf("他服务环境变量污染了 telemetryd 配置: %q", c.ListenAddr)
+	}
+}
+
+func TestAggregateDirectoryConfiguration(t *testing.T) {
+	c := Default()
+	if c.AggregateDir != "" {
+		t.Fatal("persistence must be explicit")
+	}
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("aggregate_dir: /local/aggregate\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.LoadYAML(p); err != nil {
+		t.Fatal(err)
+	}
+	if c.AggregateDir != "/local/aggregate" {
+		t.Fatal(c.AggregateDir)
+	}
+	t.Setenv("TELEMETRYD_AGGREGATE_DIR", "/env/aggregate")
+	c.ApplyEnv()
+	if c.AggregateDir != "/env/aggregate" {
+		t.Fatal(c.AggregateDir)
+	}
+}
+
+func TestAggregateQueueConfiguration(t *testing.T) {
+	c := Default()
+	if c.AggregateQueueDir != "" {
+		t.Fatal("queue enabled by default")
+	}
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("aggregate_queue_dir: /local/queue\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.LoadYAML(p); err != nil {
+		t.Fatal(err)
+	}
+	if c.AggregateQueueDir != "/local/queue" {
+		t.Fatal(c.AggregateQueueDir)
+	}
+	t.Setenv("TELEMETRYD_AGGREGATE_QUEUE_DIR", "/env/queue")
+	c.ApplyEnv()
+	if c.AggregateQueueDir != "/env/queue" {
+		t.Fatal(c.AggregateQueueDir)
+	}
+}
+
+func TestAccessFileConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("access_file: /local/policy.json\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := Default()
+	if err := c.LoadYAML(p); err != nil {
+		t.Fatal(err)
+	}
+	if c.AccessFile != "/local/policy.json" {
+		t.Fatal("access_file not loaded")
+	}
+	t.Setenv("TELEMETRYD_ACCESS_FILE", "/override/policy.json")
+	c.ApplyEnv()
+	if c.AccessFile != "/override/policy.json" {
+		t.Fatal("access env did not override YAML")
 	}
 }

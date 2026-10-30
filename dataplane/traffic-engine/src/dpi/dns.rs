@@ -223,6 +223,20 @@ fn addr_of(rtype: u16, rclass: u16, rdata: &[u8]) -> Option<String> {
 /// （畸形，由调用方丢弃）。跳数单独返回是因为它是**可观测的解析成本**：
 /// 0 表示名字是线性读出来的，非 0 表示跳了几次（对应属性 `ATTR_DNS_PTR_DEPTH`）。
 fn parse_name(data: &[u8], start: usize) -> Result<(String, usize, usize), Detect> {
+    parse_name_inner(data, start, false)
+}
+
+/// mDNS uses UTF-8 labels and preserves display case; ordinary DNS keeps its
+/// existing ASCII normalization contract. Both paths share compression limits.
+pub(super) fn parse_mdns_name(data: &[u8], start: usize) -> Result<(String, usize, usize), Detect> {
+    parse_name_inner(data, start, true)
+}
+
+fn parse_name_inner(
+    data: &[u8],
+    start: usize,
+    utf8: bool,
+) -> Result<(String, usize, usize), Detect> {
     let mut labels: Vec<String> = Vec::new();
     let mut used = 0usize;
     let mut off = start;
@@ -257,6 +271,9 @@ fn parse_name(data: &[u8], start: usize) -> Result<(String, usize, usize), Detec
             }
             let target =
                 (((u16::from(b) & 0x3F) as usize) << 8) | u16::from(data[off + 1]) as usize;
+            if utf8 && (target < DNS_HEADER || target >= off) {
+                return Err(Detect::Malformed);
+            }
             if target >= data.len() {
                 // 指向缓冲区之外：指向报文内部才合理，越界即长度字段有问题
                 return Err(Detect::Malformed);
@@ -269,6 +286,9 @@ fn parse_name(data: &[u8], start: usize) -> Result<(String, usize, usize), Detec
             continue;
         }
         if b == 0x00 {
+            if utf8 && used + 1 > MAX_NAME_BYTES {
+                return Err(Detect::Malformed);
+            }
             // 根标签：名字到此结束
             return Ok((labels.join("."), origin_end.unwrap_or(off + 1), ptr_hops));
         }
@@ -285,10 +305,31 @@ fn parse_name(data: &[u8], start: usize) -> Result<(String, usize, usize), Detec
             if used > MAX_NAME_BYTES {
                 return Err(Detect::Malformed);
             }
-            labels.push(ascii_label(&data[off + 1..off + 1 + len])?);
+            let label = &data[off + 1..off + 1 + len];
+            labels.push(if utf8 {
+                mdns_label(label)?
+            } else {
+                ascii_label(label)?
+            });
             off += 1 + len;
         }
     }
+}
+
+fn mdns_label(bytes: &[u8]) -> Result<String, Detect> {
+    let text = std::str::from_utf8(bytes).map_err(|_| Detect::Malformed)?;
+    let mut out = String::new();
+    for ch in text.chars() {
+        if ch == '.' || ch == '\\' || ch.is_control() {
+            let mut encoded = [0u8; 4];
+            for b in ch.encode_utf8(&mut encoded).bytes() {
+                out.push_str(&format!("\\{b:03}"));
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    Ok(out)
 }
 
 /// 域名标签归一化为小写：大小写不影响解析结果，但会让域名维度的统计裂成两桶。
@@ -305,6 +346,27 @@ pub fn detect(payload: &[u8]) -> Detect {
     match parse(payload) {
         Ok(m) => Detect::Hit(m.into_detection()),
         Err(e) => e,
+    }
+}
+
+/// Inspect the first length-delimited DNS message in a contiguous TCP prefix.
+/// The caller owns TCP reassembly and the inspection budget. Never borrow bytes
+/// from the next message to repair an incomplete name in a complete frame.
+pub fn detect_tcp(payload: &[u8]) -> Detect {
+    if payload.len() < 2 {
+        return Detect::NeedMore;
+    }
+    let length = usize::from(u16::from_be_bytes([payload[0], payload[1]]));
+    if length < DNS_HEADER {
+        return Detect::Rejected;
+    }
+    let end = 2 + length;
+    let result = detect(&payload[2..payload.len().min(end)]);
+    match result {
+        Detect::Rejected | Detect::Malformed => result,
+        _ if payload.len() < end => Detect::NeedMore,
+        Detect::NeedMore => Detect::Malformed,
+        _ => result,
     }
 }
 

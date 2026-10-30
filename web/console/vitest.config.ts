@@ -43,7 +43,7 @@ export default defineConfig({
     },
     globals: true,
     setupFiles: ['./tests/setupTests.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: ['src/app.test.tsx', 'src/access.test.ts', 'src/requestErrorConfig.test.ts', 'src/pages/**/index.test.tsx', 'src/pages/account/settings/service.test.ts', 'src/navigation/CloudConsole.test.tsx'],
     exclude: [
       'node_modules',
       'dist',

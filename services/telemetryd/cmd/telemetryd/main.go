@@ -11,22 +11,24 @@
 // 基础端点与中间件栈由 cythsec/services/pkg/controlplane 统一提供；
 // 本文件只负责配置优先级解析与抓取目标载入。
 //
-// 当前范围明确限定为控制面骨架：抓取目标的数据模型、校验规则、内存注册表
-// 与只读查询接口。不含实际 HTTP 抓取、调度循环、时序缓存、告警规则 ——
-// 这些依次是 CYS-TEL-003 至 CYS-TEL-013 的工作。
+// 抓取调度与告警仍未实现。可选 aggregate-dir 提供聚合结果的本机持久化、
+// 严格导入和历史查询，不接受逐用户或逐流载荷记录。
 //
 // 配置优先级：flag > 环境变量 > YAML 文件 > 内置默认值。
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 
 	"cythsec/services/pkg/configutil"
 	"cythsec/services/pkg/controlplane"
 	"cythsec/services/pkg/metrics"
+	"cythsec/services/telemetryd/internal/aggregate"
 	"cythsec/services/telemetryd/internal/api"
 	"cythsec/services/telemetryd/internal/config"
 	"cythsec/services/telemetryd/internal/target"
@@ -38,11 +40,14 @@ import (
 func loadConfig() (config.Config, bool) {
 	c := config.Default()
 
+	accessFile := flag.String("access-file", "", "private JSON access policy with credential digests")
 	addr := flag.String("addr", c.ListenAddr, "HTTP 监听地址，如 :8083 或 127.0.0.1:8083")
 	shutdown := flag.Duration("shutdown-timeout", c.ShutdownTimeout, "优雅关闭超时（如 10s / 5s）")
 	logLevel := flag.String("log-level", "", "日志级别: debug / info / warn / error（默认 info）")
 	logFormat := flag.String("log-format", "", "日志格式: json / text（默认 json）")
 	noMetrics := flag.Bool("no-metrics", false, "关闭 GET /metrics 端点")
+	queueDir := flag.String("aggregate-queue-dir", c.AggregateQueueDir, "聚合磁盘队列目录（需启用 aggregate-dir）")
+	aggregateDir := flag.String("aggregate-dir", c.AggregateDir, "本机聚合持久化目录（默认未启用）")
 	targetFile := flag.String("target-file", c.TargetFile, "JSON 抓取目标文件路径（默认不载入）")
 	maxTargets := flag.Int("max-targets", c.MaxTargets, "允许载入的最大目标数（0 表示不限制）")
 	configPath := flag.String("config", c.ConfigPath, "YAML 配置文件路径")
@@ -69,10 +74,13 @@ func loadConfig() (config.Config, bool) {
 	c.ConfigPath = cfgPath
 
 	if err := c.LoadYAML(c.ConfigPath); err != nil {
-		log.Printf("读取配置文件 %s 失败: %v", c.ConfigPath, err)
+		log.Fatalf("读取配置文件 %s 失败: %v", c.ConfigPath, err)
 	}
 	c.ApplyEnv()
 
+	if set["access-file"] {
+		c.AccessFile = *accessFile
+	}
 	if set["addr"] {
 		c.ListenAddr = *addr
 	}
@@ -90,6 +98,12 @@ func loadConfig() (config.Config, bool) {
 	}
 	if set["target-file"] {
 		c.TargetFile = *targetFile
+	}
+	if set["aggregate-queue-dir"] {
+		c.AggregateQueueDir = *queueDir
+	}
+	if set["aggregate-dir"] {
+		c.AggregateDir = *aggregateDir
 	}
 	if set["max-targets"] {
 		c.MaxTargets = *maxTargets
@@ -127,15 +141,48 @@ func main() {
 		os.Exit(1)
 	}
 
+	if c.AggregateQueueDir != "" && c.AggregateDir == "" {
+		log.Print("聚合队列需要启用 aggregate-dir")
+		os.Exit(1)
+	}
+	var aggregates *aggregate.Store
+	if c.AggregateDir != "" {
+		host, _, err := net.SplitHostPort(c.ListenAddr)
+		if err != nil || !net.ParseIP(host).IsLoopback() {
+			log.Print("启用聚合存储必须绑定本机回环 IP 地址")
+			os.Exit(1)
+		}
+		aggregates, err = aggregate.Open(c.AggregateDir)
+		if err != nil {
+			log.Printf("打开聚合存储失败，进程退出: %v", err)
+			os.Exit(1)
+		}
+		defer aggregates.Close()
+	}
+	var ingest *aggregate.Worker
+	if c.AggregateQueueDir != "" {
+		queue, err := aggregate.Open(c.AggregateQueueDir)
+		if err != nil {
+			log.Printf("打开聚合队列失败: %v", err)
+			os.Exit(1)
+		}
+		ingest = aggregate.NewWorker(aggregates, queue)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); ingest.Run(ctx) }()
+		defer func() { cancel(); <-done; queue.Close() }()
+	}
 	var obs api.ObservabilityMetrics
 	err = controlplane.Run(controlplane.ServerConfig{
-		Service:            api.ServiceName,
-		Addr:               c.ListenAddr,
-		ShutdownTimeout:    c.ShutdownTimeout,
-		LogLevel:           c.LogLevel,
-		LogFormat:          c.LogFormat,
-		MetricsEnabled:     c.MetricsEnabled,
-		CORSAllowedOrigins: nil, // 使用 controlplane 默认值
+		AccessFile:             c.AccessFile,
+		RequireAccessForRemote: true,
+		Service:                api.ServiceName,
+		Addr:                   c.ListenAddr,
+		ShutdownTimeout:        c.ShutdownTimeout,
+		LogLevel:               c.LogLevel,
+		LogFormat:              c.LogFormat,
+		MetricsEnabled:         c.MetricsEnabled,
+		CORSAllowedOrigins:     nil, // 使用 controlplane 默认值
 		RegisterMetrics: func(reg *metrics.Registry) error {
 			obs = api.NewMetrics(reg)
 			return nil
@@ -143,6 +190,8 @@ func main() {
 	}, func(mux *http.ServeMux) {
 		api.RegisterRoutes(mux, api.ServerOptions{
 			Store:        store,
+			Aggregates:   aggregates,
+			Ingest:       ingest,
 			TargetCount:  obs.TargetCount,
 			EnabledCount: obs.EnabledCount,
 		})

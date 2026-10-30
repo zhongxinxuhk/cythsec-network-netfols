@@ -13,6 +13,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -20,6 +21,7 @@ import (
 	"cythsec/services/pkg/controlplane"
 	"cythsec/services/pkg/metrics"
 	"cythsec/services/routerd/internal/netinfo"
+	"cythsec/services/routerd/internal/networkcfg"
 )
 
 // ServiceName 是 routerd 在日志、健康检查与指标子系中使用的服务名。
@@ -29,6 +31,11 @@ const ServiceName = "routerd"
 //
 // 所有字段均为可选：零值即使用默认行为，便于测试与最小化启动。
 type ServerOptions struct {
+	Access          *controlplane.Access
+	NetworkConfig   *networkcfg.Store
+	NetworkObserve  func(context.Context) (networkcfg.Observation, error)
+	NetworkValidate func(context.Context, networkcfg.Config) (networkcfg.NativeValidation, error)
+	NetworkInspect  func(context.Context, string) (networkcfg.PersistentInspection, error)
 	// CORSAllowedOrigins 允许跨域的源列表；为空时使用默认 ["http://localhost:5173"]。
 	// 支持特殊值 "*" 表示允许任意源（仅建议开发/演示环境使用）。
 	CORSAllowedOrigins []string
@@ -49,6 +56,28 @@ type ServerOptions struct {
 // 必须使用 controlplane.Handle（内部套 httpx.Route）：裸 mux.HandleFunc 会让
 // route 标签退化为具体请求路径。
 func RegisterRoutes(mux *http.ServeMux) {
+	RegisterRoutesWithNetworkConfig(mux, nil)
+}
+
+func RegisterRoutesWithNetworkConfig(mux *http.ServeMux, store *networkcfg.Store) {
+	registerRouterRoutes(mux, ServerOptions{NetworkConfig: store})
+}
+
+func registerRouterRoutes(mux *http.ServeMux, opts ServerOptions) {
+	store, observe, validate, inspect := opts.NetworkConfig, opts.NetworkObserve, opts.NetworkValidate, opts.NetworkInspect
+	if observe == nil {
+		observe = networkcfg.NewObserver().Capture
+	}
+	registerNetworkObservation(mux, observe)
+	if validate == nil {
+		validate = networkcfg.NewNativeValidator().Validate
+	}
+	registerNetworkValidation(mux, validate)
+	if inspect == nil {
+		inspect = networkcfg.NewPersistentReader().Inspect
+	}
+	registerNetworkInspection(mux, inspect)
+	registerNetworkConfig(mux, store)
 	// v1 控制面 API（供 Web Console 对接）
 	controlplane.Handle(mux, "GET /api/v1/system", handleSystem)
 	controlplane.Handle(mux, "GET /api/v1/interfaces", handleInterfaces)
@@ -59,6 +88,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 // NewServer 构造 routerd 的 HTTP handler（供测试与嵌入使用）。
 func NewServer(opts ServerOptions) http.Handler {
 	return controlplane.NewHandler(controlplane.Options{
+		Access:                opts.Access,
 		Service:               ServiceName,
 		CORSAllowedOrigins:    opts.CORSAllowedOrigins,
 		Logger:                opts.Logger,
@@ -66,7 +96,9 @@ func NewServer(opts ServerOptions) http.Handler {
 		Registry:              opts.Registry,
 		RuntimeMetricsRefresh: opts.RuntimeMetricsRefresh,
 		DisableMetrics:        opts.DisableMetrics,
-	}, RegisterRoutes)
+	}, func(mux *http.ServeMux) {
+		registerRouterRoutes(mux, opts)
+	})
 }
 
 // handleSystem 处理 GET /api/v1/system，返回主机基础信息

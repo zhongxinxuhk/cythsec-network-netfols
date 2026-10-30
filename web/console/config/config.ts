@@ -230,6 +230,8 @@ export default defineConfig({
   exportStatic: {},
   define: {
     'process.env.CI': process.env.CI,
+    __ROUTERD_BASE__: process.env.CYTHSEC_ROUTERD_BASE || '/api/v1',
+    __TELEMETRYD_BASE__: process.env.CYTHSEC_TELEMETRYD_BASE || '/telemetry/api/v1',
     'process.env.CYTHSEC_ROUTERD_BASE':
       process.env.CYTHSEC_ROUTERD_BASE || '/api/v1',
     'process.env.COMMIT_HASH': commitHash,

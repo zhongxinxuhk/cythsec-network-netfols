@@ -1,0 +1,40 @@
+import { act, cleanup, renderHook } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { analytics } from '@/api/analytics';
+import type { IngestStatus } from '@/api/analytics';
+import { useIngestStatus } from './useIngestStatus';
+vi.mock('@/api/analytics', () => ({ analytics: { ingest: vi.fn() } }));
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
+it('状态请求超时会撤销旧的零积压状态，并在卸载后停止轮询', async () => {
+  vi.useFakeTimers();
+  const status: IngestStatus = { enabled: true, running: true, state: 'idle', pending_batches: 0, pending_bytes: 0, max_batches: 1024, max_bytes: 67108864, oldest_queued_at: null, next_retry_at: null, last_error: null, completed_this_process: 0, duplicates_this_process: 0, failures_this_process: 0, consecutive_failures: 0 };
+  vi.mocked(analytics.ingest).mockResolvedValueOnce(status).mockImplementation(() => new Promise(() => {}));
+  const { result, unmount } = renderHook(() => useIngestStatus());
+  await act(async () => { await Promise.resolve(); });
+  expect(result.current.status?.pending_batches).toBe(0);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5500); });
+  expect(result.current.status).toBeNull();
+  expect(result.current.error).toBe('队列状态请求超时');
+  const calls = vi.mocked(analytics.ingest).mock.calls.length;
+  const signal = vi.mocked(analytics.ingest).mock.calls[calls - 1][0];
+  expect(signal?.aborted).toBe(true);
+  unmount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+  expect(analytics.ingest).toHaveBeenCalledTimes(calls);
+});
+
+it('手动刷新中止旧请求，迟到的旧响应不能覆盖新观察时间与状态', async () => {
+  vi.useFakeTimers();
+  const status: IngestStatus = { enabled: true, running: true, state: 'idle', pending_batches: 0, pending_bytes: 0, max_batches: 10, max_bytes: 1000, oldest_queued_at: null, next_retry_at: null, last_error: null, completed_this_process: 1, duplicates_this_process: 0, failures_this_process: 0, consecutive_failures: 0 };
+  let late: (value: IngestStatus) => void = () => {};
+  vi.mocked(analytics.ingest).mockImplementationOnce(() => new Promise(resolve => { late = resolve; })).mockResolvedValue(status);
+  const { result } = renderHook(() => useIngestStatus());
+  const first = vi.mocked(analytics.ingest).mock.calls[0][0];
+  await act(async () => { result.current.reload(); await Promise.resolve(); });
+  expect(first?.aborted).toBe(true);
+  expect(result.current.status?.pending_batches).toBe(0);
+  expect(result.current.updatedAt).not.toBeNull();
+  expect(result.current.loading).toBe(false);
+  await act(async () => { late({ ...status, pending_batches: 9 }); await Promise.resolve(); });
+  expect(result.current.status?.pending_batches).toBe(0);
+});

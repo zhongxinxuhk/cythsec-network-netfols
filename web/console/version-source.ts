@@ -1,15 +1,4 @@
-// version-source.ts —— 前端构建/测试配置共用的「版本真源读取」实现。
-//
-// 为什么单独成文件：这段逻辑此前在 vite.config.ts 与 vitest.config.ts 里**各写了一份**。
-// 上游修掉了自己那份的路径错误（三级上溯 -> 两级），却没有同步下游副本，于是
-// vitest 侧仍在读仓库**外**的 ../../../VERSION，ENOENT 又被自身的 catch 吞掉、
-// 静默回落 'dev'。结果是 version.test.ts 的两个用例红灯，而它本来的职责恰恰是
-// 「证明版本注入链路是通的」—— 测试自己带着同一个 bug，就只能验证出降级值。
-//
-// 这正是 vite.config.ts 注释里警告过的「同类问题再次隐身」。两份副本是根因，
-// 因此把实现收敛为一处：以后不论改路径还是改兜底策略，都只可能改在这里。
-//
-// 定位方式：本文件位于 web/console，仓库根在其上两级。
+// Umi 构建与 Vitest 共用根 VERSION 真源，缺失或为空时直接失败。
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 

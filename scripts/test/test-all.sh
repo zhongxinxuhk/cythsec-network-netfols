@@ -163,7 +163,39 @@ test_rust() {
     echo "✗ [training-features] 训练特征产物验收失败" >&2
     return 1
   fi
-  echo "✓ [rust] 测试通过（含 CYS-TRF-028 / CYS-MLT-006 特征 parity）"
+  if ! bash scripts/verify/check-vpn-identification.sh; then
+    echo "✗ [vpn-identification] CLI、目录或证据裁决验收失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-aggregate-observability.sh; then
+    echo "✗ [aggregate-observability] 聚合统计或完整性验收失败" >&2
+    return 1
+  fi
+  if ! "${PYTHON:-python3}" tools/codegen/gen-protocol-adaptation.py --check --self-test || ! bash scripts/verify/check-dns-tcp.sh; then
+    echo "✗ [protocol-adaptation] 清单或DNS/TCP回归失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-dhcpv4.sh; then
+    echo "✗ [B015] DHCPv4回归失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-dhcpv6.sh; then
+    echo "✗ [B016] DHCPv6回归失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-mdns.sh; then
+    echo "✗ [B017] mDNS回归失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-dot.sh; then
+    echo "✗ [B018] DoT明文入口回归失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-doh.sh; then
+    echo "✗ [B019] DoH消息入口回归失败" >&2
+    return 1
+  fi
+  echo "✓ [rust] 测试通过（含特征 parity、识别 CLI 与独立聚合观测）"
 }
 
 test_go() {
@@ -856,6 +888,15 @@ failed=0
 [[ $BUILD_RUST -eq 1 ]]  && { test_rust  || failed=$((failed+1)); }
 # CYS-MLT-001: isolated packaging gate runs in the default suite; standalone entry below.
 if [[ ${ALL} -eq 1 ]]; then
+  bash scripts/verify/check-doh.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-dot.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-mdns.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-dhcpv6.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-dhcpv4.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-dns-tcp.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-vpn-identification.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-aggregate-observability.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-aggregate-storage.sh || failed=$((failed+1))
   echo "==> [training-project] 锁定环境与隔离安装包验收（CYS-MLT-001）"
   bash scripts/verify/check-training-project.sh || failed=$((failed+1))
   echo "==> [python-quality] 静态检查与故障注入（CYS-MLT-002）"
