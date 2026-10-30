@@ -210,11 +210,11 @@ jobs:
         rust: 'true'
         go: 1.27.3
     - name: Compose storage and failure acceptance
-      run: 'python3 scripts/verify/check-clickhouse-compose.py
-
+      run: |
+        python3 scripts/verify/check-clickhouse-compose.py
         python3 scripts/verify/check-clickhouse-writer.py
-
-        python3 scripts/verify/check-clickhouse-resume.py'
+        python3 scripts/verify/check-clickhouse-resume.py
+        python3 scripts/verify/check-clickhouse-inbox.py
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       if: always()
       with:

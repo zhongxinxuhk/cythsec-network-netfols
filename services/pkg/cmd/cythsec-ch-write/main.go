@@ -43,6 +43,10 @@ func run() error {
 	attempts := flag.Int("attempts", 3, "每批最多尝试次数，耗尽后保留队列并退出非零")
 	inputPath := flag.String("input", "-", "JSONL 文件，- 为 stdin")
 	resumeFile := flag.Bool("resume-file", false, "不可变文件的持久化输入断点（须指定 --input 文件）")
+	inputDir := flag.String("input-dir", "", "常驻扫描已原子发布的非隐藏 *.jsonl 普通文件")
+	scanInterval := flag.Duration("scan-interval", time.Second, "目录扫描间隔")
+	maxSources := flag.Int("max-source-files", 10000, "目录条目与源文件状态数量上限")
+	scanOnce := flag.Bool("scan-once", false, "仅完成一次目录快照；须指定 --input-dir")
 	replay := flag.Bool("replay-only", false, "只重放队列，不读取新输入")
 	version := flag.Bool("version", false, "输出构建版本")
 	flag.Parse()
@@ -61,6 +65,46 @@ func run() error {
 	}
 	if *resumeFile && (*inputPath == "-" || *replay) {
 		return errors.New("--resume-file 需要 --input 文件，不能与 --replay-only 同用")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	inputExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "input" {
+			inputExplicit = true
+		}
+	})
+	if *inputDir != "" {
+		if inputExplicit || *resumeFile || *replay {
+			return errors.New("--input-dir 不能与 --input、--resume-file 或 --replay-only 同用")
+		}
+		inbox, err := clickhousewriter.OpenInbox(clickhousewriter.InboxConfig{
+			Directory: *inputDir,
+			Queue:     clickhousewriter.Config{Directory: *spool, Target: client.Target(), MaxPendingBytes: *capacity, RetryInterval: *retry, MaxAttempts: *attempts},
+			BatchRows: *rows, BatchBytes: *batchBytes, MaxSources: *maxSources, PollInterval: *scanInterval,
+			OnComplete: func(name string, stats clickhousewriter.Stats) {
+				data, _ := json.Marshal(struct {
+					Source string                 `json:"source"`
+					Stats  clickhousewriter.Stats `json:"stats"`
+				}{name, stats})
+				fmt.Fprintf(os.Stderr, "[cythsec-ch-write-source] %s\n", data)
+			},
+		})
+		if err != nil {
+			return err
+		}
+		defer inbox.Close()
+		defer func() {
+			data, _ := json.Marshal(inbox.Stats())
+			fmt.Fprintf(os.Stderr, "[cythsec-ch-write-inbox] %s\n", data)
+		}()
+		if *scanOnce {
+			return inbox.Scan(ctx, client.Send)
+		}
+		return inbox.Run(ctx, client.Send)
+	}
+	if *scanOnce {
+		return errors.New("--scan-once 需要 --input-dir")
 	}
 	q, err := clickhousewriter.Open(clickhousewriter.Config{Directory: *spool, Target: client.Target(), MaxPendingBytes: *capacity, RetryInterval: *retry, MaxAttempts: *attempts, ResumeFile: *resumeFile})
 	if err != nil {
@@ -84,8 +128,6 @@ func run() error {
 			}
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)

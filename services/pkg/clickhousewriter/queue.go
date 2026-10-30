@@ -177,8 +177,10 @@ func Open(cfg Config) (_ *Queue, err error) {
 	return q, nil
 }
 
-func (q *Queue) syncDirectory() error {
-	f, err := os.Open(q.cfg.Directory)
+func (q *Queue) syncDirectory() error { return syncDirectory(q.cfg.Directory) }
+
+func syncDirectory(directory string) error {
+	f, err := os.Open(directory)
 	if err != nil {
 		return err
 	}
@@ -187,7 +189,11 @@ func (q *Queue) syncDirectory() error {
 }
 
 func (q *Queue) atomicWrite(name string, data []byte) error {
-	f, err := os.CreateTemp(q.cfg.Directory, ".pending-*.tmp")
+	return atomicWrite(q.cfg.Directory, name, data)
+}
+
+func atomicWrite(directory, name string, data []byte) error {
+	f, err := os.CreateTemp(directory, ".pending-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -203,10 +209,10 @@ func (q *Queue) atomicWrite(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err = os.Rename(tmp, filepath.Join(q.cfg.Directory, name)); err != nil {
+	if err = os.Rename(tmp, filepath.Join(directory, name)); err != nil {
 		return err
 	}
-	return q.syncDirectory()
+	return syncDirectory(directory)
 }
 
 func rowCount(data []byte) (int, error) {
