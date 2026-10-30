@@ -3761,7 +3761,8 @@
       ],
       "reference": [
         "scripts/verify/check-dhcpv4.sh",
-        "docs/planning/protocol-b015-dhcpv4-verification.md"
+        "docs/planning/protocol-b015-dhcpv4-verification.md",
+        "docs/deployment/CI-CD-20261030.md#hosted-full-suite-reference-repair"
       ],
       "gap": "详细字段尚未进入FlowRecord/存储；4096字节/256选项预算；完整租约事务、扩展消息/选项、IP重组、真实语料精度/规模与Linux矩阵待完成"
     },

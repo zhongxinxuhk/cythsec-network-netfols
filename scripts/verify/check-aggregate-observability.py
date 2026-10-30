@@ -49,6 +49,7 @@ def main():
     ap.add_argument('--tshark', action='store_true')
     args = ap.parse_args()
     frames = []
+    late_frames = []
     for flow in range(20):
         t = 1000000 + flow * 100000
         sequence = [
@@ -59,11 +60,17 @@ def main():
             (15000, b'A' * 10, 101, 501, 0x18, False),
             (20000, b'', 501, 111, 0x10, True),
             (25000, b'B' * 10, 131, 501, 0x18, False),
-            (30000, b'', 501, 111, 0x10, True),
-            (35000, b'C' * 10, 111, 501, 0x18, False),
+            (26000, b'', 501, 111, 0x10, True),
+            # Keep the late segment within Wireshark's documented 3ms/iRTT
+            # out-of-order threshold, rather than relying on version heuristics.
+            (27000, b'C' * 10, 111, 501, 0x18, False),
         ]
         for delta, payload, seq, ack, flags, reverse in sequence:
-            frames.append((t + delta, packet(flow, 6, payload, seq, ack, flags, reverse)))
+            value = packet(flow, 6, payload, seq, ack, flags, reverse)
+            frames.append((t + delta, value))
+            # Retain the original >iRTT late-arrival case as an application
+            # regression without claiming cross-version tshark label equality.
+            late_frames.append((t + (35000 if delta == 27000 else delta), value))
         private = b'private.example user-marker-123'
         tls = bytes([23, 3, 3, 0, len(private)]) + private
         frames.append((t + 40000, packet(100 + flow, 6, tls, 1, 0, 0x18)))
@@ -73,6 +80,11 @@ def main():
         tmp = Path(tmp)
         capture = tmp / 'aggregate.pcap'
         write_pcap(capture, frames)
+        original = tmp / 'late-arrival.pcap'
+        write_pcap(original, late_frames)
+        original_quality = json.loads(run([BIN, '-r', original]).splitlines()[0])['statistics']['tcp_quality']
+        assert original_quality['retransmission_candidates'] == 20
+        assert original_quality['out_of_order_candidates'] == 20
         raw = run([BIN, '-r', capture])
         rows = [json.loads(line) for line in raw.splitlines()]
         assert len(rows) == 2 and rows[-1]['type'] == 'capture_status'
