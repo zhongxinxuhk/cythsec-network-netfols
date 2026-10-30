@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-30.5",
+  "revision": "2026-10-31.1",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -4025,15 +4025,43 @@
     {
       "id": "B024",
       "name": "sFlow",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "sFlow v5（RFC 3176）UDP 数据报：flow sample（1/3）与 counter sample（2/4）；raw header/Ethernet/IPv4/IPv6/extended switch，generic interface/Ethernet/VLAN 计数；数据报级序号缺口/重复/乱序/回绕",
+      "code": [
+        "dataplane/traffic-engine/src/sflow.rs",
+        "dataplane/traffic-engine/src/bin/sflow_collect.rs",
+        "dataplane/traffic-engine/src/lib.rs",
+        "dataplane/traffic-engine/Cargo.toml"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/sflow.rs#decodes_flow_sample_with_raw_header_and_extended_switch",
+        "dataplane/traffic-engine/src/sflow.rs#decodes_expanded_flow_sample_with_ipv6",
+        "dataplane/traffic-engine/src/sflow.rs#decodes_ipv6_agent_and_raw_ipv6_header",
+        "dataplane/traffic-engine/src/sflow.rs#decodes_counter_samples_in_both_formats",
+        "dataplane/traffic-engine/src/sflow.rs#sequence_gap_counts_lost_datagrams",
+        "dataplane/traffic-engine/src/sflow.rs#duplicate_datagram_is_not_loss_and_sample_dedup_holds",
+        "dataplane/traffic-engine/src/sflow.rs#backward_sequence_is_out_of_order_not_loss",
+        "dataplane/traffic-engine/src/sflow.rs#sequence_wraps_without_false_loss",
+        "dataplane/traffic-engine/src/sflow.rs#sub_agents_do_not_share_sequence_state",
+        "dataplane/traffic-engine/src/sflow.rs#unknown_sample_and_record_types_are_skipped",
+        "dataplane/traffic-engine/src/sflow.rs#truncated_record_is_counted_not_invented",
+        "dataplane/traffic-engine/src/sflow.rs#version_and_agent_type_mismatch_are_rejected",
+        "dataplane/traffic-engine/src/sflow.rs#malformed_sample_length_does_not_panic",
+        "dataplane/traffic-engine/src/sflow.rs#nonzero_trailing_bytes_are_malformed",
+        "dataplane/traffic-engine/src/sflow.rs#conflicting_flow_records_keep_first_key",
+        "dataplane/traffic-engine/src/sflow.rs#json_lines_are_stable_and_typed",
+        "scripts/verify/check-sflow.sh",
+        "scripts/verify/check-sflow.py",
+        "docs/planning/protocol-b024-sflow-verification.md"
+      ],
+      "reference": [
+        "scripts/verify/check-sflow.sh",
+        "docs/planning/protocol-b024-sflow-verification.md"
+      ],
+      "gap": "MPLS/AS/URL/NAT/socket/host 等扩展记录未解码；无真实厂商/现场语料；只做 UDP/pcap，未做 TCP/SCTP 传输；采样量级还原与长期运行/Linux 矩阵待验收；pcap 默认仅按 6343 端口过滤"
     }
   ],
   "supplemental_ids": [

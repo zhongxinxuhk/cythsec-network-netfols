@@ -61,6 +61,11 @@ path = "src/bin/ipfix_collect.rs"
 name = "cythsec-netflow9-collect"
 path = "src/bin/netflow9_collect.rs"
 
+# sFlow v5 采集器（RFC 3176）：flow/counter sample 与数据报级序号缺口。
+[[bin]]
+name = "cythsec-sflow-collect"
+path = "src/bin/sflow_collect.rs"
+
 [[bin]]
 name = "cythsec-bench"
 path = "src/bin/bench.rs"

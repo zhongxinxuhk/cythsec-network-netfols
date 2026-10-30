@@ -76,3 +76,8 @@ B023 NetFlow v9 已按 RFC 3954 落地到独立采集器：模板/数据流集�
 21/22 号时标换算，以及**导出报文级**序号缺口。它与 IPFIX 的关键差别是序号单位
 （v9 报文序号 vs v10 数据记录累计数），不能互相代替；独立语料与 tshark 对照见
 [B023验收记录](../planning/protocol-b023-netflow9-verification.md)。
+
+B024 sFlow v5 已按 RFC 3176 落地到独立采集器：自描述 flow/counter sample、raw header/
+IPv4/IPv6/extended switch、接口与 VLAN 计数，以及**数据报级**序号缺口。它没有模板，
+序号单位也与 IPFIX（记录累计数）和 NetFlow v9（导出报文序号）不同；独立语料与
+tshark 对照见 [B024验收记录](../planning/protocol-b024-sflow-verification.md)。

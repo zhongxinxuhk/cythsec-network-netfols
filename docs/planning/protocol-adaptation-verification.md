@@ -62,3 +62,10 @@ B023 NetFlow v9 已于 2026-10-31 补齐采集侧实现与对照：`cythsec-netf
 经 tshark 交叉确认五元组与计数。Options Template、真实厂商语料、TCP/SCTP 与
 长期运行矩阵仍未完成，故 `reference_tested=true`、`accepted=false`，详见
 [NetFlow v9采集验收](protocol-b023-netflow9-verification.md)。
+
+B024 sFlow v5 已于 2026-10-31 补齐采集侧实现与对照：`cythsec-sflow-collect`
+解 flow sample（1/3）、counter sample（2/4），按 RFC 3176 的**数据报序号**报缺口，
+并用独立拼字节的 pcap 经 tshark `sflow_245` 交叉确认五元组、接口计数与 VLAN。
+扩展记录（MPLS/AS/URL/NAT/socket/host）、真实厂商语料、TCP/SCTP 与长期运行矩阵
+仍未完成，故 `reference_tested=true`、`accepted=false`，详见
+[sFlow v5采集验收](protocol-b024-sflow-verification.md)。

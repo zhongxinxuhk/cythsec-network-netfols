@@ -29,7 +29,7 @@ usage() {
   --reassembly   只跑 TCP 重组向量的 tshark 第三方交叉核验（需 tshark）
   --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + TCP 统计三方比对（CYS-TRF-015）+ 反向故障注入（需 tshark）
   --ipfix        只跑 IPFIX 导出的 tshark 第三方交叉核验 + UDP 通道字节比对 + 反向故障注入，
-                 以及 NetFlow v9 采集回路（独立语料 + tshark，需 tshark）
+                 以及 NetFlow v9 / sFlow v5 采集回路（独立语料 + tshark，需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
@@ -678,7 +678,20 @@ test_ipfix() {
     echo "✗ [ipfix] NetFlow v9 采集核验失败" >&2
     return 1
   fi
-  echo "✓ [ipfix] 交叉核验通过（IPFIX：导出/采集/异厂；NetFlow v9：模板/记录/报文级丢包 + tshark）"
+  # sFlow v5 采集（RFC 3176）：自描述 sample/record，序号也是数据报级，但线格式与 v9 不同。
+  # 单独一道关口；不能因为 v9 绿了就推断 sFlow 也绿。
+  echo "==> [ipfix] sFlow v5 采集（独立语料 + 数据报级丢包 + tshark）"
+  rc=0
+  bash scripts/verify/check-sflow.sh --tshark || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [ipfix] sFlow 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "✗ [ipfix] sFlow 采集核验失败" >&2
+    return 1
+  fi
+  echo "✓ [ipfix] 交叉核验通过（IPFIX：导出/采集/异厂；NetFlow v9：模板/记录/报文级丢包；sFlow v5：flow/counter/数据报级丢包 + tshark）"
   return 0
 }
 
