@@ -134,10 +134,10 @@ export default function NetworkConfigurationPage() {
         </div>}
       </Form.List>
     </Form>}
-    <Drawer title="持久配置来源" size="min(1040px, 100vw)" open={Boolean(persistent)} onClose={() => setPersistent(null)} destroyOnHidden>{persistent && <PersistentNetworkResult report={persistent} />}</Drawer>
-    <Drawer title="原生工具校验" size="min(860px, 100vw)" open={Boolean(nativeValidation)} onClose={() => setNativeValidation(null)} destroyOnHidden>{nativeValidation && <NetworkNativeValidationResult report={nativeValidation} />}</Drawer>
-    <Drawer title="应用前检查" size="min(960px, 100vw)" open={Boolean(report)} onClose={() => setReport(null)} destroyOnHidden>{report && <NetworkPreflightResult report={report} />}</Drawer>
-    <Drawer title="原生配置预览" size="min(760px, 100vw)" open={Boolean(preview)} onClose={() => setPreview(null)} destroyOnHidden>
+    <Drawer closable={{ "aria-label": "关闭" }} title="持久配置来源" size="min(1040px, 100vw)" open={Boolean(persistent)} onClose={() => setPersistent(null)} destroyOnHidden>{persistent && <PersistentNetworkResult report={persistent} />}</Drawer>
+    <Drawer closable={{ "aria-label": "关闭" }} title="原生工具校验" size="min(860px, 100vw)" open={Boolean(nativeValidation)} onClose={() => setNativeValidation(null)} destroyOnHidden>{nativeValidation && <NetworkNativeValidationResult report={nativeValidation} />}</Drawer>
+    <Drawer closable={{ "aria-label": "关闭" }} title="应用前检查" size="min(960px, 100vw)" open={Boolean(report)} onClose={() => setReport(null)} destroyOnHidden>{report && <NetworkPreflightResult report={report} />}</Drawer>
+    <Drawer closable={{ "aria-label": "关闭" }} title="原生配置预览" size="min(760px, 100vw)" open={Boolean(preview)} onClose={() => setPreview(null)} destroyOnHidden>
       {preview && <Space orientation="vertical" size="large" style={{ width: '100%' }}>
         <Alert type="info" title="校验已完成，配置尚未应用" showIcon />
         <ProDescriptions column={1} dataSource={{}} columns={[{ title: '配置摘要', render: () => <Typography.Text copyable style={{ wordBreak: 'break-all' }}>{preview.digest}</Typography.Text> }]} />

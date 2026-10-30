@@ -30,3 +30,11 @@ it('端口冲突在加载Umi前失败，保护已运行控制台的生成目录'
     await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
   }
 });
+
+it('Utoopack内部端口只允许显式回环地址，控制台禁止漂移', () => {
+  const environmentWithCompiler = { ...env, CYTHSEC_CONSOLE_BUNDLER_PORT: '25174' };
+  const args = ['--require', environment, '--require', guard, '-e'];
+  const script = "const s=require('node:http').createServer();s.listen(25174,'127.0.0.1',()=>{console.log(s.address().address);s.close()})";
+  expect(execFileSync(process.execPath, [...args, script], { env: environmentWithCompiler, encoding: 'utf8' }).trim()).toBe('127.0.0.1');
+  expect(() => execFileSync(process.execPath, [...args, script.replace("'127.0.0.1'", "'0.0.0.0'")], { env: environmentWithCompiler, stdio: 'pipe' })).toThrow();
+});

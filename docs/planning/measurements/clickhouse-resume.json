@@ -1,0 +1,110 @@
+{
+  "measured_at_utc": "2026-10-29T17:46:29.898305+00:00",
+  "database": "cythsec_resume_6e4b0b4f9f0f",
+  "architecture": "arm64",
+  "writer_version": "0.1.0",
+  "publication_receipt": {
+    "path": "/Users/xuzhongxin/.codex/worktrees/df91/CythSec/build/storage-measurement/resume-6e4b0b4f9f0f/collected.jsonl",
+    "records": 15,
+    "bytes": 14032
+  },
+  "published_source_sha256": "837ced419796740792dc4175bd6a70765abb5d8967a870d32d1c0777332ed463",
+  "writer_binary_sha256": "4e0bf351b1000aa241b7d1f5d306989ef6585718f82c318fe6da461d078af070",
+  "results": {
+    "published": {
+      "accepted_rows": 15,
+      "recovered_rows": 0,
+      "delivered_rows": 15,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 4,
+      "failures": 0,
+      "backpressure_waits": 0,
+      "source_offset": 14032,
+      "source_rows": 15,
+      "source_sha256": "837ced419796740792dc4175bd6a70765abb5d8967a870d32d1c0777332ed463",
+      "source_size": 14032
+    },
+    "completed_rerun": {
+      "accepted_rows": 0,
+      "recovered_rows": 0,
+      "delivered_rows": 0,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 0,
+      "failures": 0,
+      "backpressure_waits": 0,
+      "source_offset": 14032,
+      "source_rows": 15,
+      "source_sha256": "837ced419796740792dc4175bd6a70765abb5d8967a870d32d1c0777332ed463",
+      "source_size": 14032
+    },
+    "changed_source": {
+      "accepted_rows": 0,
+      "recovered_rows": 0,
+      "delivered_rows": 0,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 0,
+      "failures": 0,
+      "backpressure_waits": 0,
+      "source_offset": 14032,
+      "source_rows": 15,
+      "source_sha256": "837ced419796740792dc4175bd6a70765abb5d8967a870d32d1c0777332ed463",
+      "source_size": 14032
+    },
+    "partial_outage": {
+      "accepted_rows": 1000,
+      "recovered_rows": 0,
+      "delivered_rows": 0,
+      "pending_batches": 2,
+      "pending_bytes": 1418132,
+      "attempts": 2,
+      "failures": 2,
+      "backpressure_waits": 1,
+      "source_offset": 1063053,
+      "source_rows": 1000,
+      "source_sha256": "467a8e4fc641470b3001b140e256981a22917d79d60cf361cf65fec02bd75d74",
+      "source_size": 21514964
+    },
+    "partial_resumed": {
+      "accepted_rows": 19182,
+      "recovered_rows": 1000,
+      "delivered_rows": 20182,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 41,
+      "failures": 0,
+      "backpressure_waits": 36,
+      "source_offset": 21514964,
+      "source_rows": 20182,
+      "source_sha256": "467a8e4fc641470b3001b140e256981a22917d79d60cf361cf65fec02bd75d74",
+      "source_size": 21514964
+    },
+    "killed_resumed": {
+      "accepted_rows": 0,
+      "recovered_rows": 15,
+      "delivered_rows": 15,
+      "pending_batches": 0,
+      "pending_bytes": 0,
+      "attempts": 4,
+      "failures": 0,
+      "backpressure_waits": 0,
+      "source_offset": 14032,
+      "source_rows": 15,
+      "source_sha256": "837ced419796740792dc4175bd6a70765abb5d8967a870d32d1c0777332ed463",
+      "source_size": 14032
+    }
+  },
+  "kill_exit_code": 137,
+  "rows_committed_before_kill": 4,
+  "verified_rows": {
+    "published": 15,
+    "partial": 20182,
+    "killed": 15
+  },
+  "caveats": [
+    "不可变普通文件的断点恢复；不追踪追加文件或文件轮转。",
+    "不为实时 UDP 提供端到端确认；native 去重仍受测试表窗口限制。"
+  ]
+}

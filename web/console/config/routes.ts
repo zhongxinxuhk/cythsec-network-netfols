@@ -1,55 +1,353 @@
-// Ant Design Pro 路由真源：菜单、面包屑和页面路由由 Umi 统一生成。
-export interface ConsoleProduct {
-  id: string;
-  name: string;
-  icon: string;
-}
-export interface ConsoleRoute {
-  consoleProduct?: ConsoleProduct;
-  consoleSection?: string;
-  path: string;
-  name?: string;
-  icon?: string;
-  component?: string;
-  redirect?: string;
-  layout?: boolean;
-  routes?: ConsoleRoute[];
-}
-const workspace = { id: 'workspace', name: '工作台', icon: 'DashboardOutlined' };
-const network = { id: 'network', name: '网络管理', icon: 'ClusterOutlined' };
-const analytics = { id: 'analytics', name: '流量分析', icon: 'BarChartOutlined' };
-const data = { id: 'data', name: '数据管理', icon: 'DatabaseOutlined' };
-const platform = { id: 'platform', name: '平台管理', icon: 'SettingOutlined' };
-const design = { id: 'design', name: '设计工作区', icon: 'ExperimentOutlined' };
-const businessRoutes: ConsoleRoute[] = [
-  { consoleProduct: workspace, consoleSection: '运行监测', path: '/', name: '运行概览', icon: 'DashboardOutlined', component: './DashboardPage' },
-  { consoleProduct: network, consoleSection: '网络资源', path: '/interfaces', name: '网络接口', icon: 'ClusterOutlined', component: './InterfacesPage' },
-  { consoleProduct: network, consoleSection: '网络资源', path: '/routes', name: '路由表', icon: 'BranchesOutlined', component: './RoutesPage' },
-  { consoleProduct: network, consoleSection: '运行监测', path: '/traffic', name: '接口流量', icon: 'AreaChartOutlined', component: './TrafficPage' },
-  { consoleProduct: network, consoleSection: '网络配置', path: '/network/configuration', name: '网络配置', icon: 'SettingOutlined', component: './NetworkConfigurationPage' },
-  { consoleProduct: analytics, consoleSection: '聚合数据', path: '/analytics', name: '聚合分析', icon: 'BarChartOutlined', component: './AnalyticsPage' },
-  { consoleProduct: analytics, consoleSection: '指标口径', path: '/analytics/metrics', name: '指标字典', icon: 'BookOutlined', component: './MetricDictionaryPage' },
-  { consoleProduct: data, consoleSection: '写入管道', path: '/data/queue', name: '写入队列', icon: 'DatabaseOutlined', component: './IngestQueuePage' },
-  { consoleProduct: platform, consoleSection: '系统管理', path: '/system', name: '系统信息', icon: 'SettingOutlined', component: './SystemPage' },
+/**
+ * @name umi 的路由配置
+ * @description 只支持 path,component,routes,redirect,wrappers,name,icon 的配置
+ * @param path  path 只支持两种占位符配置，第一种是动态参数 :id 的形式，第二种是 * 通配符，通配符只能出现路由字符串的最后。
+ * @param component 配置 location 和 path 匹配后用于渲染的 React 组件路径。可以是绝对路径，也可以是相对路径，如果是相对路径，会从 src/pages 开始找起。
+ * @param routes 配置子路由，通常在需要为多个路径增加 layout 组件时使用。
+ * @param redirect 配置路由跳转
+ * @param wrappers 配置路由组件的包装组件，通过包装组件可以为当前的路由组件组合进更多的功能。 比如，可以用于路由级别的权限校验
+ * @param name 配置路由的标题，默认读取国际化文件 menu.ts 中 menu.xxxx 的值，如配置 name 为 login，则读取 menu.ts 中 menu.login 的取值作为标题
+ * @param icon 配置路由的图标，取值参考 https://ant.design/components/icon-cn， 注意去除风格后缀和大小写，如想要配置图标为 <StepBackwardOutlined /> 则取值应为 stepBackward 或 StepBackward，如想要配置图标为 <UserOutlined /> 则取值应为 user 或者 User
+ * @doc https://umijs.org/docs/guides/routes
+ */
+const standardRoutes: ConsoleRoute[] = [
+  {
+    path: '/network',
+    name: 'network',
+    icon: 'cluster',
+    routes: [
+      { path: '/network', redirect: '/network/overview' },
+      { path: '/network/configuration', redirect: '/operations/network-configuration' },
+      {
+        path: '/network/overview',
+        name: 'overview',
+        component: './DashboardPage',
+      },
+      {
+        path: '/network/interfaces',
+        name: 'interfaces',
+        component: './InterfacesPage',
+      },
+      {
+        path: '/network/routes',
+        name: 'routes',
+        component: './RoutesPage',
+      },
+      {
+        path: '/network/traffic',
+        name: 'traffic',
+        component: './TrafficPage',
+      },
+      {
+        path: '/network/system',
+        name: 'system',
+        component: './SystemPage',
+      },
+    ],
+  },
+  { path: '/operations', name: 'operations', icon: 'setting', routes: [
+    { path: '/operations', redirect: '/operations/network-configuration' },
+    { path: '/operations/network-configuration', name: 'configuration', component: './NetworkConfigurationPage' },
+    { path: '/operations/analytics', name: 'analytics', component: './AnalyticsPage' },
+    { path: '/operations/metrics', name: 'metrics', component: './MetricDictionaryPage' },
+    { path: '/operations/queue', name: 'queue', component: './IngestQueuePage' },
+  ] },
+  { path: '/analytics', redirect: '/operations/analytics' },
+  { path: '/analytics/metrics', redirect: '/operations/metrics' },
+  { path: '/data/queue', redirect: '/operations/queue' },
+  { path: '/interfaces', redirect: '/network/interfaces' },
+  { path: '/routes', redirect: '/network/routes' },
+  { path: '/traffic', redirect: '/network/traffic' },
+  { path: '/system', redirect: '/network/system' },
+  {
+    path: '/user',
+    layout: false,
+    routes: [
+      {
+        path: '/user/login',
+        name: 'login',
+        component: './user/login',
+      },
+      {
+        path: '/user',
+        redirect: '/user/login',
+      },
+      {
+        name: 'register-result',
+        icon: 'checkCircle',
+        path: '/user/register-result',
+        component: './user/register-result',
+      },
+      {
+        name: 'register',
+        icon: 'userAdd',
+        path: '/user/register',
+        component: './user/register',
+      },
+      {
+        name: '404',
+        component: './exception/404',
+        path: '/user/*',
+      },
+    ],
+  },
+  {
+    path: '/welcome',
+    name: 'welcome',
+    icon: 'home',
+    component: './Welcome',
+  },
+  {
+    path: '/admin',
+    name: 'admin',
+    icon: 'crown',
+    access: 'canAdmin',
+    routes: [
+      {
+        path: '/admin',
+        redirect: '/admin/sub-page',
+      },
+      {
+        path: '/admin/sub-page',
+        name: 'sub-page',
+        component: './Admin',
+      },
+    ],
+  },
+  {
+    path: '/dashboard',
+    name: 'dashboard',
+    icon: 'dashboard',
+    routes: [
+      {
+        path: '/dashboard',
+        redirect: '/dashboard/analysis',
+      },
+      {
+        name: 'analysis',
+        icon: 'barChart',
+        path: '/dashboard/analysis',
+        component: './dashboard/analysis',
+      },
+      {
+        name: 'monitor',
+        icon: 'monitor',
+        path: '/dashboard/monitor',
+        component: './dashboard/monitor',
+      },
+      {
+        name: 'workplace',
+        icon: 'desktop',
+        path: '/dashboard/workplace',
+        component: './dashboard/workplace',
+      },
+    ],
+  },
+  {
+    path: '/form',
+    icon: 'form',
+    name: 'form',
+    routes: [
+      {
+        path: '/form',
+        redirect: '/form/basic-form',
+      },
+      {
+        name: 'basic-form',
+        icon: 'form',
+        path: '/form/basic-form',
+        component: './form/basic-form',
+      },
+      {
+        name: 'step-form',
+        icon: 'orderedList',
+        path: '/form/step-form',
+        component: './form/step-form',
+      },
+      {
+        name: 'advanced-form',
+        icon: 'profile',
+        path: '/form/advanced-form',
+        component: './form/advanced-form',
+      },
+    ],
+  },
+  {
+    path: '/list',
+    icon: 'table',
+    name: 'list',
+    routes: [
+      {
+        path: '/list/search',
+        name: 'search-list',
+        component: './list/search',
+        routes: [
+          {
+            path: '/list/search',
+            redirect: '/list/search/articles',
+          },
+          {
+            name: 'articles',
+            icon: 'read',
+            path: '/list/search/articles',
+            component: './list/search/articles',
+          },
+          {
+            name: 'projects',
+            icon: 'project',
+            path: '/list/search/projects',
+            component: './list/search/projects',
+          },
+          {
+            name: 'applications',
+            icon: 'appstore',
+            path: '/list/search/applications',
+            component: './list/search/applications',
+          },
+        ],
+      },
+      {
+        path: '/list',
+        redirect: '/list/table-list',
+      },
+      {
+        name: 'table-list',
+        icon: 'table',
+        path: '/list/table-list',
+        component: './table-list',
+      },
+      {
+        name: 'basic-list',
+        icon: 'unorderedList',
+        path: '/list/basic-list',
+        component: './list/basic-list',
+      },
+      {
+        name: 'card-list',
+        icon: 'creditCard',
+        path: '/list/card-list',
+        component: './list/card-list',
+      },
+    ],
+  },
+  {
+    path: '/profile',
+    name: 'profile',
+    icon: 'profile',
+    routes: [
+      {
+        path: '/profile',
+        redirect: '/profile/basic',
+      },
+      {
+        name: 'basic',
+        icon: 'idcard',
+        path: '/profile/basic',
+        component: './profile/basic',
+      },
+      {
+        name: 'advanced',
+        icon: 'crown',
+        path: '/profile/advanced',
+        component: './profile/advanced',
+      },
+    ],
+  },
+  {
+    name: 'result',
+    icon: 'checkCircle',
+    path: '/result',
+    routes: [
+      {
+        path: '/result',
+        redirect: '/result/success',
+      },
+      {
+        name: 'success',
+        icon: 'checkCircle',
+        path: '/result/success',
+        component: './result/success',
+      },
+      {
+        name: 'fail',
+        icon: 'closeCircle',
+        path: '/result/fail',
+        component: './result/fail',
+      },
+    ],
+  },
+  {
+    name: 'exception',
+    icon: 'warning',
+    path: '/exception',
+    routes: [
+      {
+        path: '/exception',
+        redirect: '/exception/403',
+      },
+      {
+        name: '403',
+        icon: 'stop',
+        path: '/exception/403',
+        component: './exception/403',
+      },
+      {
+        name: '404',
+        icon: 'warning',
+        path: '/exception/404',
+        component: './exception/404',
+      },
+      {
+        name: '500',
+        icon: 'bug',
+        path: '/exception/500',
+        component: './exception/500',
+      },
+    ],
+  },
+  {
+    name: 'account',
+    icon: 'user',
+    path: '/account',
+    routes: [
+      {
+        path: '/account',
+        redirect: '/account/center',
+      },
+      {
+        name: 'center',
+        icon: 'user',
+        path: '/account/center',
+        component: './account/center',
+      },
+      {
+        name: 'settings',
+        icon: 'setting',
+        path: '/account/settings',
+        component: './account/settings',
+      },
+    ],
+  },
+  {
+    path: '/chatbot',
+    name: 'chatbot',
+    icon: 'robot',
+    component: './chatbot',
+  },
+  {
+    path: '/',
+    layout: false,
+    redirect: '/dashboard/analysis',
+  },
+  {
+    component: './exception/404',
+    path: '/*',
+  },
 ];
 
+export interface ConsoleProduct { id: string; name: string; icon: string }
+export interface ConsoleRoute { path: string; name?: string; icon?: string; access?: string; component?: string; redirect?: string; routes?: ConsoleRoute[]; layout?: boolean; hideInMenu?: boolean; consoleProduct?: ConsoleProduct; consoleSection?: string }
 export function createConsoleRoutes(includeDesign: boolean): ConsoleRoute[] {
-  return [
-    ...businessRoutes,
-    ...(includeDesign ? [{
-      consoleProduct: design, path: '/design', name: '设计工作区', icon: 'ExperimentOutlined',
-      routes: [
-        { path: '/design', redirect: '/design/overview' },
-        { consoleSection: '运行视图', path: '/design/overview', name: '运行概览', component: '@/design/DesignWorkspacePage' },
-        { consoleSection: '网络资产', path: '/design/topology', name: '网络拓扑', component: '@/design/DesignWorkspacePage' },
-        { consoleSection: '网络资产', path: '/design/asset', name: '资产技术画像', component: '@/design/DesignWorkspacePage' },
-        { consoleSection: '安全协作', path: '/design/integrations', name: '安全设备联动', component: '@/design/DesignWorkspacePage' },
-        { consoleSection: '安全协作', path: '/design/incident', name: '事件调查', component: '@/design/DesignWorkspacePage' },
-      ],
-    }] : []),
-    { path: '*', component: './NotFoundPage', layout: false },
-  ];
+  return [...standardRoutes, ...(includeDesign ? [{ path: '/design', hideInMenu: true, routes: [{ path: '/design', redirect: '/design/overview' }, ...['overview', 'topology', 'asset', 'integrations', 'incident'].map(name => ({ path: `/design/${name}`, component: '@/design/DesignWorkspacePage' }))] }] : [])];
 }
-
-// Fixtures never enter the production route graph or its asynchronously built pages.
 export default createConsoleRoutes(process.env.NODE_ENV === 'development');

@@ -68,3 +68,11 @@ IP 分片重组、真实设备/中继语料、误报/召回与资源规模、Lin
 本轮使用离线合成 PCAP，没有发送 DHCP Discover/Offer 或修改主机地址配置。
 故 B015 的实现、本地测试、独立对照分别记录，完整适配保持未勾选。
 两条门禁全绿且无未核验项之前不合 main；只保留本地提交，不 push。
+
+## CI reference compatibility repair (2026-10-30)
+
+Ubuntu's tshark reports overloaded hostname options as separate `c,b,a` display occurrences; newer
+tshark reassembles `abc`. The independent check now orders the three decoded TLVs by RFC 3396's
+options/file/sname regions using PDML positions, and checks both the raw fragment bytes and displayed
+values against the same hostname. It does not sort hostname characters or accept arbitrary permutations
+as the assembled value. Parser behavior and acceptance status are unchanged.

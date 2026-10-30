@@ -6,7 +6,11 @@ const original = http.Server.prototype.listen;
 const local = new Set(['127.0.0.1', '::1']);
 function loopbackListen(...args) {
   const requested = args[0] && typeof args[0] === 'object' ? args[0].port : args[0];
-  if (process.env.CYTHSEC_CONSOLE_PORT && Number(requested) !== Number(process.env.CYTHSEC_CONSOLE_PORT)) {
+  // Utoopack serves compiler assets on PORT + 1 with an explicit loopback host.
+  // The user-facing Umi server must still use the exact console port.
+  const host = typeof args[0] === 'object' ? args[0].host : args[1];
+  const compiler = process.env.CYTHSEC_CONSOLE_BUNDLER_PORT && Number(requested) === Number(process.env.CYTHSEC_CONSOLE_BUNDLER_PORT) && local.has(host);
+  if (process.env.CYTHSEC_CONSOLE_PORT && Number(requested) !== Number(process.env.CYTHSEC_CONSOLE_PORT) && !compiler) {
     throw new Error(`Console port ${process.env.CYTHSEC_CONSOLE_PORT} is unavailable; refusing fallback to ${requested}`);
   }
   if (typeof args[0] === 'number' || (typeof args[0] === 'string' && /^\d+$/.test(args[0]))) {

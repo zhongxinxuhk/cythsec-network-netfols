@@ -1,43 +1,40 @@
-import { expect, it, vi } from 'vitest';
+import { matchRoutes } from 'react-router-dom';
+import { expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import routes, { createConsoleRoutes, type ConsoleRoute } from '../config/routes';
-vi.mock('@umijs/max', async () => {
-  const router = await import('react-router-dom');
-  return { Link: router.Link, useLocation: router.useLocation };
-});
-import { layout } from '../src/app';
-
 const leaves = (items: ConsoleRoute[]): ConsoleRoute[] => items.flatMap(item => item.routes ? leaves(item.routes) : [item]);
-
-it('运行时明确应用共享Pro外壳，服务操作不落入旧版侧栏渲染器', () => {
-  expect(layout({} as Parameters<typeof layout>[0])).toMatchObject({
-    layout: 'mix', siderWidth: 272, fixedHeader: true, fixSiderbar: false,
-    rightContentRender: false, headerRender: expect.any(Function), menuRender: expect.any(Function),
-  });
-});
-it('Pro 菜单与真实页面使用同一份 Umi 路由配置，保留既有入口并发布字典和队列及独立404', () => {
-  expect(routes.filter((route) => route.name).map((route) => route.path)).toEqual(['/', '/interfaces', '/routes', '/traffic', '/network/configuration', '/analytics', '/analytics/metrics', '/data/queue', '/system']);
-  expect(new Set(routes.map((route) => route.path)).size).toBe(routes.length);
-  for (const route of routes) {
-    expect(route.component).toBeDefined();
-    expect(existsSync(resolve(__dirname, '../src/pages', `${route.component}.tsx`))).toBe(true);
+const componentExists = (component: string) => {
+  const location = component.startsWith('@/') ? resolve(__dirname, '../src', component.slice(2)) : resolve(__dirname, '../src/pages', component);
+  return existsSync(`${location}.tsx`) || existsSync(resolve(location, 'index.tsx'));
+};
+it('真实业务页面、兼容入口和完整 Pro 页面共用 Umi 路由', () => {
+  const pages = leaves(routes);
+  for (const path of ['/network/overview', '/network/interfaces', '/network/routes', '/network/traffic', '/network/system', '/operations/network-configuration', '/operations/analytics', '/operations/metrics', '/operations/queue', '/dashboard/analysis', '/form/basic-form']) {
+    expect(pages.find(route => route.path === path)?.component, path).toBeTruthy();
   }
-  expect(routes[routes.length - 1]).toMatchObject({ path: '*', layout: false });
+  for (const path of ['interfaces', 'routes', 'traffic', 'system']) expect(pages.find(route => route.path === `/${path}`)?.redirect).toBe(`/network/${path}`);
+  expect(new Set(routes.map(route => route.path)).size).toBe(routes.length);
+  for (const route of pages.filter(route => route.component)) expect(componentExists(route.component!), route.component).toBe(true);
+  expect(pages.some(route => route.path === '/*' && route.component)).toBe(true);
 });
-
-it('开发设计视图共用一份路由，生产路由不包含样例工作区', () => {
-  const development = createConsoleRoutes(true);
-  const pages = leaves(development);
+it('设计工作区只在开发环境启用且沿用共享布局', () => {
+  const pages = leaves(createConsoleRoutes(true));
   expect(new Set(pages.map(route => route.path)).size).toBe(pages.length);
   expect(pages.filter(route => route.path.startsWith('/design/') && route.component)).toHaveLength(5);
   expect(pages.find(route => route.path === '/design')).toMatchObject({ redirect: '/design/overview' });
   for (const route of pages.filter(route => route.component)) {
-    const component = route.component ?? '';
-    expect(component).not.toBe('');
-    const location = component.startsWith('@/') ? resolve(__dirname, '../src', `${component.slice(2)}.tsx`) : resolve(__dirname, '../src/pages', `${component}.tsx`);
-    expect(existsSync(location)).toBe(true);
-    expect(route.layout).not.toBe(true); // inherited Umi/Pro shell, no separate application layout
+    expect(componentExists(route.component!), route.component).toBe(true);
+    expect(route.layout).not.toBe(true);
   }
   expect(createConsoleRoutes(false).some(route => route.path.startsWith('/design'))).toBe(false);
+});
+
+it('生产和开发完整路由树均可由真实路由器匹配', () => {
+  for (const includeDesign of [false, true]) {
+    const adapt = (items: ConsoleRoute[]): any[] => items.map(({ routes, ...route }) => ({ ...route, children: routes ? adapt(routes) : undefined }));
+    const tree = adapt(createConsoleRoutes(includeDesign));
+    expect(() => matchRoutes(tree, '/dashboard/analysis')).not.toThrow();
+    expect(matchRoutes(tree, '/operations/network-configuration')?.at(-1)?.route.component).toBe('./NetworkConfigurationPage');
+  }
 });

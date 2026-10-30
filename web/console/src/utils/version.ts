@@ -11,7 +11,9 @@
 /** 构建期注入的应用版本号；无法取得时为 'dev'。 */
 export function appVersion(): string {
   try {
-    return typeof __APP_VERSION__ === 'string' && __APP_VERSION__ !== '' ? __APP_VERSION__ : 'dev';
+    return typeof __APP_VERSION__ === 'string' && __APP_VERSION__ !== ''
+      ? __APP_VERSION__
+      : 'dev';
   } catch {
     // 常量未注入时该标识符未声明，取值抛 ReferenceError。
     return 'dev';

@@ -10,7 +10,7 @@ export function NetworkEnvironmentPanel({ observation, error, loading, onRefresh
   const columns: ProColumns<ObservedNetworkInterface>[] = [
     { title: '接口', dataIndex: 'device', width: 120 },
     { title: '类型', dataIndex: 'kind', width: 140, render: (_, p) => kinds[p.kind] ?? '未知' },
-    { title: '管理归属', key: 'owners', width: 260, render: (_, p) => p.owners.length ? <Space wrap>{p.owners.map((owner, i) => <Tag key={i} color={p.owners.length > 1 ? 'error' : 'default'}>{managerNames[owner.backend] ?? owner.backend}{owner.reference ? ` · ${owner.reference}` : ''}</Tag>)}</Space> : '未知' },
+    { title: '管理归属', key: 'owners', width: 260, render: (_, p) => p.owners.length ? <Space wrap>{p.owners.map((owner) => <Tag key={`${owner.backend}:${owner.reference ?? ""}`} color={p.owners.length > 1 ? 'error' : 'default'}>{managerNames[owner.backend] ?? owner.backend}{owner.reference ? ` · ${owner.reference}` : ''}</Tag>)}</Space> : '未知' },
     { title: 'MTU', key: 'mtu', width: 90, render: (_, p) => p.known.mtu ? p.mtu ?? '未取得' : '未取得' },
     { title: '运行地址', key: 'addresses', width: 320, render: (_, p) => p.known.addresses ? valueLabel(p.addresses) : '未取得' },
     { title: 'DNS', key: 'dns', width: 240, render: (_, p) => p.known.dns ? valueLabel(p.dns) : '未取得' },

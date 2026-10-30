@@ -141,11 +141,11 @@ cythsec/
 - **`telemetryd/`**：指标 / 遥测 / 监控。采集各组件运行时指标并暴露监控端点。
 
 ### Web 控制面 `web/`
-- **`console/`（React + TypeScript，Ant Design Pro / Umi Max）**：可视化运营控制台。
+- **`console/`（Ant Design Pro 6 + Umi Max + React + TypeScript）**：完整 Pro 基础工程与 CythSec 运营控制台。
   - `public/`：静态资源。`src/api/` 接口封装、`src/assets/` 资源、`src/components/` 组件、
     `src/layouts/` 布局、`src/pages/` 页面、`src/routes/` 路由、`src/stores/` 状态（Pinia/Zustand 等）、
     `src/hooks/` 钩子、`src/services/` 业务服务、`src/types/` 类型、`src/utils/` 工具、`src/constants/` 常量。
-  - `tests/`：前端测试。`package.json`、`config/config.ts`、`config/routes.ts`、`tsconfig.json` 为工程配置文件。
+  - `tests/`：Node 单测与 Chromium 浏览器测试；`config/` 管理 Umi 路由、主题、代理与版本注入。安装与启动见 `web/README.md`。
 
 ### AI / ML `ml/`
 - **`training/`（Python）**：模型训练流水线。`datasets/` 数据集、`preprocessing/` 预处理、
@@ -194,7 +194,7 @@ cythsec/
 技术文档：`architecture/`（架构）、`dataplane/`、`controlplane/`、`dpi/`、`ml/`、`api/`（接口）、`deployment/`（部署）、`performance/`（性能）、`security/`（安全）。
 
 ### CI/CD `.github/`
-- `workflows/`：由 `ci.yml` 统一编排，每次推送依次执行静态检查、安全扫描、多语言构建测试、Linux 默认全集和端到端验收；执行顺序与必需检查见 [流水线说明](.github/workflows/README.md)。
+- `workflows/`：GitHub Actions 流水线（构建、测试、发布、安全扫描）。
 
 ---
 
@@ -202,7 +202,7 @@ cythsec/
 
 - 数据平面：C/C++（XDP/eBPF、AF_XDP、DPDK）、Rust（cargo workspace）
 - 控制平面：Go（go.work 多模块）
-- 前端：React + TypeScript + Umi Max + Ant Design Pro
+- 前端：Ant Design Pro 6 / Umi Max / React 19 / Ant Design 6 / ProComponents 3
 - AI/ML：Python（训练）、C++ + ONNX Runtime（推理）
 - 存储：PostgreSQL、ClickHouse、Redis
 - 部署目标：Linux / openEuler / OpenWrt；Docker / VMware

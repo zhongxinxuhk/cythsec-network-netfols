@@ -99,7 +99,7 @@ export function AnalyticsPage() {
       if (window.suppressed || !window.statistics) return '未发布';
       return <>
         {i && <div>{i.records} 条记录 · 截断 {i.snaplen_truncated} · 容量拒绝 {i.capacity_rejected_packets} · 迟到 {i.late_records}<div className="muted small">头不全 {i.decode_incomplete} · 非首片 {i.unparsed_fragments} · 首片 {i.fragmented_transport} · 时间回退 {i.timestamp_regressions}</div></div>}
-        {q?.response_delay_histogram ? <Collapse size="small" items={[{ key: 'delay', label: `SYN 响应时差（${q.response_delay_samples} 样本）`, children: q.response_delay_histogram.map((n, index) => <div key={index}>
+        {q?.response_delay_histogram ? <Collapse size="small" items={[{ key: 'delay', label: `SYN 响应时差（${q.response_delay_samples} 样本）`, children: q.response_delay_histogram.map((n, index) => <div key={q.response_delay_upper_bounds_ms[index] ?? "infinity"}>
           <span>{index === 0 ? '0' : q.response_delay_upper_bounds_ms[index - 1]}～{q.response_delay_upper_bounds_ms[index] ?? '∞'} ms · {n}</span>
           <Progress percent={100 * n / Math.max(1, q.response_delay_samples || 0)} showInfo={false} aria-label={`时差桶 ${index + 1}`} />
         </div>) }]} /> : <Typography.Text type="secondary">时差分布未发布</Typography.Text>}

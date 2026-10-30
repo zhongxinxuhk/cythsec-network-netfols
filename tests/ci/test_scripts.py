@@ -98,7 +98,7 @@ class ScriptTests(unittest.TestCase):
         (project / "scripts/build").mkdir(parents=True)
         shutil.copy2(ROOT / "scripts/build/build-all.sh", project / "scripts/build/build-all.sh")
         (project / "VERSION").write_text("0.1.0\n")
-        for svc in ("routerd", "policyd", "dnsd", "telemetryd"):
+        for svc in ("pkg", "routerd", "policyd", "dnsd", "telemetryd"):
             (project / "services" / svc).mkdir(parents=True)
         for name in ("bash", "dirname", "head", "grep", "sort", "tr", "date", "mkdir"):
             (self.bin / name).symlink_to(shutil.which(name))

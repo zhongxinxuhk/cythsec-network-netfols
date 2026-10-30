@@ -1,12 +1,11 @@
 """Required-check semantics, including GitHub's skipped/cancelled states."""
-
 import importlib.util
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import unittest
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/ci/check-results.py"
@@ -37,12 +36,7 @@ class RequiredResultsTests(unittest.TestCase):
     def test_cli_exit_codes_and_diagnostics(self):
         for value, code in (({"go": {"result": "success"}}, 0), ({"go": {"result": "skipped"}}, 1), ({}, 1)):
             with self.subTest(value=value):
-                run = subprocess.run(
-                    [sys.executable, str(SCRIPT)],
-                    env={**os.environ, "CI_NEEDS_JSON": json.dumps(value)},
-                    capture_output=True,
-                    text=True,
-                )
+                run = subprocess.run([sys.executable, str(SCRIPT)], env={**os.environ, "CI_NEEDS_JSON": json.dumps(value)}, capture_output=True, text=True)
                 self.assertEqual(run.returncode, code, run.stderr)
                 self.assertTrue(run.stdout or run.stderr)
 
@@ -58,12 +52,7 @@ class RequiredResultsTests(unittest.TestCase):
                 self.assertIn("Invalid CI results", run.stderr)
 
     def test_cli_malformed_job_reports_failure_without_traceback(self):
-        run = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            env={**os.environ, "CI_NEEDS_JSON": '{"go": null}'},
-            capture_output=True,
-            text=True,
-        )
+        run = subprocess.run([sys.executable, str(SCRIPT)], env={**os.environ, "CI_NEEDS_JSON": '{"go": null}'}, capture_output=True, text=True)
         self.assertEqual(run.returncode, 1)
         self.assertIn("go: invalid", run.stdout)
         self.assertNotIn("Traceback", run.stderr)

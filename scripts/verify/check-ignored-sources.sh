@@ -50,6 +50,7 @@ ALLOW="${ALLOW}"'|^ml/.*/(runs|wandb)/'
 # CYS-MLT-001: exact training venv, setuptools staging and egg metadata only.
 ALLOW="${ALLOW}"'|^ml/training/(\.venv/|build/|[^/]+\.egg-info/)'
 
+ALLOW="${ALLOW}"'|^web/console/src/\.umi(-production|-test|-test-production|-undefined)?/|^web/console/(\.turbopack|\.vitest|e2e-out|coverage)/'
 hits="$(git ls-files --others --ignored --exclude-standard \
         | grep -E "${EXT}" \
         | grep -Ev "${ALLOW}" || true)"

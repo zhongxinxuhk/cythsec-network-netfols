@@ -2,7 +2,7 @@
 
 These private, repository-owned packages preserve the configured Umi Max 4 / React 18 / webpack application
 while using upstream security fixes. They are installed with ordinary `npm ci`; no post-install edits,
-audit suppression, fabricated upstream releases, or peer-dependency bypass flags are used.
+audit suppression or fabricated upstream releases are used. The complete Pro template retains its explicit .npmrc peer-resolution policy, with actual TypeScript/browser/build compatibility checks.
 
 | Local adapter | Upstream implementation / behavior |
 | --- | --- |
@@ -29,3 +29,9 @@ are not validated. Changes to these upstream versions or enabling another bundle
 
 Regression tests: `tests/dependency-security.test.tsx`. Upstream advisory details and verification records:
 [Dependency remediation](../../../docs/development/dependency-remediation.md).
+
+This integration additionally vendors two MIT sources under distinct private package names (version 1.0.0):
+- deepmerge 4.3.1, with source-key prototype/constructor rejection including null-prototype destinations (CVE-2026-93753).
+- Mock.js 1.1.0, with the advisory-recommended prototype-key guard in Util.extend (CVE-2023-26158).
+Original licenses are retained; regression tests exercise the attack inputs and normal merge/mock behavior.
+These are maintained local patches, not fabricated upstream releases. Audit results do not by themselves prove vendored code safe.

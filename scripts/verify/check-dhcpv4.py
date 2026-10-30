@@ -6,6 +6,7 @@ import json
 import struct
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,6 +66,37 @@ def rows(path, *args):
     return [json.loads(line) for line in run([BIN, '-r', path, '-q', *args]).splitlines()]
 
 
+def overload_hostname(pdml):
+    """Read reference TLVs in RFC 3396 order, independent of tree display order."""
+    protocol = ET.fromstring(pdml).find(".//proto[@name='dhcp']")
+    assert protocol is not None, 'missing DHCP reference protocol'
+    base = int(protocol.attrib['pos'])
+    fragments = []
+    for field in protocol.iter('field'):
+        if field.get('name') != 'dhcp.option.type' or field.get('show') != '12':
+            continue
+        value = bytes.fromhex(field.attrib['value'])
+        assert value[0] == 12 and value[1] == len(value) - 2, value
+        offset = int(field.attrib['pos']) - base
+        if offset >= 240:
+            zone = 0  # options, then overloaded file, then overloaded sname
+        elif 108 <= offset < 236:
+            zone = 1
+        else:
+            assert 44 <= offset < 108, offset
+            zone = 2
+        fragments.append((zone, offset, value[2:]))
+    assert len(fragments) == 3, fragments
+    ordered = [value.decode('ascii') for _, _, value in sorted(fragments)]
+    hostname = ''.join(ordered)
+    # Older tshark emits separate occurrences in display-tree order; newer
+    # versions expose a single reassembled field. Check either representation
+    # against the same positioned TLVs, rather than accepting a different value.
+    shown = [field.attrib['show'] for field in protocol.iter('field') if field.get('name') == 'dhcp.option.hostname']
+    assert shown == [hostname] or sorted(shown) == sorted(ordered), (shown, ordered)
+    return hostname
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--tshark', action='store_true')
@@ -113,7 +145,7 @@ def main():
         pcap(path, frame(overloaded, 67, 68))
         assert rows(path)[0]['app']['app'] == 'dhcpv4'
         if args.tshark:
-            names = run(['tshark', '-r', path, '-T', 'fields', '-e', 'dhcp.option.hostname']).strip()
+            names = overload_hostname(run(['tshark', '-r', path, '-T', 'pdml']))
             assert names == 'abc', names
         positive += 1
         base = message()

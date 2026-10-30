@@ -8,6 +8,10 @@ import { Link, MemoryRouter, useLocation } from 'react-router-dom';
 
 const require = createRequire(resolve('package.json'));
 
+  function CurrentLocation() {
+    const location = useLocation();
+    return <span data-testid="location">{location.pathname}{location.search}</span>;
+  }
 it('the installed Umi entrypoints resolve fixed router APIs including the legacy server subpath', () => {
   for (const name of ['@umijs/renderer-react', '@umijs/server', '@umijs/preset-umi']) {
     const consumer = createRequire(require.resolve(`${name}/package.json`));
@@ -15,17 +19,16 @@ it('the installed Umi entrypoints resolve fixed router APIs including the legacy
     expect(typeof consumer('react-router-dom/server').StaticRouter).toBe('function');
   }
   expect(require('react-router/package.json').version).toBe('7.18.4');
-  // Dva still has a separate v4 API; the security override must not upgrade it.
-  const plugins = createRequire(require.resolve('@umijs/plugins/package.json'));
-  const dva = createRequire(plugins.resolve('dva/package.json'));
-  expect(dva('react-router-dom/package.json').version).toBe('4.3.1');
+  // Keep overrides scoped to modern routers so legacy consumers cannot be silently upgraded.
+  const manifest = JSON.parse(readFileSync(resolve('package.json'), 'utf8'));
+  expect(manifest.overrides['react-router']).toBeUndefined();
+  expect(manifest.overrides['react-router-dom']).toBeUndefined();
+  expect(manifest.overrides['react-router@>=6 <8']).toBe('7.18.4');
+
 });
 
 it('normal queries and same-origin backslash links normalize before SPA navigation', () => {
-  function CurrentLocation() {
-    const location = useLocation();
-    return <span data-testid="location">{location.pathname}{location.search}</span>;
-  }
+
   const target = `${String.fromCharCode(92).repeat(2)}${window.location.host}\\analytics?from=1`;
   render(<MemoryRouter initialEntries={['/']}>
     <Link to={target}>查询</Link><CurrentLocation />

@@ -8,7 +8,7 @@
 #   bash scripts/build/build-all.sh --help       # 查看帮助
 #
 # 行为：
-#   - 仅预检所选分组工具链（cmake≥3.20 / cargo + Python / go≥1.22 / node≥22.12（或 ≥24））。
+#   - 开头做工具链版本预检（cmake≥3.20 / cargo / go≥1.22 / node≥22.12（或 ≥24）），不足则可读报错并退出。
 #   - 任一栈失败不影响其它栈继续；结尾汇总，整体以「失败栈数」为退出码（全成功=0）。
 #   - 幂等，可重复执行。
 set -euo pipefail
@@ -70,8 +70,10 @@ check_toolchain() {
     need_cmd npm
     local node_ver
     node_ver="$(node --version | tr -d 'v')"
-    ver_ge "$node_ver" "22.12.0" && [[ "${node_ver%%.*}" != "23" ]] || { echo "✗ node 版本不满足前端要求: ${node_ver}（要求 ^22.12.0 或 ≥24）" >&2; ok=0; }
+    ver_ge "$node_ver" "22.12.0" || { echo "✗ node 版本过低: ${node_ver}（要求 ≥ 22.12.0）" >&2; ok=0; }
   fi
+  # 变量引用一律加花括号：macOS bash 3.2 会把紧跟 $VAR 的多字节字符并入变量名，
+  # 在 set -u 下直接报 unbound variable 并中断（即在最需要提示时反而失去提示）。
   if [[ $ok -eq 0 ]]; then
     echo "工具链预检未通过，终止构建。" >&2
     exit 1
@@ -121,7 +123,7 @@ build_go() {
 
   local rc=0
   # 第一轮：全包编译校验（不产出二进制，快速暴露编译错误）。
-  for svc in routerd policyd dnsd telemetryd; do
+  for svc in pkg routerd policyd dnsd telemetryd; do
     echo "  -> services/${svc}"
     if ! (cd "services/${svc}" && GOWORK=off GOPROXY=off GOTOOLCHAIN=local \
           go build ./...); then
@@ -145,6 +147,9 @@ build_go() {
       rc=1
     fi
   done
+  if ! (cd services/pkg && GOWORK=off GOPROXY=off GOTOOLCHAIN=local go build -ldflags "${ldflags}" -o ../../build/bin/cythsec-ch-write ./cmd/cythsec-ch-write); then
+    rc=1
+  fi
   if [[ $rc -eq 0 ]]; then
     echo "✓ [go] 四个二进制已生成 build/bin/{routerd,policyd,dnsd,telemetryd}"
     echo "        version=${ver} commit=${commit} build_time=${build_time}"
@@ -159,7 +164,7 @@ build_node() {
     return 1
   fi
   if ! (cd web/console && npm run build); then
-    echo "✗ [node] Umi Max build 失败" >&2
+    echo "✗ [node] Umi build 失败" >&2
     return 1
   fi
   echo "✓ [node] 构建完成"

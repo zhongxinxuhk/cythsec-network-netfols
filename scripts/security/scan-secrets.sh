@@ -40,6 +40,10 @@ EXCLUDES=(
   --exclude-dir=.idea
   --exclude-dir=cmake-build-debug
   --exclude-dir=docs
+  --exclude-dir=.umi
+  --exclude-dir=.umi-production
+  --exclude-dir=.umi-test
+  --exclude-dir=.turbopack
   --exclude=package-lock.json
   --exclude=Cargo.lock
   --exclude='*_test.go'
@@ -63,7 +67,7 @@ scan_rule() {
   local name="$1" pat="$2" neg="${3:-}" flags="${4:-}"
   local matches filtered line f rest ln m
   matches="$(grep -rIE${flags}n -e "$pat" "$REPO" "${EXCLUDES[@]}" 2>/dev/null)"
-  if [ -n "$neg" ]; then
+  if [ -n "$neg" ] || [[ "$name" == WECHAT_ALIPAY_KEY ]]; then
     # 负向过滤（纯 bash，避免管道/递归扫描下的非预期行为）。
     # 仅对「内容部分」（首个 file:line: 之后的文本）做占位符判定，避免文件名误判。
     filtered=""
@@ -80,7 +84,27 @@ scan_rule() {
           "$REPO"/.github/workflows/*.yml | "$REPO"/.github/workflows/*.yaml) continue ;;
         esac
       fi
-      if [[ "$content" =~ $neg ]]; then
+      # In TS/JS, a type annotation, expression binding, function or design object is not a stored literal.
+      case "${line%%:*}" in
+        *.json)
+          local schema_object=':[[:space:]]*\{[[:space:]]*$'
+          if [[ "$name" == GENERIC_SECRET_ASSIGN && "$content" =~ $schema_object ]]; then continue; fi
+          ;;
+        *.ts | *.tsx | *.js | *.jsx | *.cjs | *.mjs)
+          if [[ "$name" == GENERIC_SECRET_ASSIGN || "$name" == WECHAT_ALIPAY_KEY ]]; then
+            local quote_chars="$(printf '\042\047')"
+            local literal="(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|app[_-]?secret|private[_-]?key|cert[_-]?key|wechat|weixin|alipay|mch[_-]?id|api[_-]?v3[_-]?key)[${quote_chars}]?[[:space:]]*[:=][[:space:]]*[${quote_chars}]"
+            # Use both quote characters without relying on non-POSIX regex escapes.
+            local folded
+            folded="$(printf '%s' "$content" | tr '[:upper:]' '[:lower:]')"
+            if [[ ! "$folded" =~ $literal ]]; then continue; fi
+            local public_label="^[[:space:]]*(alipay|wechat|weixin)[${quote_chars}]?[[:space:]]*:[[:space:]]*[${quote_chars}](支付宝|微信)[${quote_chars}],?[[:space:]]*$"
+            if [[ "$name" == WECHAT_ALIPAY_KEY && "$content" =~ $public_label ]]; then continue; fi
+            if [[ "$content" =~ ^[[:space:]]*(//|/\*) ]]; then continue; fi
+          fi
+          ;;
+      esac
+      if [[ -n "$neg" && "$content" =~ $neg ]]; then
         continue
       fi
       filtered+="$line"$'\n'
@@ -133,8 +157,10 @@ scan_rule "PEM_PRIVATE_KEY" '-----BEGIN (RSA |EC |OPENSSH |DSA |PGP |ENCRYPTED )
 scan_rule "JWT" 'eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}'
 
 # 9) 通用凭据赋值（password/secret/token/api_key 等），排除占位符/样例/模板变量
+SCANNER_QUOTES="$(printf '\042\047')"
+SCANNER_ASSIGN="(^|[^[:alnum:]_.-])([A-Za-z0-9_-]*)(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)[${SCANNER_QUOTES}]?[[:space:]]*[:=]"
 scan_rule "GENERIC_SECRET_ASSIGN" \
-  '(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)[[:space:]]*[:=]' \
+  "${SCANNER_ASSIGN}" \
   'example|sample|placeholder|changeme|xxxx|your[-_]|todo|fixme|dummy|<<|%[A-Z]|your-|xxxxx' \
   'i'
 

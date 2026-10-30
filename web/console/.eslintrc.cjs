@@ -13,7 +13,7 @@ module.exports = {
     sourceType: 'module',
     ecmaFeatures: { jsx: true },
     // 开启类型感知能力所需的 project 指向。
-    project: ['./tsconfig.json', './tsconfig.node.json'],
+    project: ['./tsconfig.json'],
     tsconfigRootDir: __dirname,
   },
   plugins: ['@typescript-eslint', 'react-hooks', 'react-refresh'],

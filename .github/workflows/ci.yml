@@ -1,209 +1,347 @@
 name: CI
-run-name: "CI · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}"
-
-# 唯一自动入口：每个分支/tag 的 push 都执行同一条流水线，不取消较早的推送。
-on:
+run-name: CI · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}
+'on':
   push:
-  pull_request:
-  merge_group:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-defaults:
-  run:
-    shell: bash
-
-# 阶段以 needs 串联；同一阶段内部的跨平台矩阵保留并行。
-# 构建与测试逻辑全部收敛在 scripts/ 下，本 workflow 只负责环境准备与调用（CYS-INF-007）。
+    branches:
+    - main
+    - master
+  pull_request: null
+  merge_group: null
+  workflow_dispatch: null
+  workflow_call: null
 jobs:
   workflow-tests:
-    name: 工作流契约与语法
+    name: Workflow and gate contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.11'
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: stable
-          cache: false
-      - name: 安装工作流校验器
-        run: |
-          python3 -m pip install -r tests/ci/requirements.txt
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - name: 校验表达式、依赖、失败传播与 Shell 语法
-        run: |
-          actionlint -shellcheck= -pyflakes=
-          python3 -m unittest discover -s tests/ci -v
-          git ls-files -z '*.sh' | xargs -0 -n 1 bash -n
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/toolchains
+      with:
+        go: 1.27.3
+    - name: Install validators
+      run: 'python3 -m pip install -r tests/ci/requirements.txt
 
-  lint:
-    needs: workflow-tests
-    uses: ./.github/workflows/lint.yml
-
-  security:
-    needs: lint
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/security.yml
+        go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12'
+    - name: Validate workflows and negative tests
+      run: |
+        actionlint -shellcheck= -pyflakes=
+        python3 -m unittest discover -s tests/ci -v
+        make hooks
+        bash scripts/verify/check-branch-policy.sh
+        git ls-files -z '*.sh' | xargs -0 -n 1 bash -n
 
   cpp:
     name: C++ 多平台编译与测试
-    needs: security
     uses: ./.github/workflows/cmake-multi-platform.yml
     permissions:
       contents: read
-
+    needs:
+    - lint
+    - security
   rust:
     name: Rust 构建、测试与跨语言契约
-    needs: cpp
     uses: ./.github/workflows/rust.yml
     permissions:
       contents: read
-
+    needs:
+    - lint
+    - security
   python:
     name: Python 锁定环境与隔离安装验收
-    needs: rust
-    timeout-minutes: 15
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          version: "0.12.1"
-          enable-cache: true
-          cache-dependency-glob: ml/training/uv.lock
-      - name: 安装钉扎的 Python 并同步锁定环境
-        run: |
-          uv python install "$(cat ml/training/.python-version)"
-          uv sync --project ml/training --locked --group quality
-      - name: Ruff / Black / strict mypy 与反向注入
-        run: bash scripts/verify/check-python-quality.sh
-      - name: 离线验证锁文件、自证与仓库外安装包
-        run: bash scripts/verify/check-training-project.sh
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      with:
+        version: 0.12.1
+        enable-cache: true
+        cache-dependency-glob: ml/training/uv.lock
+    - name: 安装钉扎的 Python 并同步锁定环境
+      run: 'uv python install "$(cat ml/training/.python-version)"
 
+        uv sync --project ml/training --locked --group quality
+
+        '
+    - name: Ruff / Black / strict mypy 与反向注入
+      run: bash scripts/verify/check-python-quality.sh
+    - name: 离线验证锁文件、自证与仓库外安装包
+      run: bash scripts/verify/check-training-project.sh
+    needs:
+    - lint
+    - security
+    timeout-minutes: 25
   go:
-    name: Go 构建与测试
-    needs: python
-    timeout-minutes: 20
-    runs-on: ubuntu-24.04
+    name: Go / ${{ matrix.os }} / ${{ matrix.go }}
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: "1.22"
-          cache: false
-      - name: 构建并测试 (Go)
-        run: |
-          bash scripts/build/build-all.sh --go
-          bash scripts/test/test-all.sh --go
-      - name: 全部 Go 模块的 vet 与 race 检查
-        run: |
-          for manifest in services/*/go.mod; do
-            module="$(dirname "$manifest")"
-            (cd "$module" && GOWORK=off GOPROXY=off GOTOOLCHAIN=local go vet ./...)
-            (cd "$module" && GOWORK=off GOPROXY=off GOTOOLCHAIN=local go test -race -count=1 ./...)
-          done
-
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/toolchains
+      with:
+        go: ${{ matrix.go }}
+    - name: Build and test modules
+      run: "bash scripts/build/build-all.sh --go\nbash scripts/test/test-all.sh --go\nfor module in pkg routerd\
+        \ policyd dnsd telemetryd; do\n  (cd \"services/${module}\" && GOWORK=off GOPROXY=off GOTOOLCHAIN=local\
+        \ go vet ./... && GOWORK=off GOPROXY=off GOTOOLCHAIN=local go test -race -count=1 ./...)\ndone"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: matrix.os == 'ubuntu-24.04' && matrix.go == '1.27.3'
+      with:
+        name: control-plane-linux
+        path: build/bin/
+        if-no-files-found: error
+        retention-days: 7
+    needs:
+    - lint
+    - security
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-24.04
+          go: 1.22.x
+        - os: ubuntu-24.04
+          go: 1.27.3
+        - os: macos-15
+          go: 1.27.3
   e2e:
-    name: 控制面端到端验证
+    name: Control-plane end-to-end
+    needs:
+    - go
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    needs: full-validation
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: "1.22"
-          cache: false
-      - name: 生成四服务二进制（含版本注入）
-        run: bash scripts/build/build-all.sh --go
-      - name: 安装 jq（日志结构化校验用）
-        run: sudo apt-get update && sudo apt-get install -y jq
-      - name: 启动四服务并逐项验收（CYS-TEL-002 的可执行验收）
-        # WORK_DIR 固定路径 + 失败保留，使下面的 artifact 上传有实际内容可传。
-        env:
-          WORK_DIR: ${{ runner.temp }}/e2e-work
-        run: bash scripts/ci/run-check.sh build/ci/control-plane.log bash scripts/verify/e2e-control-plane.sh
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.11'
-      - name: 聚合结果持久化与重启查询
-        run: |
-          bash scripts/test/prepare-rust-fixtures.sh
-          cargo fetch --locked
-          bash scripts/verify/check-aggregate-storage.sh
-      - name: 失败时上传四服务日志与指标
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: e2e-workdir
-          path: ${{ runner.temp }}/e2e-work
-          if-no-files-found: warn
-          retention-days: 7
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/toolchains
+    - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      with:
+        name: control-plane-linux
+        path: build/bin/
+    - name: Verify service behavior
+      run: 'chmod +x build/bin/*
 
+        bash scripts/ci/run-check.sh build/control-plane.log bash scripts/verify/e2e-control-plane.sh'
+      env:
+        WORK_DIR: ${{ runner.temp }}/control-plane
+        KEEP_WORK: '1'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: control-plane-evidence
+        path: 'build/control-plane.log
+
+          ${{ runner.temp }}/control-plane/'
+        retention-days: 7
+        if-no-files-found: error
   node:
-    name: 前端类型、测试与构建
-    needs: go
-    timeout-minutes: 20
+    name: Pro console / Node ${{ matrix.node }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version-file: .node-version
-          cache: "npm"
-          cache-dependency-path: web/console/package-lock.json
-      - name: 安装依赖 + 类型检查 + 构建
-        run: |
-          cd web/console
-          npm ci
-          npm run typecheck:all
-          npm run lint
-          bash ../../scripts/test/test-all.sh --node
-          npm run build
-      - name: 上传 dist 产物
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: web-console-dist
-          path: web/console/dist
-          if-no-files-found: error
-          retention-days: 7
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/toolchains
+      with:
+        node: ${{ matrix.node }}
+    - name: Locked install and real Chromium tests
+      run: 'cd web/console
 
+        npm ci --no-audit --no-fund
+
+        npx playwright install --with-deps chromium
+
+        npm run typecheck:all
+
+        npm test
+
+        npm run build'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: web-console-node-${{ matrix.node }}
+        path: web/console/dist/
+        retention-days: 7
+        if-no-files-found: error
+    needs:
+    - lint
+    - security
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+        - '22'
+        - '24'
+  lint:
+    needs:
+    - workflow-tests
+    uses: ./.github/workflows/lint.yml
+  security:
+    needs:
+    - workflow-tests
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      pull-requests: read
+  clickhouse:
+    name: ClickHouse native, durability and source resume
+    needs:
+    - cpp
+    - rust
+    - go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CLICKHOUSE_VERSION: 26.10.2.103
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/toolchains
+      with:
+        rust: 'true'
+        go: 1.27.3
+    - name: Compose storage and failure acceptance
+      run: 'python3 scripts/verify/check-clickhouse-compose.py
+
+        python3 scripts/verify/check-clickhouse-writer.py
+
+        python3 scripts/verify/check-clickhouse-resume.py'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: clickhouse-evidence
+        path: build/storage-measurement/clickhouse-*.json
+        retention-days: 7
+        if-no-files-found: error
+    - name: Cleanup isolated runner project
+      run: docker compose -f deploy/docker/compose.storage-test.yml down --volumes
+      if: always()
+  linux-live:
+    name: Linux isolated live capture
+    needs:
+    - cpp
+    - rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/toolchains
+      with:
+        rust: 'true'
+    - name: Install capture tools
+      run: 'sudo apt-get update
+
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark iproute2 iputils-ping'
+    - name: Build and verify capture
+      run: 'bash scripts/test/test-all.sh --cpp
+
+        bash scripts/build/build-all.sh --rust
+
+        bash scripts/ci/run-check.sh build/capture-modes.log sudo build/dataplane/packet-engine/test_capture_modes
+
+        bash scripts/ci/run-check.sh build/live-capture.log bash scripts/ci/linux-live.sh'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: linux-live-evidence
+        path: 'build/capture-modes.log
+
+          build/live-capture.log
+
+          build/e2e-live/'
+        retention-days: 7
+        if-no-files-found: error
   full-validation:
-    name: Linux 默认全集与特权抓包验收
-    needs: node
+    needs: [cpp, rust, python, go, node]
     uses: ./.github/workflows/full-validation.yml
+  package:
+    name: Package tested Linux distribution
+    needs:
+    - workflow-tests
+    - cpp
+    - rust
+    - python
+    - go
+    - e2e
+    - node
+    - lint
+    - security
+    - clickhouse
+    - linux-live
+    - full-validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/toolchains
+      with:
+        rust: 'true'
+        go: 1.27.3
+    - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      with:
+        name: control-plane-linux
+        path: build/bin/
+    - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      with:
+        name: web-console-node-24
+        path: build/release/web
+    - name: Build exact-revision package and checksums
+      run: bash scripts/release/package.sh
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: cythsec-linux-amd64
+        path: 'build/release/*.tar.gz
 
+          build/release/SHA256SUMS
+
+          build/release/manifest.json'
+        if-no-files-found: error
+        retention-days: 14
   ci-required:
     name: CI required
     if: ${{ always() }}
-    needs: [workflow-tests, lint, security, cpp, rust, python, go, node, full-validation, e2e]
+    needs:
+    - workflow-tests
+    - cpp
+    - rust
+    - python
+    - go
+    - e2e
+    - node
+    - lint
+    - security
+    - clickhouse
+    - linux-live
+    - full-validation
+    - package
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - name: 汇总全部阶段，失败、取消、跳过均不通过
-        env:
-          CI_NEEDS_JSON: ${{ toJSON(needs) }}
-        run: python3 scripts/ci/check-results.py
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - name: Require success from every declared job
+      run: python3 scripts/ci/check-results.py
+      env:
+        CI_NEEDS_JSON: ${{ toJSON(needs) }}
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash

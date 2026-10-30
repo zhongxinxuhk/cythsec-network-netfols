@@ -13,13 +13,14 @@ import DesignWorkspacePage from './DesignWorkspacePage';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it('设计内部链接走主路由且保留父级状态，不请求管理接口或创建另一套菜单', () => {
-  const fetch = vi.fn();
-  vi.stubGlobal('fetch', fetch);
   function SharedShell() {
     const [count, setCount] = useState(0);
     return <><Button onClick={() => setCount(count + 1)}>父级状态 {count}</Button><DesignWorkspacePage /></>;
   }
+it('设计内部链接走主路由且保留父级状态，不请求管理接口或创建另一套菜单', () => {
+  const fetch = vi.fn();
+  vi.stubGlobal('fetch', fetch);
+
   render(<MemoryRouter initialEntries={['/design/overview']}><SharedShell /></MemoryRouter>);
   fireEvent.click(screen.getByRole('button', { name: '父级状态 0' }));
   fireEvent.click(screen.getByRole('link', { name: '打开拓扑' }));

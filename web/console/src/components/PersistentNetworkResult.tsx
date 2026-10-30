@@ -13,6 +13,7 @@ const loadedDiagnostics: Record<string, string> = { reference_not_matched: '加�
 const routingStates = { same: '元组一致', different: '存在路由差异', unknown: '路由语义未核验', unavailable: '查询未完成', unsupported: '当前平台不支持', not_checked: '尚未比较' };
 const routingReasons: Record<string, string> = { reference_not_matched: '加载引用未匹配', unsupported_platform: '当前平台不支持', backend_not_supported: '当前适配器未提供', routing_query_unavailable: '核对工具与读取权限', routing_schema_unsupported: '路由响应格式未兼容', profile_not_observed: '当前身份未观察到该配置', loaded_route_semantics_unsupported: '路由属性、策略或格式超出核验范围', source_unset_or_unsupported: '来源未显式配置或语义未解析', compared_partial_semantics: '声明元组比较，保留重复数量与 Metric 默认值' };
 function routingValues(values: string[] | null) {
+  // biome-ignore lint/suspicious/noArrayIndexKey: Equal route tuples have multiplicity and the immutable snapshot has no distinct IDs.
   return values === null ? '未核验' : values.length ? <Space orientation="vertical">{values.map((value, index) => <Typography.Text code key={`${index}:${value}`}>{value}</Typography.Text>)}</Space> : '显式空路由集合';
 }
 function loadedValue(value: number | string | string[] | null, field: string) {

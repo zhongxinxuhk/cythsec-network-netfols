@@ -11,6 +11,6 @@ process.env.PORT = port;
 process.env.STRICT_PORT = port;
 process.env.CYTHSEC_CONSOLE_PORT = port;
 process.env.HOST = '127.0.0.1';
-process.env.VITE_ROUTERD_TARGET ||= 'http://127.0.0.1:18080';
-process.env.VITE_TELEMETRYD_TARGET ||= 'http://127.0.0.1:18083';
+process.env.VITE_ROUTERD_TARGET ||= 'http://127.0.0.1:8080';
+process.env.VITE_TELEMETRYD_TARGET ||= 'http://127.0.0.1:8083';
 if (args[0] === 'preview' && !argumentPort) process.argv.push('--port', port);

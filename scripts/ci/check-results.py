@@ -1,5 +1,4 @@
 """Fail the required check unless every declared prerequisite succeeded."""
-
 import json
 import os
 import sys

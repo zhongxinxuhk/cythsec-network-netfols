@@ -45,3 +45,16 @@ rc=0
 bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
 [[ "$rc" == 1 ]]
 echo '✓ 密钥扫描自证：运行时引用/OIDC权限枚举/字面值与拼接拒绝/非workflow路径拒绝/原文脱敏'
+
+# A type, runtime binding and theme object are not persisted credentials; quoted literals still are.
+rm -f "$scratch/config.yml"
+printf '%s\n' 'type Props = { token: string };' 'const token = localStorage.getItem("token");' "const theme = { 'token': { color: 'blue' } };" > "$scratch/source.ts" # sample fixture
+bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1
+printf '%s\n' 'const TOKEN = "literal-credential";' > "$scratch/source.ts" # sample fixture
+rc=0; bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
+[[ "$rc" == 1 ]]
+! grep -q literal-credential "$scratch/output"
+
+printf '%s\n' 'const config = {"TOKEN":"literal-credential"};' > "$scratch/source.ts" # sample fixture
+rc=0; bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
+[[ "$rc" == 1 ]]

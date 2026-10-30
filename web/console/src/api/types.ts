@@ -29,7 +29,7 @@ export interface InterfaceInfo {
   index: number;
   mtu: number;
   mac: string;
-  flags: string[];
+  flags: string[] | null;
   up: boolean;
   running: boolean;
   loopback: boolean;

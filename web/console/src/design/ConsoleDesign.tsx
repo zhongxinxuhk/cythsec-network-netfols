@@ -243,7 +243,7 @@ function Carriers() {
   return (
     <>
       <Paragraph type="secondary">观察字节占比</Paragraph>
-      <div className="design-bars" aria-label="TCP 68%，UDP 27%，其他IP 5%">
+      <div role="img" className="design-bars" aria-label="TCP 68%，UDP 27%，其他IP 5%">
         <span style={{ width: "68%", background: "#1677ff" }} />
         <span style={{ width: "27%", background: "#13a8a8" }} />
         <span style={{ width: "5%", background: "#bfbfbf" }} />
@@ -321,6 +321,7 @@ function Topology({
         </g>
       ))}
       {nodes.map((n) => (
+        // biome-ignore lint/a11y/useSemanticElements: SVG groups require keyboard semantics; an HTML button is not valid in this SVG tree.
         <g
           key={n.id}
           role="button"

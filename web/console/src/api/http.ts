@@ -9,7 +9,7 @@ let revision = 0;
 const listeners = new Set<() => void>();
 export const accessRevision = () => revision;
 export const subscribeAccess = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
-function changed() { revision++; listeners.forEach((listener) => listener()); }
+function changed() { revision++; listeners.forEach((listener) => { listener(); }); }
 export function disconnect(service: Service) { delete credentials[service]; publicReads.delete(service); changed(); }
 function base(service: Service) { return service === 'routerd' ? __ROUTERD_BASE__ : __TELEMETRYD_BASE__; }
 

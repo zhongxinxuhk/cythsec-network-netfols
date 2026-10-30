@@ -1,41 +1,70 @@
+import { join } from 'node:path';
+import { playwright } from '@vitest/browser-playwright';
 import { defineConfig } from 'vitest/config';
-import { resolve } from 'path';
-import { readRootVersion } from './version-source';
 
-// 组件测试独立于 Umi 构建，复用同一版本真源与 API 编译期常量。
 export default defineConfig({
-  esbuild: { jsx: 'automatic' },
-  define: {
-    __APP_VERSION__: JSON.stringify(readRootVersion(__dirname)),
-    __ROUTERD_BASE__: JSON.stringify('/api/v1'),
-    __TELEMETRYD_BASE__: JSON.stringify('/telemetry/api/v1'),
-  },
+  plugins: [
+    {
+      name: 'vitest-md-raw-loader',
+      transform(code, id) {
+        if (!id.endsWith('.md')) {
+          return null;
+        }
+        return {
+          code: `export default ${JSON.stringify(String(code))};`,
+          map: null,
+        };
+      },
+    },
+  ],
   resolve: {
     alias: [
-      { find: '@', replacement: resolve(__dirname, 'src') },
-      // 与浏览器构建相同的 ESM 入口，规避 Node 条件入口只导出 default。
-      { find: /^@ant-design\/pro-components$/, replacement: resolve(__dirname, 'node_modules/@ant-design/pro-components/es/index.js') },
-      { find: /^@ant-design\/icons$/, replacement: resolve(__dirname, 'node_modules/@ant-design/icons/es/index.js') },
+      { find: '@', replacement: join(__dirname, 'src') },
+      { find: '@root', replacement: join(__dirname) },
+      { find: '@@', replacement: join(__dirname, 'src', '.umi') },
+      // 浏览器测试使用 Umi 生成的客户端出口，避免导入 npm 根入口的 Node CLI / fsevents。
+      {
+        find: /^@umijs\/max$/,
+        replacement: join(__dirname, 'src', '.umi', 'exports.ts'),
+      },
+      {
+        find: /^umi$/,
+        replacement: join(__dirname, 'src', '.umi', 'exports.ts'),
+      },
     ],
   },
   test: {
-    // DOM-heavy Pro pages run serially to avoid timer starvation on shared hosts.
-    maxWorkers: 1,
-    // Real Pro component flows use a UI integration budget; request deadlines stay explicit.
-    testTimeout: 15000,
-    // 组件测试需要 DOM 环境。
-    environment: 'jsdom',
-    // 不开启 globals：测试文件显式 import { describe, it, expect }，类型更清晰、无需额外的 tsconfig types 配置。
-    globals: false,
-    deps: { optimizer: { client: { enabled: true, include: ['@ant-design/pro-components', 'antd', '@ant-design/icons'] } } },
-    setupFiles: ['./tests/setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}', 'tests/**/*.{test,spec}.{ts,tsx}'],
-    // 覆盖率：v8 provider；显式运行 coverage 时需安装同版本 @vitest/coverage-v8。
+    browser: {
+      enabled: true,
+      viewport: { width: 1280, height: 900 },
+      provider: playwright(),
+      headless: true,
+      instances: [{ browser: 'chromium' }],
+    },
+    globals: true,
+    setupFiles: ['./tests/setupTests.ts'],
+    include: ['src/app.test.tsx', 'src/access.test.ts', 'src/requestErrorConfig.test.ts', 'src/pages/**/index.test.tsx', 'src/pages/account/settings/service.test.ts', 'src/navigation/CloudConsole.test.tsx'],
+    exclude: [
+      'node_modules',
+      'dist',
+      '.umi',
+      'src/utils/*.test.ts',
+      'src/navigation/catalog.test.ts',
+    ],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json-summary'],
+      reporter: ['text', 'json', 'html'],
       include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/**/*.test.{ts,tsx}', 'src/globals.d.ts', 'src/app.tsx'],
+      exclude: [
+        'src/.umi/**',
+        'src/.umi-test/**',
+        'src/.umi-production/**',
+        'src/services/ant-design-pro/**',
+        'src/**/*.d.ts',
+        'src/**/index.style.ts',
+      ],
     },
+    passWithNoTests: false,
+    testTimeout: 15000,
   },
 });

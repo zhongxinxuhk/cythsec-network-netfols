@@ -15,7 +15,7 @@ export function HeaderStatus() {
     {([['routerd', router], ['telemetryd', telemetry]] as const).map(([name, state]) => {
       const label = `${name} ${state.error ? 'offline' : state.data ? 'online' : '检查中'}`;
       return <Tooltip title={label} key={name}>
-        <span aria-label={label} tabIndex={0}><Badge status={state.error ? 'error' : state.data ? 'success' : 'default'} /> <span className="header-service-label">{label}</span></span>
+        <span role="status" aria-label={label}><Badge status={state.error ? 'error' : state.data ? 'success' : 'default'} /> <span className="header-service-label">{label}</span></span>
       </Tooltip>;
     })}
   </Space>;

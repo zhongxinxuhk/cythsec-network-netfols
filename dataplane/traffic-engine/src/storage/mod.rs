@@ -166,10 +166,11 @@ impl ColumnSpec {
     /// DDL 里这一列的完整定义（类型 + 可选 CODEC + 注释）。
     pub fn ddl_column(&self) -> String {
         let mut s = format!("{} {}", self.name, self.ddl_type());
+        // ClickHouse parses COMMENT before CODEC in a column declaration.
+        s.push_str(&format!(" COMMENT '{}'", self.comment.replace('\'', "\\'")));
         if !self.codec.is_empty() {
             s.push_str(&format!(" CODEC({})", self.codec));
         }
-        s.push_str(&format!(" COMMENT '{}'", self.comment.replace('\'', "\\'")));
         s
     }
 }
@@ -1248,7 +1249,15 @@ mod tests {
         );
         // Nullable + LC 的组合是可写的：ClickHouse 在 INSERT 时自动把
         // Nullable(String) 的块转成 LowCardinality(Nullable(String))（参考实现实测）。
-        assert!(ddl.contains("    tcp_state LowCardinality(Nullable(String)) CODEC(ZSTD(1))"));
+        assert!(ddl.contains("    tcp_state LowCardinality(Nullable(String)) COMMENT"));
+        for c in &cols {
+            let definition = c.ddl_column();
+            if !c.codec.is_empty() {
+                assert!(
+                    definition.find(" COMMENT ").unwrap() < definition.find(" CODEC(").unwrap()
+                );
+            }
+        }
         // 数值列不许套 LC（无收益、只让 DDL 难读）。
         for c in &cols {
             if c.kind != Kind::Str {

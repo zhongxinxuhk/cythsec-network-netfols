@@ -1,15 +1,15 @@
 name: security
-run-name: "Security · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}"
-
-on:
-  workflow_call:
+run-name: Security · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}
+'on':
   schedule:
-    - cron: '17 4 * * 1'
-  workflow_dispatch:
-
+  - cron: 17 4 * * 1
+  workflow_dispatch: null
+  workflow_call: null
 permissions:
   contents: read
-
+concurrency:
+  group: security-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 jobs:
   secrets:
     name: 密钥 / 凭据扫描
@@ -19,54 +19,53 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: 自证运行时引用放行与明文赋值阻断
-        run: bash scripts/security/test-scan-secrets.sh
-      - name: gitleaks（基于 .gitleaks.toml）
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
-          GITLEAKS_ENABLE_COMMENTS: 'false'
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
-      - name: scan-secrets（零依赖兜底脚本）
-        if: ${{ !cancelled() }}
-        run: bash scripts/security/scan-secrets.sh
-
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: 自证运行时引用放行与明文赋值阻断
+      run: bash scripts/security/test-scan-secrets.sh
+    - name: gitleaks（基于 .gitleaks.toml）
+      uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITLEAKS_CONFIG: .gitleaks.toml
+        GITLEAKS_ENABLE_COMMENTS: 'false'
+        GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+    - name: scan-secrets（零依赖兜底脚本）
+      if: ${{ !cancelled() }}
+      run: bash scripts/security/scan-secrets.sh
   govulncheck:
     name: Go 依赖漏洞扫描（全部 Go 模块）
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          # 扫描器需要受支持的 Go；构建兼容性仍由 CI 的 Go 1.22 作业检查。
-          go-version: '1.27.3'
-          cache: false
-      - name: 自证模块发现、工作目录与失败传播
-        run: bash scripts/security/scan-go-vulns.sh --self-test
-      - name: 安装钉扎的 govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-      - name: 逐模块扫描，任一模块报错或发现可达漏洞均阻断
-        run: bash scripts/security/scan-go-vulns.sh
-
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+      with:
+        go-version: 1.27.3
+        cache: false
+    - name: 自证模块发现、工作目录与失败传播
+      run: bash scripts/security/scan-go-vulns.sh --self-test
+    - name: 安装钉扎的 govulncheck
+      run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+    - name: 逐模块扫描，任一模块报错或发现可达漏洞均阻断
+      run: bash scripts/security/scan-go-vulns.sh
   npm-audit:
     name: 前端完整依赖漏洞扫描（含开发依赖）
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version-file: .node-version
-      - name: 完整锁文件审计，任一严重级别或扫描错误均阻断
-        working-directory: web/console
-        run: npm audit --package-lock-only --audit-level=low
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      with:
+        node-version-file: .node-version
+    - name: 完整锁文件审计，任一严重级别或扫描错误均阻断
+      working-directory: web/console
+      run: |
+        npm install --global "npm@$(cat ../../.npm-version)"
+        npm audit --package-lock-only --audit-level=low

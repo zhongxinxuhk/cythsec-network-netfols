@@ -1,0 +1,42 @@
+{
+  "verified_at_utc": "2026-10-29T18:38:22.960Z",
+  "upstream_commit": "42f2cb1d303380909ea04c73b5e60679d09c321a",
+  "template_version": "6.0.3",
+  "versions": {
+    "@umijs/max": "4.7.27",
+    "react": "19.3.1",
+    "antd": "6.6.7",
+    "@ant-design/pro-components": "3.1.14-7",
+    "@ant-design/plots": "2.6.8",
+    "@utoo/pack": "1.5.31"
+  },
+  "upstream_components_preserved": 28,
+  "total_page_components": 33,
+  "tests": {
+    "node": 24,
+    "chromium": 50,
+    "empty_suite_returns_failure": true
+  },
+  "verification": {
+    "clean_npm_ci": true,
+    "typecheck": true,
+    "production_build": true,
+    "unified_lint": true,
+    "unified_frontend_tests": true,
+    "root_version_injection_with_negative_test": true,
+    "analysis_canvas_count": 17,
+    "default_viewport_horizontal_overflow": false,
+    "legacy_interfaces_redirects": true,
+    "real_routerd_system_and_interfaces": true,
+    "table_creation_form_opens": true,
+    "advanced_form_renders": true,
+    "ai_page_renders": true
+  },
+  "entry": "http://127.0.0.1:15173/dashboard/analysis",
+  "listener": "127.0.0.1:15173",
+  "screenshot": "build/storage-measurement/cythsec-pro-analysis.jpg",
+  "scope": [
+    "Standard Pro pages retain template fixtures; five CythSec pages use routerd APIs.",
+    "AI backend, production authentication and remote CI are outside this verification."
+  ]
+}
