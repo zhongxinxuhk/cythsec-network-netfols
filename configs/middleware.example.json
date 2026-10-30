@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "clickhouse": {
+    "client": "clickhouse-client",
+    "host": "127.0.0.1",
+    "port": 9000,
+    "user": "default",
+    "database": "default",
+    "table": "flow_records_v2",
+    "secure": false,
+    "timeout": "10s",
+    "password_file": ""
+  }
+}

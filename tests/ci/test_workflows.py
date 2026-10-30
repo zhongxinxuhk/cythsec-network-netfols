@@ -76,7 +76,7 @@ class WorkflowTests(unittest.TestCase):
     def test_storage_and_browser_acceptance_are_wired(self):
         jobs=self.ci['jobs']
         text='\n'.join(s.get('run','') for s in jobs['clickhouse']['steps'])
-        for script in ['check-clickhouse-compose.py','check-clickhouse-writer.py','check-clickhouse-resume.py']: self.assertIn(script,text)
+        for script in ['check-clickhouse-compose.py','check-clickhouse-writer.py','check-clickhouse-resume.py','check-clickhouse-inbox.py']: self.assertIn(script,text)
         node='\n'.join(s.get('run','') for s in jobs['node']['steps'])
         self.assertIn('playwright install --with-deps chromium',node)
         self.assertIn('npm test',node)

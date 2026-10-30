@@ -84,6 +84,14 @@ scan_rule() {
           "$REPO"/.github/workflows/*.yml | "$REPO"/.github/workflows/*.yaml) continue ;;
         esac
       fi
+      # Compose environment-only references are not stored credentials. Literal
+      # defaults, suffixes and arbitrary required-error text remain scanned.
+      local compose_ref='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:[[:space:]]*\$\{[A-Z_][A-Z0-9_]*(:\?prepare middleware test environment)?\}[[:space:]]*$'
+      if [[ "$name" == GENERIC_SECRET_ASSIGN && "$content" =~ $compose_ref ]]; then
+        case "${line%%:*}" in
+          "$REPO"/deploy/docker/compose*.yml | "$REPO"/deploy/docker/compose*.yaml) continue ;;
+        esac
+      fi
       # In TS/JS, a type annotation, expression binding, function or design object is not a stored literal.
       case "${line%%:*}" in
         *.json)

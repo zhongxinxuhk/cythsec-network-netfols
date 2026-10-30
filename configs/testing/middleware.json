@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "clickhouse": {
+    "image": "clickhouse/clickhouse-server:26.10.2.103",
+    "version": "26.10.2.103",
+    "host": "clickhouse",
+    "port": 9000,
+    "user": "cythsec_test"
+  }
+}

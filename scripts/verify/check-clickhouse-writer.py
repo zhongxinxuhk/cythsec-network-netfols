@@ -31,7 +31,7 @@ def main():
         cc.compose("up", "-d", "--wait", "--wait-timeout", "90", "clickhouse")
         cc.prepare()
         directory = ROOT / "build/storage-measurement"
-        arch = json.loads(subprocess.check_output(["docker", "image", "inspect", "clickhouse/clickhouse-server:26.10.2.103"]))[0]["Architecture"]
+        arch = json.loads(subprocess.check_output(["docker", "image", "inspect", cc.image()]))[0]["Architecture"]
         env = dict(os.environ, GOOS="linux", GOARCH=arch, CGO_ENABLED="0", GOWORK="off", GOPROXY="off", GOTOOLCHAIN="local")
         version = (ROOT / "VERSION").read_text().strip()
         subprocess.run(["go", "build", "-ldflags", f"-X cythsec/services/pkg/versioninfo.Version={version}",

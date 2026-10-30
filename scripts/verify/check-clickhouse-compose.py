@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -23,16 +24,37 @@ spec.loader.exec_module(ch)
 COMPOSE = ["docker", "compose", "-f", str(ROOT / "deploy/docker/compose.storage-test.yml")]
 
 
+_env_spec = importlib.util.spec_from_file_location("middleware_test_env", ROOT / "scripts/ci/middleware_test_env.py")
+_test_env = importlib.util.module_from_spec(_env_spec)
+_env_spec.loader.exec_module(_test_env)
+_configured = False
+
+
+def environment():
+    global _configured
+    if not _configured:
+        _test_env.prepare()
+        _configured = True
+    return os.environ
+
+
+def image():
+    return environment()["CYTHSEC_TEST_CLICKHOUSE_IMAGE"]
+
+
 def compose(*args, data=None):
+    environment()
     p = subprocess.run(COMPOSE + list(args), input=data, capture_output=True, timeout=300)
     if p.returncode:
-        raise ValueError(f"Compose 退出 {p.returncode}: {p.stderr.decode(errors='replace')[-4000:]}")
+        raise ValueError(f"Compose 退出 {p.returncode}: {p.stderr.decode(errors='replace').replace(os.environ['CYTHSEC_TEST_CLICKHOUSE_PASSWORD'], '[REDACTED]')[-4000:]}")
     return p.stdout.decode()
 
 
 def query(sql, database="default", data=None):
-    return compose("exec", "-T", "clickhouse", "clickhouse-client", "--user", "cythsec_test",
-                   "--password", "local_storage_test", "--database", database,
+    env = environment()
+    return compose("exec", "-T", "clickhouse", "clickhouse-client", "--host", env["CYTHSEC_TEST_CLICKHOUSE_HOST"],
+                   "--port", env["CYTHSEC_TEST_CLICKHOUSE_PORT"],
+                   "--user", env["CYTHSEC_TEST_CLICKHOUSE_USER"], "--database", database,
                    "--multiquery", "--query", ch.SETTINGS + sql, data=data)
 
 
@@ -104,7 +126,7 @@ FROM system.parts WHERE active AND database = '{database}' AND table = '{table}'
         compose("up", "-d", "--wait", "--wait-timeout", "90")
         prepare()
         version = query("SELECT version() FORMAT TSV").strip()
-        if version != "26.10.2.103":
+        if version != environment()["CYTHSEC_TEST_CLICKHOUSE_VERSION"]:
             raise ValueError(f"引擎版本与编排不符：{version}")
         query(f"CREATE DATABASE {database}")
         ch.self_test()

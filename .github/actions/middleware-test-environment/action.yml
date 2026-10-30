@@ -1,0 +1,10 @@
+name: Isolated middleware test environment
+description: Generate private job-scoped connection credentials without production secrets.
+runs:
+  using: composite
+  steps:
+    - name: Prepare isolated connection environment
+      shell: bash
+      env:
+        CYTHSEC_MIDDLEWARE_TEST_ENV_FILE: ${{ runner.temp }}/cythsec-middleware.env
+      run: python3 scripts/ci/middleware_test_env.py --github-env

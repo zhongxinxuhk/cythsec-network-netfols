@@ -17,23 +17,17 @@ import (
 	"cythsec/services/pkg/versioninfo"
 )
 
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 func run() error {
-	var client clickhousewriter.Client
-	flag.StringVar(&client.Binary, "client", "clickhouse-client", "官方 native 客户端可执行文件")
-	flag.StringVar(&client.Host, "host", env("CLICKHOUSE_HOST", "127.0.0.1"), "ClickHouse 主机")
-	flag.IntVar(&client.Port, "port", 9000, "native TCP 端口")
-	flag.StringVar(&client.User, "user", env("CLICKHOUSE_USER", "default"), "用户；密码继承 CLICKHOUSE_PASSWORD")
-	flag.StringVar(&client.Database, "database", "default", "目标库")
-	flag.StringVar(&client.Table, "table", "flow_records_v2", "目标表")
-	flag.BoolVar(&client.Secure, "secure", false, "使用 TLS native 连接")
-	flag.DurationVar(&client.Timeout, "timeout", 10*time.Second, "单次 native 写入超时")
+	client := clickhousewriter.DefaultClient()
+	configPath := flag.String("config", os.Getenv("CYTHSEC_MIDDLEWARE_CONFIG"), "中间件 JSON 配置文件")
+	flag.StringVar(&client.Binary, "client", client.Binary, "官方 native 客户端可执行文件")
+	flag.StringVar(&client.Host, "host", client.Host, "ClickHouse 主机")
+	flag.IntVar(&client.Port, "port", client.Port, "native TCP 端口")
+	flag.StringVar(&client.User, "user", client.User, "用户；密码继承 CLICKHOUSE_PASSWORD")
+	flag.StringVar(&client.Database, "database", client.Database, "目标库")
+	flag.StringVar(&client.Table, "table", client.Table, "目标表")
+	flag.BoolVar(&client.Secure, "secure", client.Secure, "使用 TLS native 连接")
+	flag.DurationVar(&client.Timeout, "timeout", client.Timeout, "单次 native 写入超时")
 	spool := flag.String("spool", "", "持久化队列目录（必填，独占并绑定目标）")
 	capacity := flag.Int64("max-pending-bytes", 64<<20, "含在途批次的队列文件字节上限")
 	rows := flag.Int("batch-rows", 2000, "每批最大条数")
@@ -43,6 +37,10 @@ func run() error {
 	attempts := flag.Int("attempts", 3, "每批最多尝试次数，耗尽后保留队列并退出非零")
 	inputPath := flag.String("input", "-", "JSONL 文件，- 为 stdin")
 	resumeFile := flag.Bool("resume-file", false, "不可变文件的持久化输入断点（须指定 --input 文件）")
+	inputDir := flag.String("input-dir", "", "常驻扫描已原子发布的非隐藏 *.jsonl 普通文件")
+	scanInterval := flag.Duration("scan-interval", time.Second, "目录扫描间隔")
+	maxSources := flag.Int("max-source-files", 10000, "目录条目与源文件状态数量上限")
+	scanOnce := flag.Bool("scan-once", false, "仅完成一次目录快照；须指定 --input-dir")
 	replay := flag.Bool("replay-only", false, "只重放队列，不读取新输入")
 	version := flag.Bool("version", false, "输出构建版本")
 	flag.Parse()
@@ -53,6 +51,31 @@ func run() error {
 	if flag.NArg() != 0 {
 		return errors.New("不接受位置参数")
 	}
+	resolved, err := clickhousewriter.LoadClientConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "client":
+			resolved.Binary = client.Binary
+		case "host":
+			resolved.Host = client.Host
+		case "port":
+			resolved.Port = client.Port
+		case "user":
+			resolved.User = client.User
+		case "database":
+			resolved.Database = client.Database
+		case "table":
+			resolved.Table = client.Table
+		case "secure":
+			resolved.Secure = client.Secure
+		case "timeout":
+			resolved.Timeout = client.Timeout
+		}
+	})
+	client = resolved
 	if err := client.Validate(); err != nil {
 		return err
 	}
@@ -61,6 +84,46 @@ func run() error {
 	}
 	if *resumeFile && (*inputPath == "-" || *replay) {
 		return errors.New("--resume-file 需要 --input 文件，不能与 --replay-only 同用")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	inputExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "input" {
+			inputExplicit = true
+		}
+	})
+	if *inputDir != "" {
+		if inputExplicit || *resumeFile || *replay {
+			return errors.New("--input-dir 不能与 --input、--resume-file 或 --replay-only 同用")
+		}
+		inbox, err := clickhousewriter.OpenInbox(clickhousewriter.InboxConfig{
+			Directory: *inputDir,
+			Queue:     clickhousewriter.Config{Directory: *spool, Target: client.Target(), MaxPendingBytes: *capacity, RetryInterval: *retry, MaxAttempts: *attempts},
+			BatchRows: *rows, BatchBytes: *batchBytes, MaxSources: *maxSources, PollInterval: *scanInterval,
+			OnComplete: func(name string, stats clickhousewriter.Stats) {
+				data, _ := json.Marshal(struct {
+					Source string                 `json:"source"`
+					Stats  clickhousewriter.Stats `json:"stats"`
+				}{name, stats})
+				fmt.Fprintf(os.Stderr, "[cythsec-ch-write-source] %s\n", data)
+			},
+		})
+		if err != nil {
+			return err
+		}
+		defer inbox.Close()
+		defer func() {
+			data, _ := json.Marshal(inbox.Stats())
+			fmt.Fprintf(os.Stderr, "[cythsec-ch-write-inbox] %s\n", data)
+		}()
+		if *scanOnce {
+			return inbox.Scan(ctx, client.Send)
+		}
+		return inbox.Run(ctx, client.Send)
+	}
+	if *scanOnce {
+		return errors.New("--scan-once 需要 --input-dir")
 	}
 	q, err := clickhousewriter.Open(clickhousewriter.Config{Directory: *spool, Target: client.Target(), MaxPendingBytes: *capacity, RetryInterval: *retry, MaxAttempts: *attempts, ResumeFile: *resumeFile})
 	if err != nil {
@@ -84,8 +147,6 @@ func run() error {
 			}
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)

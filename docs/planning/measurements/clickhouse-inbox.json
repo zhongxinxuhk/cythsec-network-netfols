@@ -1,0 +1,59 @@
+{
+  "measured_at_utc": "2026-10-30T13:19:03.196116+00:00",
+  "database": "inbox_329e84dac21d",
+  "clickhouse_version": "26.10.2.103",
+  "architecture": "arm64",
+  "writer_binary_sha256": "b0d67dfd0cd9060ebf3b399b3792bd4c0af8e9fc21cb6e947a2b49397f26e9cc",
+  "input_sha256": "a1c395b4b8c9c24c3c198d766315f1ee602c7676ed56bfb5d7fcdfc0f1c2a82f",
+  "rows_per_file": 37,
+  "verified_final_rows": 148,
+  "results": {
+    "two_publications": {
+      "known_sources": 2,
+      "completed_sources": 2,
+      "delivered_rows": 74,
+      "recovered_rows": 0
+    },
+    "completed_restart": {
+      "known_sources": 2,
+      "completed_sources": 2,
+      "delivered_rows": 0,
+      "recovered_rows": 0
+    },
+    "killed_exit": 137,
+    "ack_loss_resume": {
+      "known_sources": 3,
+      "completed_sources": 3,
+      "delivered_rows": 37,
+      "recovered_rows": 37
+    },
+    "changed_source": {
+      "known_sources": 3,
+      "completed_sources": 0,
+      "delivered_rows": 0,
+      "recovered_rows": 0,
+      "active_source": "a.jsonl",
+      "active_stats": {
+        "accepted_rows": 0,
+        "recovered_rows": 0,
+        "delivered_rows": 0,
+        "pending_batches": 0,
+        "pending_bytes": 0,
+        "attempts": 0,
+        "failures": 0,
+        "backpressure_waits": 0,
+        "source_offset": 41819,
+        "source_rows": 37,
+        "source_sha256": "a1c395b4b8c9c24c3c198d766315f1ee602c7676ed56bfb5d7fcdfc0f1c2a82f",
+        "source_size": 41819
+      }
+    },
+    "watcher": {
+      "known_sources": 4,
+      "completed_sources": 4,
+      "delivered_rows": 37,
+      "recovered_rows": 0
+    }
+  },
+  "scope": "isolated project; immutable files; bounded deduplication window; not a throughput benchmark"
+}
