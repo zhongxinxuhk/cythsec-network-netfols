@@ -65,6 +65,52 @@ class ScriptTests(unittest.TestCase):
         run = self.run_script("run-check.sh", str(self.work / "result.log"), "check")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_release_plan_covers_every_module(self):
+        run = subprocess.run(
+            ["bash", str(ROOT / "scripts/ci/package-release.sh"), "--plan"],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        modules = dict(line.split("\t", 1) for line in run.stdout.splitlines() if line)
+        self.assertEqual(set(modules), {"cpp", "rust", "go", "console", "training"})
+        self.assertTrue(modules["cpp"].startswith("cythsec-cpp-"))
+        script = (ROOT / "scripts/ci/package-release.sh").read_text()
+        self.assertIn("cythsec-netflow9-collect", script)
+        self.assertIn("cythsec-sflow-collect", script)
+
+    def test_prerelease_publish_requires_token(self):
+        env = {k: v for k, v in os.environ.items() if k not in {"GH_TOKEN", "HEAD_SHA"}}
+        env["HEAD_SHA"] = "0" * 40
+        run = subprocess.run(
+            ["bash", str(ROOT / "scripts/ci/publish-prerelease.sh")],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("GH_TOKEN", run.stderr)
+
+    def test_prerelease_dry_run_lists_only_packages_without_gh(self):
+        dist = self.work / "release"
+        dist.mkdir()
+        (dist / "cythsec-cpp-0.1.0-linux-x86_64.tar.gz").write_bytes(b"fake")
+        (dist / "SHA256SUMS").write_text("fake  cythsec-cpp-0.1.0-linux-x86_64.tar.gz\n")
+        (dist / ".gitignore").write_text("*\n")
+        env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+        env["HEAD_SHA"] = "0123456789abcdef" + "0" * 24
+        run = subprocess.run(
+            ["bash", str(ROOT / "scripts/ci/publish-prerelease.sh"), "--dry-run", str(dist)],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("pre-0123456", run.stdout)
+        self.assertIn("cythsec-cpp-0.1.0-linux-x86_64.tar.gz", run.stdout)
+        self.assertNotIn(".gitignore", run.stdout)
+        self.assertTrue((dist / "RELEASE-NOTES.md").is_file())
+
     def test_missing_command_is_usage_error(self):
         self.assertEqual(self.run_script("run-check.sh").returncode, 2)
 

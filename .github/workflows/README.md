@@ -51,6 +51,27 @@
 - 所有常规远程 Action 固定到提交 SHA，checkout 不保留凭据。安全子流程需要的
   `pull-requests: read` 由编排入口显式传递；SLSA 发布作业沿用独立的发布权限。
 
+## 预发布包
+
+`prerelease.yml` 不直接响应 push，而是监听 `ci.yml` 的 `workflow_run` 完成事件：只有
+**push 触发的 CI 成功**后才构建发布包；PR、`merge_group` 或失败的 CI 不会发布。
+手动运行 `workflow_dispatch` 可对当前默认分支重新打包。
+
+发布作业在成功提交上重新构建五个模块（不复用各阶段缓存，保证资产与提交一致）：
+
+| 模块 | 资产 |
+| --- | --- |
+| C++ | `cythsec-cpp-<ver>-<os>-<arch>.tar.gz`：capture / parse / dump-abi / ring-feed |
+| Rust | `cythsec-rust-<ver>-<os>-<arch>.tar.gz`：analyze / IPFIX / NetFlow v9 / bench 等 |
+| Go | `cythsec-go-<ver>-<os>-<arch>.tar.gz`：routerd / policyd / dnsd / telemetryd |
+| 前端 | `cythsec-console-<ver>.tar.gz`：`web/console/dist` |
+| Python | `cythsec_training-<ver>-*.whl` 与 sdist |
+
+每个提交对应一个 `pre-<short-sha>` 标签，发布为 GitHub **Pre-release**（不会成为 Latest），
+并附 `SHA256SUMS`。同一提交重跑时只更新资产与说明，不删除重建标签。
+构建与发布脚本是 `scripts/ci/package-release.sh`、`scripts/ci/publish-prerelease.sh`；
+本地可用 `package-release.sh build/prerelease-local` 复现同一套打包（不发布）。
+
 ## 本地检查
 
 ```bash

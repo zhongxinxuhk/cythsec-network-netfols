@@ -1,0 +1,62 @@
+name: Prerelease
+run-name: "Prerelease · ${{ github.event.workflow_run.head_sha || github.sha }}"
+
+# CI 成功结束后，为**每一次 push**构建并发布预发布包。
+# 不在 PR 上发布：workflow_run 事件同时会覆盖 pull_request 产生的 CI 运行，
+# 因此这里显式只接受 event == push；PR 的编译测试仍由 ci.yml 完成。
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: 构建各模块包并发布预发布
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - name: 准备四栈工具链与锁定依赖
+        uses: ./.github/actions/full-environment
+
+      - name: 安装 C++ 构建工具
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo --preserve-env=DEBIAN_FRONTEND apt-get install -y cmake g++
+
+      - name: 构建 C++ / Rust / Go / 前端 / Python 发布包
+        run: bash scripts/ci/package-release.sh dist/release
+
+      - name: 发布 GitHub Pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: bash scripts/ci/publish-prerelease.sh dist/release
+
+      - name: 保存发布资产（失败时也保留）
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prerelease-packages
+          path: dist/release
+          if-no-files-found: warn
+          retention-days: 14
