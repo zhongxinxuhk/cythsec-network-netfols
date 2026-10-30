@@ -81,3 +81,9 @@ B024 sFlow v5 已按 RFC 3176 落地到独立采集器：自描述 flow/counter 
 IPv4/IPv6/extended switch、接口与 VLAN 计数，以及**数据报级**序号缺口。它没有模板，
 序号单位也与 IPFIX（记录累计数）和 NetFlow v9（导出报文序号）不同；独立语料与
 tshark 对照见 [B024验收记录](../planning/protocol-b024-sflow-verification.md)。
+
+B004 ARP 已实现以太网（最多两层 802.1Q/QinQ）ARP/RARP 有界解析，见
+[B004验收记录](../planning/protocol-b004-arp-verification.md)。ARP 没有 IP 五元组，
+主流水线只做帧级统计，详细字段走独立 `cythsec-arp` JSONL；不主动探测、不推断
+邻居缓存/在线状态。NDP、PCAPNG/SLL、真实设备语料与 Linux 矩阵仍未完成，
+完整适配保持未勾选。

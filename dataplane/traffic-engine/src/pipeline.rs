@@ -28,6 +28,7 @@ use std::io::Read;
 use std::sync::mpsc;
 use std::thread;
 
+use crate::arp::{self, ArpStats};
 use crate::channel::{decode_frame, l4_payload, tcp_flags, tcp_seq_ack, DecodedFrame};
 use crate::dpi::{self, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
@@ -105,6 +106,9 @@ pub struct AnalyzeStats {
     /// 采样统计（未启用时为 `None`）。**"声明与执行一致"唯一可被外部检查的地方**：
     /// `observed`/`kept` 由采样器自己记，导出侧的 IE 34 由同一份配置给。
     pub sampling: Option<crate::sampling::SamplingStats>,
+    /// ARP/RARP 帧级统计（B004）。ARP 没有 IP 五元组，不产生 `FlowRecord`；
+    /// 这里只记录“看到并解析了什么”，不从 reply 推断主机在线或地址归属。
+    pub arp: ArpStats,
     /// 会话级 TCP 统计（`CYS-TRF-015`）。走**统计行**这个已有出口而不是记录字段：
     /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
     /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
@@ -525,6 +529,41 @@ fn finalize(
     Ok((records, stats))
 }
 
+/// 当解码失败的原因是“非 IP 帧”时，再尝试一次 ARP 解析。
+///
+/// 为什么不把 ARP 塞进 `decode_frame`：那条路返回的是 `DecodedFrame`，必须有
+/// IP 五元组；ARP 没有端口，硬造一个键会污染流表。这里只在**已确定不是 IP**
+/// 的分支上旁路解析，ARP 统计与流统计因此不会互相冒充。
+///
+/// 只对 EtherType=ARP/RARP 尝试：普通 IPv4 解码失败（如坏 IHL）不应被记成
+/// “坏 ARP”，否则 `non_arp` 会变成一个没有意义的垃圾桶。
+fn note_arp_frame(
+    stats: &mut ArpStats,
+    e: crate::channel::DecodeError,
+    frame: &[u8],
+    capture_truncated: bool,
+) {
+    let looks_like_arp = match e {
+        crate::channel::DecodeError::NonIpEtherType { ether_type } => {
+            ether_type == arp::ETHERTYPE_ARP || ether_type == arp::ETHERTYPE_RARP
+        }
+        // VLAN 层数超限时 decode 只报“超限”，不给出内层 EtherType；这里再扫一遍
+        // 标签链确认里面是不是 ARP，避免把超嵌套的 IPv4 误记成坏 ARP。
+        crate::channel::DecodeError::TooManyVlanTags { .. } => arp::is_arp_ethertype(frame),
+        _ => false,
+    };
+    if !looks_like_arp {
+        return;
+    }
+    match arp::parse_ethernet(frame) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated;
+            stats.observe(&f);
+        }
+        Err(ae) => stats.record_error(ae),
+    }
+}
+
 /// 就地（单线程）驱动：与历史行为**逐字一致** —— 顺序、会话 id、统计口径都不变。
 fn drive_inline<R: Read>(
     mut reader: PcapReader<R>,
@@ -552,6 +591,7 @@ fn drive_inline<R: Read>(
             Err(e) => {
                 // 解码失败**不中断**：省网抓包里畸形帧与非首片分片是常态。
                 *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated());
                 continue;
             }
         };
@@ -630,6 +670,7 @@ fn drive_sharded<R: Read>(
             Ok(d) => d,
             Err(e) => {
                 *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated());
                 continue;
             }
         };
@@ -852,6 +893,22 @@ mod tests {
         udp.extend_from_slice(&[0, 0]); // checksum
         udp.extend_from_slice(payload);
         l3_frame(src, dst, 17, &udp)
+    }
+
+    /// 一条 Ethernet ARP 请求/应答（无 VLAN）。
+    fn arp_frame(op: u16, sha: [u8; 6], spa: [u8; 4], tha: [u8; 6], tpa: [u8; 4]) -> Vec<u8> {
+        let mut f = vec![0xffu8; 12]; // broadcast dst + arbitrary src
+        f.extend_from_slice(&0x0806u16.to_be_bytes());
+        f.extend_from_slice(&1u16.to_be_bytes()); // HTYPE Ethernet
+        f.extend_from_slice(&0x0800u16.to_be_bytes()); // PTYPE IPv4
+        f.push(6);
+        f.push(4);
+        f.extend_from_slice(&op.to_be_bytes());
+        f.extend_from_slice(&sha);
+        f.extend_from_slice(&spa);
+        f.extend_from_slice(&tha);
+        f.extend_from_slice(&tpa);
+        f
     }
 
     fn l3_frame(src: [u8; 4], dst: [u8; 4], proto: u8, l4: &[u8]) -> Vec<u8> {
@@ -1196,6 +1253,63 @@ mod tests {
         assert_eq!(stats.packets_decoded, 0);
         assert_eq!(stats.decode_error_count(), 1);
         assert!(stats.decode_errors.contains_key("decode.truncated"));
+    }
+
+    #[test]
+    fn arp_frames_are_counted_but_do_not_enter_the_flow_table() {
+        let req = arp_frame(
+            1,
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+            [0; 6],
+            [192, 0, 2, 1],
+        );
+        let rep = arp_frame(
+            2,
+            [0x02, 0, 0, 0, 0, 2],
+            [192, 0, 2, 1],
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+        );
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[req, rep]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert!(records.is_empty(), "ARP 没有五元组，不得伪造 FlowRecord");
+        assert_eq!(stats.packets_read, 2);
+        assert_eq!(stats.packets_decoded, 0);
+        assert_eq!(stats.decode_error_count(), 2);
+        assert_eq!(stats.arp.arp_frames, 2);
+        assert_eq!(stats.arp.requests, 1);
+        assert_eq!(stats.arp.replies, 1);
+        assert_eq!(stats.arp.non_arp, 0, "ARP 帧不能被记成非 ARP");
+        assert_eq!(stats.arp.malformed, 0);
+        assert_eq!(stats.arp.truncated, 0);
+    }
+
+    #[test]
+    fn arp_stats_are_identical_with_multiple_workers() {
+        let req = arp_frame(
+            1,
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+            [0; 6],
+            [192, 0, 2, 1],
+        );
+        let tcp = tcp_frame([10, 0, 0, 1], [10, 0, 0, 2], 40000, 80, 0x02, &[]);
+        let rep = arp_frame(
+            2,
+            [0x02, 0, 0, 0, 0, 2],
+            [192, 0, 2, 1],
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+        );
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[req, tcp, rep]);
+        let (one, s1) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).unwrap();
+        let (three, s3) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 3).unwrap();
+        assert_eq!(one, three, "worker 数不得改变 FlowRecord");
+        assert_eq!(s1.arp, s3.arp, "ARP 统计必须与 worker 数无关");
+        assert_eq!(s3.arp.arp_frames, 2);
+        assert_eq!(s3.arp.requests, 1);
+        assert_eq!(s3.arp.replies, 1);
     }
 
     #[test]

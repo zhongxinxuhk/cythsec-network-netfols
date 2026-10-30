@@ -78,6 +78,7 @@ class ScriptTests(unittest.TestCase):
         script = (ROOT / "scripts/ci/package-release.sh").read_text()
         self.assertIn("cythsec-netflow9-collect", script)
         self.assertIn("cythsec-sflow-collect", script)
+        self.assertIn("cythsec-arp", script)
 
     def test_prerelease_publish_requires_token(self):
         env = {k: v for k, v in os.environ.items() if k not in {"GH_TOKEN", "HEAD_SHA"}}

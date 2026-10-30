@@ -345,6 +345,9 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
     // 会话级 TCP 统计（CYS-TRF-015）。这一行是关口比对的契约：字段名改了必须同时改
     // scripts/verify/check-tcp-analysis.py，否则关口会报「缺键」而不是默默少比。
     let _ = writeln!(err, "[cythsec-analyze] {}", stats.tcp.render_line());
+    // ARP 没有五元组，因此它只能走统计行，不能混进 FlowRecord。字段名是关口契约，
+    // 改名必须同时改 scripts/verify/check-arp.py。
+    let _ = writeln!(err, "[cythsec-analyze] {}", stats.arp.render_line());
     let apps: Vec<String> = stats
         .app_outcomes
         .iter()

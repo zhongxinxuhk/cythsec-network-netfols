@@ -69,3 +69,11 @@ B024 sFlow v5 已于 2026-10-31 补齐采集侧实现与对照：`cythsec-sflow-
 扩展记录（MPLS/AS/URL/NAT/socket/host）、真实厂商语料、TCP/SCTP 与长期运行矩阵
 仍未完成，故 `reference_tested=true`、`accepted=false`，详见
 [sFlow v5采集验收](protocol-b024-sflow-verification.md)。
+
+B004 ARP 已于 2026-10-31 补齐以太网有界解析：`arp.rs` 解 ARP/RARP 固定头与
+HTYPE/PTYPE/HLEN/PLEN/OPER、VLAN/QinQ、gratuitous/probe 与 IPv6 协议地址；
+独立 `cythsec-arp` 输出帧级 JSONL，主流水线只做帧级统计、不伪造 FlowRecord。
+tshark 独立核对与 3 项反向注入见
+[ARP验收记录](protocol-b004-arp-verification.md)。NDP、ARP 缓存/冲突推断、
+真实设备语料、Linux 矩阵与 PCAPNG/SLL 仍未完成，故 `reference_tested=true`、
+`accepted=false`。
