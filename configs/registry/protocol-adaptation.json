@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-30.1",
+  "revision": "2026-10-30.2",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3900,15 +3900,29 @@
     {
       "id": "B021",
       "name": "FTP",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "TCP 21/2121 明文控制通道中的首条FTP命令或一条应答识别；USER/PASS（不保留口令）、TYPE/STRU/MODE/PORT/EPRT/EPSV/REST/ALLO/PBSZ/PROT等参数校验，1xx–5xx应答码与FTP式多行应答有界解析，保持截断/预算/端口上下文语义",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/ftp.rs#parse",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify_with_ports",
+        "dataplane/traffic-engine/src/dpi/types.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/ftp.rs#login_and_transfer_commands_keep_grammar_but_drop_passwords",
+        "dataplane/traffic-engine/src/dpi/ftp.rs#multiline_replies_follow_ftp_not_smtp_layout",
+        "dataplane/traffic-engine/src/dpi/ftp.rs#incomplete_lines_are_need_more_and_arguments_are_checked",
+        "dataplane/traffic-engine/src/dpi/ftp.rs#transport_context_is_control_port_only",
+        "dataplane/traffic-engine/src/dpi/mod.rs#ftp_requires_the_control_port_context",
+        "scripts/verify/check-ftp.py"
+      ],
+      "reference": [
+        "scripts/verify/check-ftp.sh",
+        "docs/planning/protocol-b021-ftp-verification.md"
+      ],
+      "gap": "仅首条消息与控制端口上下文；2048字节/行、8192字节/方向、16行多行应答；990隐式FTPS、数据通道/文件内容/目录列表、登录与传输结果、PASS凭据语义、AUTH TLS后的TLS、明细进FlowRecord/存储、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B022",

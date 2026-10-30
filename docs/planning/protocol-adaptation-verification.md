@@ -42,3 +42,6 @@ B019 DoH的已解码HTTPS消息表示与原目录CLion MCP实跑见[DoH验收记
 
 B020 SMTP的首条命令/多行应答、端口上下文与tshark对照见
 [SMTP验收记录](protocol-b020-smtp-verification.md)；本轮不沿用B019的门禁退出码。
+
+B021 FTP的控制命令/应答、FTP式多行格式与tshark对照见
+[FTP验收记录](protocol-b021-ftp-verification.md)；本轮不沿用B020的门禁退出码。

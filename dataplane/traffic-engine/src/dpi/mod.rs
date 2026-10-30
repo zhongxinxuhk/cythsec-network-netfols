@@ -24,6 +24,7 @@ pub mod dhcpv6;
 pub mod dns;
 pub mod doh;
 pub mod dot;
+pub mod ftp;
 pub mod http;
 pub mod mdns;
 pub mod smtp;
@@ -119,6 +120,16 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
                 Detect::Malformed => Outcome::Malformed,
                 Detect::Rejected => Outcome::Unknown,
             };
+        }
+    }
+    // FTP 只在 21/2121 的明文控制通道判定；990 隐式 FTPS 不在 ftp::transport 里。
+    // Rejected 继续走后面的候选（21 上 AUTH TLS 之后是 TLS 记录）。
+    if proto == IPPROTO_TCP && ftp::transport(src_port, dst_port) {
+        match ftp::detect(payload) {
+            Detect::Hit(d) => return Outcome::Identified(d),
+            Detect::NeedMore => return Outcome::NeedMore,
+            Detect::Malformed => return Outcome::Malformed,
+            Detect::Rejected => {}
         }
     }
     // SMTP 只在服务端口上下文里判定；465 是隐式 TLS，不在 smtp::transport 里。
@@ -228,6 +239,27 @@ mod framework_tests {
         assert!(!matches!(
             identify(b"\x16\x03\x01\x00\x05hello", IPPROTO_TCP, 587),
             Outcome::Identified(d) if d.app == AppId::Smtp
+        ));
+    }
+
+    #[test]
+    fn ftp_requires_the_control_port_context() {
+        assert!(matches!(
+            identify(b"220 (vsFTPd 3.0.5)\r\n", IPPROTO_TCP, 21),
+            Outcome::Identified(d) if d.app == AppId::Ftp
+        ));
+        assert!(matches!(
+            identify(b"USER anonymous\r\n", IPPROTO_TCP, 2121),
+            Outcome::Identified(d) if d.app == AppId::Ftp
+        ));
+        assert!(!matches!(
+            identify(b"USER anonymous\r\n", IPPROTO_TCP, 25),
+            Outcome::Identified(d) if d.app == AppId::Ftp
+        ));
+        // 21 上的 TLS 记录必须回落到 TLS 检测器。
+        assert!(!matches!(
+            identify(b"\x16\x03\x01\x00\x05hello", IPPROTO_TCP, 21),
+            Outcome::Identified(d) if d.app == AppId::Ftp
         ));
     }
 

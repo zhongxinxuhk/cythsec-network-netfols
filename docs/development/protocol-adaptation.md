@@ -57,3 +57,8 @@ B020 SMTP在TCP 25/587/2525的明文上下文里判定首条命令或一条多�
 [B020验收记录](../planning/protocol-b020-smtp-verification.md)。只取第一条消息，
 不解析DATA正文、AUTH凭据或投递结果；465隐式TLS不在明文端口内，裸应答只给medium。
 端口只做路由，FTP端口上的同名问候不得命中；完整适配保持未勾选。
+
+B021 FTP在TCP 21/2121的明文控制通道里判定首条命令或一条应答，见
+[B021验收记录](../planning/protocol-b021-ftp-verification.md)。FTP多行应答是
+"首行code-、末行code SP、中间任意文本"，不能套用SMTP的逐行同码规则；PASS实参不保留。
+990隐式FTPS与AUTH TLS之后的TLS交给TLS检测器，完整适配保持未勾选。
