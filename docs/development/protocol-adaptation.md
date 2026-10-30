@@ -71,3 +71,8 @@ B022 的 IPFIX v10 验收边界需要单独说明：清单登记的是**报文�
 不是把 IPFIX 标成某个 `AppId`。导出的 tshark 交叉核验、采集回路的丢包率手算、
 异厂独立实现的 5 个场景与反向注入见
 [B022验收记录](../planning/protocol-b022-ipfix-verification.md)。
+
+B023 NetFlow v9 已按 RFC 3954 落地到独立采集器：模板/数据流集、选项模板跳过、
+21/22 号时标换算，以及**导出报文级**序号缺口。它与 IPFIX 的关键差别是序号单位
+（v9 报文序号 vs v10 数据记录累计数），不能互相代替；独立语料与 tshark 对照见
+[B023验收记录](../planning/protocol-b023-netflow9-verification.md)。

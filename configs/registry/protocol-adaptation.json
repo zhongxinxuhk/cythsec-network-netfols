@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-30.4",
+  "revision": "2026-10-30.5",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3987,15 +3987,40 @@
     {
       "id": "B023",
       "name": "NetFlow v9",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "当前采集器明确拒绝v9，不能因共用端口标为已适配"
+      "scope": "NetFlow v9（RFC 3954）模板流集/数据流集解码；地址/端口/协议/计数/flowId/采样及152/153与21/22时标；导出报文级序号缺口/重复/乱序；模板生存期/冲突；Options Template仅跳过计数",
+      "code": [
+        "dataplane/traffic-engine/src/netflow9.rs",
+        "dataplane/traffic-engine/src/bin/netflow9_collect.rs",
+        "dataplane/traffic-engine/src/lib.rs",
+        "dataplane/traffic-engine/Cargo.toml"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/netflow9.rs#decodes_template_then_records",
+        "dataplane/traffic-engine/src/netflow9.rs#sequence_gap_counts_lost_export_packets",
+        "dataplane/traffic-engine/src/netflow9.rs#duplicate_sequence_is_not_loss",
+        "dataplane/traffic-engine/src/netflow9.rs#backward_sequence_is_out_of_order_not_loss",
+        "dataplane/traffic-engine/src/netflow9.rs#sequence_wraps_at_32_bits_without_false_loss",
+        "dataplane/traffic-engine/src/netflow9.rs#different_source_ids_do_not_share_sequence_state",
+        "dataplane/traffic-engine/src/netflow9.rs#template_refresh_and_conflict_keep_old_definition",
+        "dataplane/traffic-engine/src/netflow9.rs#data_without_template_is_counted_not_invented",
+        "dataplane/traffic-engine/src/netflow9.rs#unknown_field_type_is_skipped_without_shifting",
+        "dataplane/traffic-engine/src/netflow9.rs#sysuptime_fields_become_absolute_milliseconds",
+        "dataplane/traffic-engine/src/netflow9.rs#v6_template_and_reduced_length_encoding",
+        "dataplane/traffic-engine/src/netflow9.rs#count_mismatch_and_truncated_flowset_are_reported",
+        "dataplane/traffic-engine/src/netflow9.rs#template_expires_and_recovers_on_refresh",
+        "dataplane/traffic-engine/src/netflow9.rs#duplicate_record_within_window_is_dropped_and_counted",
+        "dataplane/traffic-engine/src/netflow9.rs#options_template_data_is_skipped_not_forced_into_flows",
+        "scripts/verify/check-netflow9.py"
+      ],
+      "reference": [
+        "scripts/verify/check-netflow9.sh",
+        "docs/planning/protocol-b023-netflow9-verification.md"
+      ],
+      "gap": "Options Template不解码、报文级口径无法还原每个丢失报文内的记录数、真实厂商/现场语料、TCP/SCTP传输、长期运行与Linux矩阵待验收；pcap默认仅按2055端口过滤"
     },
     {
       "id": "B024",

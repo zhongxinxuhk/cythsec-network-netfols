@@ -29,6 +29,9 @@ pub mod hash;
 // 它只依赖 flow/record/feature 的类型，不依赖 pipeline/channel。
 pub mod identification;
 pub mod ipfix;
+// NetFlow v9 采集侧（RFC 3954）：与 IPFIX 分开，因为它的序号单位是**导出报文**，
+// 复用 IPFIX 的记录级记账会把丢包率算错一个数量级。
+pub mod netflow9;
 pub mod observability;
 pub mod pcapfile;
 pub mod pipeline;
