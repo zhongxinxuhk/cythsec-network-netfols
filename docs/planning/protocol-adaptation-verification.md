@@ -45,3 +45,8 @@ B020 SMTP的首条命令/多行应答、端口上下文与tshark对照见
 
 B021 FTP的控制命令/应答、FTP式多行格式与tshark对照见
 [FTP验收记录](protocol-b021-ftp-verification.md)；本轮不沿用B020的门禁退出码。
+
+B014 的“主流水线 TCP 重组”缺口已于 2026-10-30 单独验收：SYN 锚定的有界前缀重组、
+乱序/冲突/缺尾/中途接入与 tshark 独立重组对照见
+[DNS/TCP主流水线验收记录](protocol-b014-dns-tcp-pipeline-verification.md)。
+本页上方“尚无主流水线重组”的表述保留为当时状态，不据此改写历史结论。

@@ -820,6 +820,29 @@ mod tests {
         l3_frame(src, dst, 6, &tcp)
     }
 
+    /// 一条带显式序号/确认号的 IPv4/TCP 帧（用于重组类用例）。
+    fn tcp_frame_seq(
+        src: [u8; 4],
+        dst: [u8; 4],
+        sport: u16,
+        dport: u16,
+        seq: u32,
+        ack: u32,
+        flags: u8,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&sport.to_be_bytes());
+        tcp.extend_from_slice(&dport.to_be_bytes());
+        tcp.extend_from_slice(&seq.to_be_bytes());
+        tcp.extend_from_slice(&ack.to_be_bytes());
+        tcp.push(5 << 4);
+        tcp.push(flags);
+        tcp.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]);
+        tcp.extend_from_slice(payload);
+        l3_frame(src, dst, 6, &tcp)
+    }
+
     /// 一条 IPv4/UDP 帧。
     fn udp_frame(src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
         let mut udp = Vec::new();
@@ -895,6 +918,74 @@ mod tests {
         // 解不出帧的垃圾：解码失败要计入派发端统计，且不能打断派发
         frames.push(vec![0u8; 10]);
         tiny_pcap(LINKTYPE_ETHERNET, &frames)
+    }
+
+    /// DNS/TCP 的**主流水线重组**：长度帧被拆到两个乱序段里，仍必须在记录上
+    /// 得到 `dns`/`identified`，而不是退回单包弱判定或 unknown。
+    ///
+    /// 这条测试与 `pipeline::dns_tcp` 的单元测试分工不同：单元测试直接喂
+    /// `TcpSegment`，这里验证的是真实 pcap 路径上的序号解析、双向会话、
+    /// probe 落位与记录输出是否接对 —— 接错时单测可以全绿而 CLI 仍是 need_more。
+    #[test]
+    fn segmented_dns_tcp_is_reassembled_before_identification() {
+        let query: &[u8] = &[
+            0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1,
+        ];
+        let mut body = (query.len() as u16).to_be_bytes().to_vec();
+        body.extend_from_slice(query);
+
+        let response: &[u8] = &[
+            0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1, 0xc0, 0x0c, 0,
+            1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 42,
+        ];
+        let mut resp = (response.len() as u16).to_be_bytes().to_vec();
+        resp.extend_from_slice(response);
+
+        let (c, s) = ([192, 0, 2, 1], [198, 51, 100, 2]);
+        let frames = vec![
+            tcp_frame_seq(c, s, 40_000, 53, 1_000, 0, 0x02, &[]),
+            tcp_frame_seq(s, c, 53, 40_000, 5_000, 1_001, 0x12, &[]),
+            tcp_frame_seq(c, s, 40_000, 53, 1_001, 5_001, 0x10, &[]),
+            // 先到尾部、后到头部：覆盖"洞被填上"的路径。
+            tcp_frame_seq(c, s, 40_000, 53, 1_001 + 9, 5_001, 0x18, &body[9..]),
+            tcp_frame_seq(c, s, 40_000, 53, 1_001, 5_001, 0x18, &body[..9]),
+            tcp_frame_seq(
+                s,
+                c,
+                53,
+                40_000,
+                5_001,
+                1_001 + body.len() as u32,
+                0x18,
+                &resp[..10],
+            ),
+            tcp_frame_seq(
+                s,
+                c,
+                53,
+                40_000,
+                5_011,
+                1_001 + body.len() as u32,
+                0x18,
+                &resp[10..],
+            ),
+        ];
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &frames);
+        let (records, stats) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1)
+            .expect("流水线应能处理 DNS/TCP");
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.app.outcome, "identified", "{:?}", record.app);
+        assert_eq!(record.app.app, Some(crate::dpi::AppId::Dns));
+        assert_eq!(record.app.confidence, Some(crate::dpi::Confidence::High));
+        assert_eq!(record.app.bytes_inspected, body.len());
+        assert_eq!(stats.counter_mismatches, 0);
+
+        // 分片不能改变结论；这条流只有一个会话，2 个 worker 也必须逐字节一致。
+        let (sharded, _) =
+            analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 2).expect("分片");
+        assert_eq!(sharded, records);
+        assert_eq!(jsonl(&sharded), jsonl(&records));
     }
 
     fn jsonl(records: &[FlowRecord]) -> String {

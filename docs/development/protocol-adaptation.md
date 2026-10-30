@@ -28,7 +28,7 @@ python3 tools/codegen/gen-protocol-adaptation.py --check --self-test
 本轮DNS/TCP仅支持连续前缀的首个长度帧，使用现有DNS有界字段解析。补齐两字节长度、严格帧边界、
 粘连只取首帧、未完整帧保持NeedMore、帧内问题段不足不能借后帧修复。
 依据：[RFC7766](https://www.rfc-editor.org/rfc/rfc7766.html#section-8)。
-主流水线尚未将TCP重组模块接入DPI，因此本条完整适配保持未勾；大消息超预算、持久连接多事务与真实语料仍待开发/验收。
+主流水线已接入：TCP 53上按SYN锚定的有界前缀重组（4096字节/64段/1024流/30秒空闲），乱序、重传、回绕、冲突与缺尾均有显式状态；无锚点单包保留medium弱判定。持久连接多帧事务、大消息超预算与真实语料仍待开发/验收，完整适配保持未勾。
 
 此表只记录现状和通用解析工作；本轮没有新增公众规避审查协议指纹、主动探测或封锁实现。
 本轮验收见[记录](../planning/protocol-adaptation-verification.md)。
@@ -62,3 +62,7 @@ B021 FTP在TCP 21/2121的明文控制通道里判定首条命令或一条应答�
 [B021验收记录](../planning/protocol-b021-ftp-verification.md)。FTP多行应答是
 "首行code-、末行code SP、中间任意文本"，不能套用SMTP的逐行同码规则；PASS实参不保留。
 990隐式FTPS与AUTH TLS之后的TLS交给TLS检测器，完整适配保持未勾选。
+
+B014 主流水线重组的端到端证据（乱序分片、缺尾、冲突、无锚点与端口上下文）见
+[B014验收记录](../planning/protocol-b014-dns-tcp-pipeline-verification.md)。
+本轮不改变单包长度帧契约，只把“已接入”这件事钉在流水线测试与 tshark 重组对照上。

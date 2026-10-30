@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-30.2",
+  "revision": "2026-10-30.3",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3725,19 +3725,29 @@
       "local_tested": true,
       "reference_tested": true,
       "accepted": false,
-      "scope": "连续TCP前缀的首个DNS长度帧；保持帧边界、截断和未知状态",
+      "scope": "SYN锚定的有界TCP前缀重组与首个DNS长度帧；乱序/重传/回绕/冲突/缺尾与预算状态显式，无锚点单包保留弱判定",
       "code": [
         "dataplane/traffic-engine/src/dpi/dns.rs#detect_tcp",
-        "dataplane/traffic-engine/src/dpi/mod.rs#order"
+        "dataplane/traffic-engine/src/dpi/mod.rs#order",
+        "dataplane/traffic-engine/src/pipeline/dns_tcp.rs#observe",
+        "dataplane/traffic-engine/src/pipeline.rs"
       ],
       "tests": [
-        "dataplane/traffic-engine/src/dpi/tests.rs#dns_tcp_length_frames_keep_boundaries_and_transport_semantics"
+        "dataplane/traffic-engine/src/dpi/tests.rs#dns_tcp_length_frames_keep_boundaries_and_transport_semantics",
+        "dataplane/traffic-engine/src/pipeline/dns_tcp.rs#dns_stream_out_of_order_retransmission_and_wraparound",
+        "dataplane/traffic-engine/src/pipeline/dns_tcp.rs#dns_stream_conflicts_and_holes_never_become_complete",
+        "dataplane/traffic-engine/src/pipeline/dns_tcp.rs#dns_stream_budgets_and_no_payload_close_are_explicit",
+        "dataplane/traffic-engine/src/pipeline/dns_tcp.rs#dns_stream_new_syn_and_peer_ack_isolate_epochs",
+        "dataplane/traffic-engine/src/pipeline/dns_tcp.rs#dns_stream_capacity_idle_and_unanchored_fallback_are_bounded",
+        "dataplane/traffic-engine/src/pipeline.rs#segmented_dns_tcp_is_reassembled_before_identification",
+        "scripts/verify/check-dns-tcp.py"
       ],
       "reference": [
-        "scripts/verify/check-dns-tcp.py",
+        "scripts/verify/check-dns-tcp.sh",
+        "docs/planning/protocol-b014-dns-tcp-pipeline-verification.md",
         "docs/planning/protocol-adaptation-verification.md"
       ],
-      "gap": "主流水线TCP重组、多帧事务、真实语料与Linux运行矩阵待完成"
+      "gap": "仅首个DNS长度帧与4096字节/64段/1024流/30秒空闲预算；持久连接多帧事务、DATA级大消息、真实语料精度/规模与Linux运行矩阵待完成"
     },
     {
       "id": "B015",
