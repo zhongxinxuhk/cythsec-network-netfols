@@ -40,6 +40,12 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
       --ipfix-template-refresh <N>
                           每 N 条报文重发一次模板（默认 20；UDP 无连接、采集器会重启，
                           只发一次意味着采集器一重启后面全解不开）
+      --native <FILE>     同一批 FlowRecord 另写一份 ClickHouse `Native` 列式块
+                          （CYS-STO-007 第一步；与 JSONL **同源同序**，可直接
+                          `INSERT INTO flows FROM INFILE ... FORMAT Native`）
+      --native-rows-per-block <N>
+                          每块行数（默认 100000）。块头要重写一遍全部列名与类型，
+                          所以这个数直接决定落盘字节里「自描述」的占比
   -q, --quiet              不打印统计摘要
   -V, --version            打印版本信息
   -h, --help               打印本帮助
@@ -65,6 +71,8 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
                         （流表/会话/TCP 状态机需要完整包序；逐包随机采会把一条会话撕成
                         半条，结论是错的而不是「少一点的」）；packet = 每 N 个包留 1 个。
   --sampling-seed <N>   哈希种子（默认 0）：换种子 = 换一批被采到的流。
+  --native 打开时**同时**产出列式块：JSONL 是给人看的口径，列式才是省网量级真正落盘
+  的形式（每条约 1066 B 未压缩 / 79.4 B gzip 是 JSONL 的代价，列式要重新量）。
   --ipfix-* 打开时**同时**导出 IPFIX：这是让记录走进运营商既有流级通道（NetFlow/IPFIX
   采集体系）的唯一出口，也是「流级 vs 逐包」这条量级问题的正面回答——逐包采集在省网
   不存在（单条 100G 最坏帧 148.8 Mpps；骨干 10 Tbps 全量约 108 PB/天）。
@@ -85,6 +93,8 @@ struct Args {
     quiet: bool,
     sampling: SamplingArgs,
     ipfix: Option<IpfixArgs>,
+    native: Option<String>,
+    native_rows_per_block: usize,
 }
 
 #[derive(Debug)]
@@ -127,6 +137,8 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
     let mut ipfix_domain: u32 = 1;
     let mut ipfix_template_refresh: u32 = 20;
     let mut ipfix_max_msg: usize = 1400;
+    let mut native: Option<String> = None;
+    let mut native_rows_per_block = traffic_engine::storage::native::DEFAULT_ROWS_PER_BLOCK;
 
     let mut i = 0;
     while i < argv.len() {
@@ -241,6 +253,17 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
                 }
                 ipfix_template_refresh = n;
             }
+            "--native" => native = Some(take_value("--native")?),
+            "--native-rows-per-block" => {
+                let v = take_value("--native-rows-per-block")?;
+                let n: usize = v
+                    .parse()
+                    .map_err(|_| format!("--native-rows-per-block 需要一个正整数，得到 `{v}`"))?;
+                if n == 0 {
+                    return Err("--native-rows-per-block 必须大于 0".to_string());
+                }
+                native_rows_per_block = n;
+            }
             "-q" | "--quiet" => quiet = true,
             other => return Err(format!("无法识别的参数 `{other}`（用 --help 看用法）")),
         }
@@ -275,6 +298,8 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
             seed: sampling_seed,
         },
         ipfix,
+        native,
+        native_rows_per_block,
     })))
 }
 
@@ -310,6 +335,9 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
         stats.session.sessions_evicted,
         stats.session.illegal_tcp_events
     );
+    // 会话级 TCP 统计（CYS-TRF-015）。这一行是关口比对的契约：字段名改了必须同时改
+    // scripts/verify/check-tcp-analysis.py，否则关口会报「缺键」而不是默默少比。
+    let _ = writeln!(err, "[cythsec-analyze] {}", stats.tcp.render_line());
     let apps: Vec<String> = stats
         .app_outcomes
         .iter()
@@ -404,6 +432,46 @@ fn run(args: &Args) -> Result<usize, String> {
     };
     write_jsonl(&mut out, records).map_err(|e| format!("写输出失败：{e}"))?;
     out.flush().map_err(|e| format!("刷输出失败：{e}"))?;
+
+    // ---- 列式落盘（可选，CYS-STO-007 第一步）----
+    // 与 JSONL **同源同序**（同一个 `records` 切片）：第三方对照按「第 i 行对第 i 个
+    // 列值」定位。任何一侧重新排序都会让比对退化成按 id 匹配，而按 id 匹配
+    // 抓不到「整块错位」这种最危险的错。
+    if let Some(path) = &args.native {
+        if records.is_empty() {
+            // 刻意不产出 0 字节文件：空文件与「写失败」在下游无法区分。
+            if !args.quiet {
+                eprintln!("[cythsec-analyze] 没有记录，未产出 Native 文件");
+            }
+        } else {
+            let f =
+                File::create(path).map_err(|e| format!("创建 Native 文件 `{path}` 失败：{e}"))?;
+            let mut w = traffic_engine::storage::native::NativeWriter::new(
+                io::BufWriter::new(f),
+                args.native_rows_per_block,
+            );
+            for r in records {
+                w.push(r)
+                    .map_err(|e| format!("写 Native 失败（{path}）：{e}"))?;
+            }
+            let st = w
+                .finish()
+                .map_err(|e| format!("收 Native 失败（{path}）：{e}"))?;
+            if !args.quiet {
+                eprintln!(
+                    "[cythsec-analyze] native rows={} blocks={} bytes={} b_per_record_milli={} header_bytes={} null_mask_bytes={} null_dummy_bytes={} rows_per_block={}",
+                    st.rows,
+                    st.blocks,
+                    st.bytes,
+                    st.bytes_per_record_milli(),
+                    st.header_bytes,
+                    st.null_mask_bytes,
+                    st.null_dummy_bytes,
+                    args.native_rows_per_block
+                );
+            }
+        }
+    }
 
     // ---- IPFIX 导出（可选）----
     // 顺序说明：先落 JSONL 再导出。导出的记录集与 JSONL **同源同序**（都取自

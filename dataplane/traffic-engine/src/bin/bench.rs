@@ -1385,6 +1385,7 @@ fn bench_record(i: usize) -> FlowRecord {
         initiator: None,
         adopted_midstream: false,
         illegal_tcp_events: 0,
+        tcp_stats: None,
         first_seen_us: 1_700_000_000_000_000 + i as u64 * 1000,
         last_seen_us: 1_700_000_000_001_000 + i as u64 * 1000,
         packets: 10,

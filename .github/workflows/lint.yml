@@ -1,33 +1,55 @@
 name: Lint
-
-# 触发条件：推送到 main 或 PR 时运行静态检查。
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-# 静态检查统一收敛在 scripts/lint/lint-all.sh（CYS-INF-007）：
-#   clang-format --dry-run --Werror / cargo fmt --check / gofmt -l / npm run lint。
+run-name: Lint · ${{ github.event_name }} · ${{ github.head_ref || github.ref_name }}
+'on':
+  workflow_call: null
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: lint-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 jobs:
   lint:
     name: 静态检查（clang-format / cargo fmt / gofmt / eslint）
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: web/console/package-lock.json
-      - name: 安装 clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format
-      - name: 安装前端依赖（eslint 需要 node_modules）
-        run: cd web/console && npm ci
-      - name: 运行静态检查
-        run: bash scripts/lint/lint-all.sh
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+      with:
+        components: rustfmt
+    - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+      with:
+        go-version: '1.22'
+        cache: false
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      with:
+        node-version-file: .node-version
+        cache: npm
+        cache-dependency-path: web/console/package-lock.json
+    - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      with:
+        version: 0.12.1
+        enable-cache: true
+        cache-dependency-glob: ml/training/uv.lock
+    - name: 准备 Python 质量工具锁定环境
+      run: 'uv python install "$(cat ml/training/.python-version)"
+
+        uv sync --project ml/training --locked --group quality
+
+        '
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      with:
+        python-version: '3.11'
+    - name: 安装仓库钉扎的 clang-format（与 ABI 生成器共用 PATH）
+      run: 'python -m pip install "clang-format==$(cat .clang-format-version)"
+
+        clang-format --version
+
+        '
+    - name: 安装前端依赖（eslint 需要 node_modules）
+      run: cd web/console && npm ci
+    - name: 运行静态检查
+      run: bash scripts/lint/lint-all.sh

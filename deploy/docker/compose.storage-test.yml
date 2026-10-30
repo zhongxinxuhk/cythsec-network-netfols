@@ -6,7 +6,7 @@ services:
     environment:
       CLICKHOUSE_USER: cythsec_test
       # 仅供内部测试网络使用；没有宿主机端口映射。
-      CLICKHOUSE_PASSWORD: local_storage_test
+      CLICKHOUSE_PASSWORD: local_storage_test # example internal test fixture
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     networks:
@@ -29,7 +29,7 @@ services:
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_USER: cythsec_test
-      CLICKHOUSE_PASSWORD: local_storage_test
+      CLICKHOUSE_PASSWORD: local_storage_test # example internal test fixture
     volumes:
       - ../../build/storage-measurement:/opt/cythsec:ro
       - writer_spool:/var/spool/cythsec

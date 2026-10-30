@@ -6,6 +6,8 @@ import { history, Link } from '@umijs/max';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import React from 'react';
+import { CloudHeader, CloudNavigation } from '@/navigation/CloudConsole';
+import { NavigationProvider } from '@/navigation/NavigationProvider';
 
 // Initialize dayjs plugins globally
 dayjs.extend(relativeTime);
@@ -82,7 +84,7 @@ export const layout: RunTimeLayoutConfig = ({
     menuItemRender: (item, dom) => {
       if (item.path) {
         return (
-          <Link to={item.path} prefetch>
+          <Link to={item.path} prefetch="intent">
             {dom}
           </Link>
         );
@@ -188,6 +190,36 @@ export const layout: RunTimeLayoutConfig = ({
       );
     },
     ...initialState?.settings,
+    layout: 'mix',
+    navTheme: 'light',
+    splitMenus: false,
+    fixedHeader: true,
+    fixSiderbar: false,
+    siderWidth: 272,
+    collapsed: false,
+    token: { header: { heightLayoutHeader: 50 } },
+    contentStyle: { minWidth: 0, margin: 0 },
+    headerRender: () => (
+      <CloudHeader
+        actions={
+          <>
+            <DocLink />
+            <VersionDropdown />
+            <LangDropdown />
+            {initialState?.currentUser && (
+              <AvatarDropdown>
+                <span className="cloud-user-name">
+                  {initialState.currentUser.name}
+                </span>
+              </AvatarDropdown>
+            )}
+          </>
+        }
+      />
+    ),
+    menuRender: () => <CloudNavigation />,
+    rightContentRender: false,
+    collapsedButtonRender: false,
   };
 };
 
@@ -205,7 +237,9 @@ export function rootContainer(container: React.ReactNode) {
   return (
     <>
       <OfflineBanner />
-      <ErrorBoundary>{container}</ErrorBoundary>
+      <NavigationProvider>
+        <ErrorBoundary>{container}</ErrorBoundary>
+      </NavigationProvider>
     </>
   );
 }

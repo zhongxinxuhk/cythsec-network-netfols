@@ -1,0 +1,88 @@
+{
+  "count_per_run": 10000000,
+  "rounds": 7,
+  "before": [
+    {
+      "count": 10000000,
+      "ns_per_push": 2.0255584,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.9703917,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.5077792,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.4803584,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.4492,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.469775,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.453325,
+      "iat_ring_bytes": 96
+    }
+  ],
+  "after": [
+    {
+      "count": 10000000,
+      "ns_per_push": 1.8784125,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.5020416,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.5078375,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.5354375,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.5287458,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.4933459,
+      "iat_ring_bytes": 96
+    },
+    {
+      "count": 10000000,
+      "ns_per_push": 1.5124583,
+      "iat_ring_bytes": 96
+    }
+  ],
+  "before_median_ns": 1.4803584,
+  "after_median_ns": 1.5124583,
+  "median_change_percent": 2.168387060863086,
+  "baseline_commit": "0aeb5ff",
+  "fix_branch": "fix/iat-square-sum-overflow",
+  "scope": "IatRing::push only; alternating before/after optimized binaries on the same host; not full-pipeline throughput.",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+  "host": "Darwin arm64",
+  "harness_source": "#[path = \"../../dataplane/traffic-engine/src/flow/stats.rs\"]\nmod stats;\nuse std::{hint::black_box, time::Instant};\nfn main() {\n    let count = 10_000_000u64;\n    let mut ring = stats::IatRing::new(64);\n    let start = Instant::now();\n    for i in 0..count {\n        ring.push(black_box(i % 97 + 1));\n    }\n    let elapsed = start.elapsed().as_secs_f64();\n    black_box((ring.count(), ring.mean_us(), ring.stddev_us()));\n    println!(\"{{\\\"count\\\":{},\\\"ns_per_push\\\":{},\\\"iat_ring_bytes\\\":{}}}\",\n        count, elapsed * 1e9 / count as f64, std::mem::size_of::<stats::IatRing>());\n}\n",
+  "compile_command": "rustc --edition 2021 -O build/iat-overflow/bench.rs -o build/iat-overflow/{before,after}-push"
+}

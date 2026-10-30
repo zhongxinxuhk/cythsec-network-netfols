@@ -1,0 +1,43 @@
+name: CythSec toolchains
+description: Install only the toolchains requested by the caller.
+inputs:
+  rust:
+    description: Enable Rust stable with rustfmt
+    default: 'false'
+  go:
+    description: Go version, or empty to disable
+    default: ''
+  node:
+    description: Node version, or empty to disable
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+    - if: inputs.rust == 'true'
+      shell: bash
+      run: |
+        rustup toolchain install stable --profile minimal --component rustfmt
+        rustup default stable
+    - if: inputs.rust == 'true'
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'dataplane/traffic-engine/Cargo.toml') }}-${{ github.job }}
+    - if: inputs.go != ''
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      with:
+        go-version: ${{ inputs.go }}
+        # 当前五个模块只有标准库与本地 replace，没有 go.sum。
+        cache: false
+    - if: inputs.node != ''
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version: ${{ inputs.node }}
+        cache: npm
+        cache-dependency-path: web/console/package-lock.json

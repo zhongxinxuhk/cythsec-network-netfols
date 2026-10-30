@@ -10,16 +10,16 @@ bash scripts/build/build-all.sh --go
 build/bin/cythsec-ch-write --version
 ```
 
-先执行 `flow_records_v1.sql` 建表；需要非复制 MergeTree 的重试去重时，再执行
-`flow_records_v1_dedup.sql`。库表由部署步骤管理，写入器不自动建表或修改生产设置。
+先执行 `flow_records_v2.sql` 建表；需要非复制 MergeTree 的重试去重时，再执行
+`flow_records_v2_dedup.sql`。库表由部署步骤管理，写入器不自动建表或修改生产设置。
 
 ```bash
 export CLICKHOUSE_HOST=127.0.0.1
 export CLICKHOUSE_USER=writer
 # CLICKHOUSE_PASSWORD 由运行环境注入，不写入参数或队列元数据。
-build/bin/cythsec-ch-write --database default --table flow_records_v1 \
+build/bin/cythsec-ch-write --database default --table flow_records_v2 \
   --spool /data/cythsec/spool --input flows.jsonl --resume-file
-build/bin/cythsec-ch-write --database default --table flow_records_v1 \
+build/bin/cythsec-ch-write --database default --table flow_records_v2 \
   --spool /data/cythsec/spool --replay-only
 ```
 
@@ -73,7 +73,7 @@ TLS native 连接使用 `--secure --port 9440`。常用限制：
 ```bash
 target/release/cythsec-ipfix-collect --pcap exported.pcap \
   --output /data/cythsec/incoming/batch-001.jsonl --durable-output
-build/bin/cythsec-ch-write --database default --table flow_records_v1 \
+build/bin/cythsec-ch-write --database default --table flow_records_v2 \
   --input /data/cythsec/incoming/batch-001.jsonl \
   --spool /data/cythsec/spool/batch-001 --resume-file
 ```

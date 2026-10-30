@@ -36,6 +36,10 @@ pub mod record;
 // 两者共用同一份 SamplingConfig —— 单一来源，别留"能声明却不执行"的入口。
 pub mod sampling;
 pub mod session;
+// storage 是数据链的**列式落盘出口**（CYS-STO-002 / CYS-STO-007 第一步）：
+// FlowRecord → ClickHouse `Native` 块 + 建表 DDL 的单一真源。
+// 与 export（IPFIX）一样，它只依赖 record/feature/flow 的类型，不反向依赖 pipeline。
+pub mod storage;
 pub mod tcp;
 
 /// 测试专用的最小 JSON 解析器，供各向量驱动测试共用。

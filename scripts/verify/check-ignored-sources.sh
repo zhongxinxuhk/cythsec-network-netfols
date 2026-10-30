@@ -45,10 +45,10 @@ ALLOW='(^|/)(\.mimosa|\.idea|\.vscode|node_modules)/'
 ALLOW="${ALLOW}"'|^build/|^target/|^cmake-build-|^out/|^dist/|^release/'
 ALLOW="${ALLOW}"'|^datasets/|^secrets/|^logs/|^web/console/dist/|^web/console/\.vite/'
 ALLOW="${ALLOW}"'|^ml/.*/(runs|wandb)/'
-# Umi/utoopack/Vitest 的生成目录，源码仍由 config/ 与 src/ 正常跟踪。
-ALLOW="${ALLOW}"'|^web/console/src/\.umi(-production|-test|-test-production|-undefined)?/'
-ALLOW="${ALLOW}"'|^web/console/(\.turbopack|\.vitest|e2e-out|coverage)/'
+# CYS-MLT-001: exact training venv, setuptools staging and egg metadata only.
+ALLOW="${ALLOW}"'|^ml/training/(\.venv/|build/|[^/]+\.egg-info/)'
 
+ALLOW="${ALLOW}"'|^web/console/src/\.umi(-production|-test|-test-production|-undefined)?/|^web/console/(\.turbopack|\.vitest|e2e-out|coverage)/'
 hits="$(git ls-files --others --ignored --exclude-standard \
         | grep -E "${EXT}" \
         | grep -Ev "${ALLOW}" || true)"

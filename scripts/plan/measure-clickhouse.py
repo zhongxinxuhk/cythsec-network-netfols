@@ -21,8 +21,8 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-DDL = ROOT / "storage/clickhouse/flow_records_v1.sql"
-TABLE = "flow_records_v1"
+DDL = ROOT / "storage/clickhouse/flow_records_v2.sql"
+TABLE = "flow_records_v2"
 SETTINGS = """
 SET input_format_skip_unknown_fields = 0;
 SET input_format_json_ignore_unknown_keys_in_named_tuple = 0;
@@ -91,8 +91,8 @@ def measure(binary, paths, label):
                 for row in rows:
                     if not isinstance(row, dict) or not isinstance(row.get("features"), dict):
                         raise ValueError("FlowRecord 与 features 必须是 JSON 对象")
-                    if row.get("schema_version") != 1 or row["features"].get("schema_version") != 1:
-                        raise ValueError("仅支持 FlowRecord v1 / FeatureVector v1")
+                    if row.get("schema_version") != 2 or row["features"].get("schema_version") != 1:
+                        raise ValueError("仅支持 FlowRecord v2 / FeatureVector v1")
                     # 非有限数与缺失的证据不允许在比对期间被悄悄归一化。
                     signature(row)
                 expected.extend(rows)
@@ -189,7 +189,7 @@ def integration_test(binary, measure_fn=measure):
                      "unknown-field", "unknown-top-level", "overflow", "null-counter"):
             bad = copy.deepcopy(rows[0])
             if name == "record-version":
-                bad["schema_version"] = 2
+                bad["schema_version"] = 3
             elif name == "feature-version":
                 bad["features"]["schema_version"] = 2
             elif name == "missing-field":

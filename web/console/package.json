@@ -88,7 +88,6 @@
     "gh-pages": "^6.3.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
-    "mockjs": "^1.1.0",
     "playwright": "^1.64.1",
     "react-doctor": "^0.9.18",
     "swagger-ui-dist": "^5.34.0",
@@ -97,7 +96,14 @@
     "typescript": "^7.0.2",
     "vitest": "5.0.5",
     "vitest-browser-react": "^2.3.0",
-    "@utoo/pack": "1.5.31"
+    "@utoo/pack": "1.5.31",
+    "decode-uri-component": "file:compat/decode-uri-component-cjs",
+    "react-router-dom": "file:compat/react-router-dom-compat",
+    "node-libs-browser": "file:compat/browser-node-builtins",
+    "node-libs-browser-okam": "file:compat/browser-node-builtins",
+    "vite": "8.3.5",
+    "deepmerge": "file:compat/deepmerge-safe",
+    "mockjs": "file:compat/mockjs-safe"
   },
   "overrides": {
     "@umijs/plugins": {
@@ -113,10 +119,31 @@
     "cosmiconfig": {
       "js-yaml": "^4.3.1"
     },
-    "postcss": "^8.5.23"
+    "postcss": "^8.5.23",
+    "isomorphic-fetch": {
+      "node-fetch": "^2.7.0"
+    },
+    "path-to-regexp@>=1 <1.9.0": "1.9.0",
+    "postcss-selector-parser": "^7.1.7",
+    "@babel/core@<7.29.1": "^7.29.7",
+    "@babel/runtime@<7.26.10": "^7.29.7",
+    "esbuild@<0.25.0": "^0.25.12",
+    "@umijs/bundler-utoopack": {
+      "less-loader": "^12.3.3"
+    },
+    "decode-uri-component": "$decode-uri-component",
+    "node-libs-browser": "$node-libs-browser",
+    "node-libs-browser-okam": "$node-libs-browser-okam",
+    "react-router@>=6 <8": "7.18.4",
+    "react-router-dom@>=6 <8": "$react-router-dom",
+    "katex@<0.18.2": "0.18.2",
+    "@hono/node-server": "2.1.5",
+    "deepmerge": "$deepmerge",
+    "mockjs": "$mockjs",
+    "vite@>=7 <7.3.7": "7.3.7"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": "^22.12.0 || >=24.0.0"
   },
   "create-umi": {
     "ignoreScript": [

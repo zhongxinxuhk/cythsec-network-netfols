@@ -58,6 +58,9 @@ web/console/.vite/
 *.timestamp-*.mjs
 
 # --- Python (ML) ---
+# Anchored packaging artifacts; do not hide same-named source directories.
+/ml/training/*.egg-info/
+/ml/training/build/
 __pycache__/
 *.py[cod]
 .venv/

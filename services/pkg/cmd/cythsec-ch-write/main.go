@@ -31,7 +31,7 @@ func run() error {
 	flag.IntVar(&client.Port, "port", 9000, "native TCP 端口")
 	flag.StringVar(&client.User, "user", env("CLICKHOUSE_USER", "default"), "用户；密码继承 CLICKHOUSE_PASSWORD")
 	flag.StringVar(&client.Database, "database", "default", "目标库")
-	flag.StringVar(&client.Table, "table", "flow_records_v1", "目标表")
+	flag.StringVar(&client.Table, "table", "flow_records_v2", "目标表")
 	flag.BoolVar(&client.Secure, "secure", false, "使用 TLS native 连接")
 	flag.DurationVar(&client.Timeout, "timeout", 10*time.Second, "单次 native 写入超时")
 	spool := flag.String("spool", "", "持久化队列目录（必填，独占并绑定目标）")

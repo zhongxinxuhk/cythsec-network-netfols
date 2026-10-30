@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/navigation/CloudConsole', () => ({ CloudHeader: () => null, CloudNavigation: () => null }));
+vi.mock('@/navigation/NavigationProvider', () => ({ NavigationProvider: ({ children }: any) => children }));
 // Mock all heavy dependencies before importing app
 const mockReplace = vi.fn();
 const mockHistory = {

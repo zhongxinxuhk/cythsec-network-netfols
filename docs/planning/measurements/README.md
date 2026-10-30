@@ -9,9 +9,9 @@
 
 | 产物 | 语料 | 样本量 | 未压缩 JSONL | gzip -9 |
 | --- | --- | --- | --- | --- |
-| `storage-ratio-real.json` | **版本库内可复现**：`datasets/dpi/*.pcap` + `datasets/pcap/sample-session-tcp.pcap` | 37 条 | 1008.3 B/记录 | **79.4 B/记录** |
-| `storage-ratio-homogeneous.json` | 同质压测语料 `build/bench-pipeline/bench.pcap`（914,254 帧；**非版本库内**） | 20,182 条 | 1066.0 B/记录 | 21.0 B/记录 |
-| `storage-ratio.json` | 上面两份合成**规划值** | 20,219 条 | **1066.0 B/记录**（上界） | **79.4 B/记录**（规划用这个） |
+| `storage-ratio-real.json` | **版本库内可复现**：`datasets/dpi/*.pcap` + `datasets/pcap/sample-session-tcp.pcap` | 37 条 | 1130.2 B/记录 | **84.1 B/记录** |
+| `storage-ratio-homogeneous.json` | 同质压测语料 `build/bench-pipeline/bench.pcap`（914,254 帧；**非版本库内**） | 20,182 条 | 1184.0 B/记录 | 21.8 B/记录 |
+| `storage-ratio.json` | 上面两份合成**规划值** | 20,219 条 | **1184.0 B/记录**（上界） | **84.1 B/记录**（规划用这个） |
 
 ### 采样方差（`sampling-variance.json`，`CYS-TRF-053` ③）
 
@@ -31,14 +31,23 @@
 
 **结论（三条，缺一条这个数就会被误用）**
 
-1. **旧的「40 B/记录（列式压缩假设）」实测不成立**：gzip 档 79.4 B 就已是它的 2 倍，
-   未压缩 JSONL 1066 B 是它的 27 倍。容量表的 `TB/天` 必须按 79.4 B 重算
-   （20 Tbps / 1:1000：17.28 → **34.29 TB/天**）。
-2. **gzip 档与内容重复度强相关**：同质压测语料能压到 21 B/记录，真实（多样）语料 79.4 B。
+1. **旧的「40 B/记录（列式压缩假设）」实测不成立**：gzip 档 84.1 B 就已是它的 2.1 倍，
+   未压缩 JSONL 1184 B 是它的 30 倍。容量表的 `TB/天` 必须按 84.1 B 重算
+   （20 Tbps / 1:1000：17.28 → **36.33 TB/天**）。
+2. **gzip 档与内容重复度强相关**：同质压测语料能压到 21.8 B/记录，真实（多样）语料 84.1 B。
    合成规划值**取较差端**（不是平均、不是最小）—— 这条规则写在脚本里且可被判死
    （注入 `pick-best` 时必须红）。用 21 B 做规划，就是把乐观假设偷偷带回来。
 3. **未压缩档才是上界**：JSONL 就是本仓当前真实的落盘格式；要降到几十字节必须**改格式**
    （列式/二进制），那时要重新测，不能沿用这里的数字。
+
+**2026-10-23 因列契约变更重测（记录契约 v2，`CYS-STO-002`/`CYS-STO-007`）**：`tcp` 块新增 6 个
+可空键（`seq_judged`/`retransmissions`/`out_of_order`/`handshake_rtt_us`/`uplink_bytes`/
+`downlink_bytes`）之后，本节与下一节的**全部产物都用同一份新代码重跑过**：gzip 规划值
+79.4 → **84.1（+5.9%）**、未压缩 1066 → **1184（+11.1%）**、列式规划值 78.50 → **85.86（+9.4%）**、
+同质档列式 5.11 → **5.91（+15.7%）**。两点要记住：
+① 这些数**跟着列契约走**，加列就变，不存在"一次测定"；
+② 未压缩 +11.1% 明显大于 gzip 的 +5.9% —— 压缩器替新列（多数是小整数、重复度高）付了租，
+所以"加六列就要多花 11% 磁盘"这种说法对 gzip 档是**夸大**的。
 
 **方法（复现时要对齐的细节）**
 
@@ -84,45 +93,108 @@ python3 scripts/plan/measure-storage.py \
 
 **未核验的部分（别越界引用）**
 
-- 上述 `storage-ratio*.json` 的 21~79.4 B 都是 **gzip 后的 JSONL**；独立的 ClickHouse 实测见下。
+- 本节三个产物（21~79.4 B）都是**gzip 后的 JSONL**，不是 ClickHouse 落盘实测；
+  列式那档自 2026-10-22 起另有实测产物，见下一节「列式落盘字节/记录」。
 - 只有 37 条（版本库内语料）这一档做了两机对照；20,182 条那档只用 macOS 量过
   （其输入 `build/bench-pipeline/bench.pcap` 需现场生成，未在两机上都跑）。
 
-## ClickHouse MergeTree（2026-10-29）
+## 列式落盘字节/记录（`columnar-*.json`，`CYS-INF-041` 收尾 / `CYS-STO-002`、`CYS-STO-007`）
 
-`clickhouse-storage-vectors.json` 与 `clickhouse-storage-homogeneous.json` 记录
-ClickHouse 26.10.2.103 stable / macOS arm64 上的单批落盘与独立进程完整读回。
-37 条合成协议/会话向量为 **252.27 B/记录**，20,182 条同质压测记录为 **21.69 B/记录**，
-按 active parts 总字节计（包含 part 索引/元数据）。小批固定开销与同质压缩效果不可互换。
-本机两档均读回一致；Docker Desktop Linux 服务复验已于 2026-10-30 完成，见下。
-重建语料和复验命令见 [存储说明](../../../storage/clickhouse/README.md)。
-容量模型默认值继续对应 gzip(JSONL)，尚未建立常驻数据库部署的容量模型。
+回答的是容量表旁边那句**没人量过的话**：「换成列式数据库能压到几十 B/记录」。
+2026-10-22 本机把它换成了实测。数字来自**真实 ClickHouse 落进 MergeTree 之后数 part 目录的字节**
+（`*.bin` 记为列数据，`*.mrk2/*.idx/*_count.txt` 等记为索引/元数据），不是估算。
 
-`clickhouse-storage-compose.json`：Linux arm64 / ClickHouse 26.10.2.103 服务模式，
-37 / 20,182 条语料的 active parts 总字节与 macOS local 模式逐字节一致，
-8 项错误输入检查通过；强制重建容器后再次逐字段读回一致。
-报告包含镜像标识、命名卷、容器重建前后 ID、输入 SHA256 与表名。
-复验入口 `python3 scripts/verify/check-clickhouse-compose.py` 会从当前源码重新构建分析器和语料。
-Docker Desktop 的 Linux VM 不替代物理服务器实测；远端 CI 尚未运行。
+| 产物 | 语料 | 条数 | JSONL 未压缩 | JSONL+gzip9 | Native 未压缩 | **CH 默认 LZ4** | **CH 我们的 DDL** | 可进容量表 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `columnar-real.json` | 真实向量（版本库内） | 37 | 1130.24 | 84.49 | 591.35 | 150.41 | 159.41 | ✗ 小样本，part 固定开销主导 |
+| `columnar-bench.json` | 同质压测 `bench.pcap` | 20,182 | 1184.05 | 21.80 | 401.07 | 28.01 | **5.91** | ✓ |
+| `columnar-diverse.json` | 多样合成 `bench-diverse.pcap` | 20,000 | 1200.47 | 137.19 | 400.92 | 151.42 | **85.86** | ✓ |
+| `columnar.json` | 上面两档取**较差端** | 40,182 | — | — | — | — | **85.86 B/记录** | ✓ 这就是规划值 |
 
-## native 写入器故障复验（2026-10-30）
+必带口径（缺一条这个数就会被误用）：
 
-`clickhouse-writer.json` 记录 `cythsec-ch-write` 在独立 Compose 客户端容器中的实际结果：
-正常 37 条、两次独立同内容输入保留 74 条、停机落盘后新进程恢复 37 条、
-ACK 丢失后重试和新进程重放仍为原 37 条、20,182 条压力语料逐字段一致并最终排空。
-观测到积压 **1,417,750 B**，小于配置 **1,600,000 B**，统计确有背压等待。
-测试表启用了 10,000 个 block_id 的非复制去重窗口；不能据此承诺无限期 exactly-once。
-报告含写入器版本/二进制 SHA256、输入 SHA256 与 accepted/recovered/delivered/pending 统计。
-复验：`python3 scripts/verify/check-clickhouse-writer.py`。
-本试验含停机、客户端启动与重试，计时不作为持续吞吐基线。
+1. **「列式」本身不省字节，省字节的是按列编解码器。** 同一份 schema 只差 CODEC/LowCardinality：
+   多样语料 151.42 → 85.86（1.8×）、同质语料 28.01 → 5.91（4.7×）。而 **CH 默认 LZ4 档并不比
+   gzip(JSONL) 好**（多样语料 151.42 vs 137.19，仍然略输）—— 所以「迁到列式数据库就省几倍」
+   这句话在本仓的证据里**不成立**，收益来自 DDL 里那串 CODEC 选择。
+2. **规划值 85.86 B/记录与 gzip(JSONL) 的 84.1 基本持平（列式反而略高 2.1%）** ⇒ 容量表的
+   `TB/天` 不会因为"改用列式"而改变量级（gzip 36.33 / 列式 37.09 TB/天）。这条是本档最重要的
+   结论，而 v2 让它比 v1 更难看：**列式从"基本持平"变成"略输"** —— 6 个可空列在 MergeTree 里
+   各带一份 mark 文件与类型串， gzip 那条路则靠内容重复把新增键几乎压没了（+5.9%）。
+   同一份 schema 加列时，**按列存的钱比按行存贵**，这是这次重测读出来的新信息，不是误差。
+3. **它依赖 `storage/clickhouse/001_flows.sql` 的 CODEC/LowCardinality 选择**；换 DDL 必须重测。
+   产物里把这句话写成了字段（`not_a_claim`），`collector-capacity.py` 缺它就拒绝读数。
+4. **两档大样本语料都是本仓生成器合成的**（`generate-bench.py --profile homogeneous|diverse`）。
+   `diverse` 档的多样性由脚本里的端口池/地址池/域名池给，**不代表任何现场**；
+   37 条那档虽然是版本库内真实向量，但样本太小（`usable_for_capacity: false`）。
+   ⇒ 现场必须用自己的流量重标定，`--combine` 只接受 ≥5,000 条且真的落进过 ClickHouse 的档。
+5. 语料是页缓存热的 macOS 单机数字；Rocky 复验只做过了 gzip 档（见上一节），
+   **列式档尚未在两机上对照**（那台机上没有 ClickHouse 二进制）。
 
-## 采集文件持久化交接与断点（2026-10-30）
+### 一条**待决**：gzip 档的"较差端"规则与多样合成语料冲突
 
-`clickhouse-resume.json`：IPFIX 采集器通过 `--durable-output` 发布 15 条 DNS 流记录，
-输出文件/目录同步后打印持久化回执；相同发布名拒绝覆盖。写入器 `--resume-file`
-绑定路径/长度/完整 SHA256，按持久化字节偏移重启，完成文件重跑零发送，等长内容修改被拒绝。
-20,182 条文件在部分接收后停机，重启先重放再续读剩余部分，最终逐字段一致；
-首批 4 条已落库、客户端仍未收到确认时 SIGKILL，恢复后仍为原 15 条。
-报告含采集发布回执、源摘要、输入高水位/累计行数、恢复/交付统计和强杀退出码。
-复验：`python3 scripts/verify/check-clickhouse-resume.py`。
-该证据针对不可变文件，不代表实时 UDP 确认、追加/轮转输入或持续吞吐已完成。
+按本节与上一节共同的规则——**规划取较差端**——把多样合成语料测出的
+gzip(JSONL) **137.19 B/记录**计入后，`storage-ratio.json` 的 gzip 规划值就应从 84.1 抬到 137.19
+（20 Tbps×1:1000 ⇒ 36.33 → **59.27 TB/天**）。本批**没有**这么改，理由是：`diverse` 档的多样性
+由生成器**刻意最大化**（每条流一个随机域名/SNI），真实省网流量的 popular host 呈重尾分布、
+重复度高于它，137.19 更像**上界**而不是规划值。但这条判断本身需要现场语料才能定，
+所以记成待决事项（HANDOFF §8 第一梯队第 4 项）：**要么拿现场语料重测，要么把 gzip 规划值抬到
+137.19 并在对外口径里改用列式的 85.86**——两件事都不该悄悄做。
+（v2 重测后这个待决项**更刺人了**：列式规划值 85.86 现在**高于** gzip 的 84.1，
+"改用列式数据库"在本仓证据里连字节收益都不再是正的，只剩查询能力上的收益。）
+
+### 复现命令
+
+```bash
+# 0) 参考实现：任选一种 —— PATH 上的 clickhouse / --clickhouse <路径> / 环境变量 CLICKHOUSE
+cargo build --release -p traffic-engine --bin cythsec-analyze --bin cythsec-dump-ddl
+
+# 1) 真实向量档（正确性对照，不进容量表）
+python3 scripts/plan/measure-columnar.py \
+  --label "真实向量语料" --pcap datasets/pcap/sample-session-tcp.pcap datasets/dpi/*.pcap \
+  --analyze target/release/cythsec-analyze --clickhouse "$CH" \
+  --json docs/planning/measurements/columnar-real.json
+
+# 2) 同质压测档（bench.pcap 与历史口径同源，需先生成）
+python3 datasets/pcap/generate-bench.py build/bench-pipeline/bench.pcap 20000 50
+python3 scripts/plan/measure-columnar.py --label "同质压测语料" \
+  --pcap build/bench-pipeline/bench.pcap --analyze target/release/cythsec-analyze \
+  --clickhouse "$CH" --json docs/planning/measurements/columnar-bench.json
+
+# 3) 多样合成档（新档；--profile homogeneous 是默认值，逐字节维持历史行为）
+python3 datasets/pcap/generate-bench.py build/bench-pipeline/bench-diverse.pcap 20000 50 --profile diverse
+python3 scripts/plan/measure-columnar.py --label "多样合成语料" \
+  --pcap build/bench-pipeline/bench-diverse.pcap --analyze target/release/cythsec-analyze \
+  --clickhouse "$CH" --json docs/planning/measurements/columnar-diverse.json
+
+# 4) 合成规划值（任一档不可用 ⇒ 整体不可用，不许"挑一个能用的"）
+python3 scripts/plan/measure-columnar.py --combine \
+  docs/planning/measurements/columnar-bench.json \
+  docs/planning/measurements/columnar-diverse.json \
+  --json docs/planning/measurements/columnar.json
+
+# 5) 容量模型改用列式档
+python3 scripts/plan/collector-capacity.py --storage-format columnar
+```
+
+**接线**：`collector-capacity.py --storage-format columnar` 默认读 `columnar.json`；
+`--verify-defaults`（挂在 `test-all.sh --plan`）**同时核对 gzip 与列式两档**的内置默认值 ↔ 产物，
+只改一处就会判红。列式字节格式本身的关口是 `test-all.sh --columnar`
+（`scripts/verify/check-columnar.sh`）。
+
+**测这一档时抓出的两个真缺陷**（都不是"环境有问题"，是脚本自己写错）：
+
+1. `baseline_ddl()` 用「找第一个 `)`」剥 `CODEC(...)`，遇到 `CODEC(Delta(4), ZSTD(1))` 这类
+   嵌套就把 `, ZSTD(1))` 留在原地 ⇒ ClickHouse 报 `Unmatched parentheses` 拒收，
+   ③ 档（无 CODEC 对照）静默变成「未核验」，而报告照样打印「净收益 N×」。
+   现在按平衡括号扫描（并跳过单引号字符串），且 `check_baseline_ddl()` 四项自检
+   （行数、列名集合、残留子句、整篇括号配平）不合格就**硬失败**。
+2. staging 表名用 `ddl.replace("flows", table, 1)` 改 —— 而这份 DDL 里 "flows" **第一次出现
+   在文件头的「重新生成」注释里**，于是改在了注释上，CREATE 语句仍是 `flows`
+   ⇒ `INSERT INTO flows_default` 报 UNKNOWN_TABLE。现在 `rename_table()` 只认 CREATE 语句那一处，
+   且 `_looks_like_our_sql_defect()` 把 UNKNOWN_TABLE/SYNTAX_ERROR 归为**缺陷**（判红），
+   只有"二进制找不到"这类才算未核验。两条都在 `measure-columnar.py --self-test` 里有反向注入。
+
+## IAT 平方和修复的局部成本（2026-10-25）
+
+`iat-overflow-bench.json`：基线 `0aeb5ff` 与 `fix/iat-square-sum-overflow` 同机交替测量，**每档 7 轮，每轮 1000 万次** `IatRing::push`。中位 1.4804 → 1.5125 ns/push（约 +2.17%）；本机结构体仍为 96 B。产物包含全部原始值、编译器/平台与源码。仅局部微基准，不作为端到端吞吐或跨平台内存布局承诺；修复与验收边界见 `../IAT-OVERFLOW-20261025.md`。

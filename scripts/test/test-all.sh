@@ -17,26 +17,34 @@ cd "$ROOT"
 usage() {
   cat <<'EOF'
 用法: test-all.sh [--cpp] [--rust] [--go] [--node] [--parity] [--dpi] \
-              [--reassembly] [--flows] [--ipfix] [--e2e] [--live] [--bench] [--plan] [--self-test] [--help]
+              [--reassembly] [--flows] [--ipfix] [--e2e] [--live] [--bench] [--plan] [--sampling] \
+              [--columnar] [--branch-policy] [--self-test] [--help]
 
   --cpp          只跑 C/C++ 测试（ctest）
-  --rust         只跑 Rust 测试（cargo test --offline）
+  --rust         只跑 Rust 测试（cargo test --offline）+ Rust/Python 特征 parity、训练特征产物验收与反向注入
   --go           只跑 Go 测试（go test ./...）
   --node         只跑前端测试（npm test = vitest run）
   --parity       只跑通道 ABI 跨语言 parity（需同时能构建 C++ 与 Rust）
   --dpi          只跑 DPI 向量的 tshark 第三方交叉核验（需 tshark）
   --reassembly   只跑 TCP 重组向量的 tshark 第三方交叉核验（需 tshark）
-  --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + 反向故障注入（需 tshark）
+  --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + TCP 统计三方比对（CYS-TRF-015）+ 反向故障注入（需 tshark）
   --ipfix        只跑 IPFIX 导出的 tshark 第三方交叉核验 + UDP 通道字节比对 + 反向故障注入（需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
   --plan         只跑采集容量模型的算术自证 + 反向注入（CYS-INF-040，纯 python3，秒级）
   --sampling     只跑流级采样的两道关口：「声明与执行一致」+「采样后的量级还原」（CYS-TRF-053，需 cargo 与 tshark）
+  --columnar     只跑列式落盘（ClickHouse Native）的四道关口：生成物一致 / 独立解码逐格比对 /
+                 7 项反向注入 / 真实 ClickHouse 逐字节 parity（CYS-STO-002、CYS-STO-007、CYS-TRF-033，
+                 需 cargo + python3；D 组需要 clickhouse 二进制，缺则显式「未核验」）
+  --branch-policy 只跑分支纪律钩子的自证与安装状态检查（一个问题一条分支，测绿才并入 main）：
+                 pre-commit + Agent 侧 PreToolUse 钩子的 S1–S7 断言与 2 项反向注入（纯 git + python3，秒级）。
+                 本克隆没装钩子（core.hooksPath 未设）时显式报「未核验」而不是通过 —— 装法：make hooks
   --self-test    自证本脚本自身的判定逻辑（npm ci 失败分类 + F1 拦截分支 + 工具链预检映射），不跑任何真实测试
   --help         显示本帮助
 
-不带参数时跑全部；parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
+不带参数时跑全部，含 Python 工程锁定/隔离安装验收（需 uv，先 uv sync --project ml/training --locked）；
+可单跑 bash scripts/verify/check-training-project.sh。parity 与 e2e 都需要 C++ 与 Rust 两侧都可构建，因此仅在两者都跑时附带执行。
 
 --bench 刻意**不在"全部"里**：它的回归下限标定在特定机器上（Apple M1 Pro/macOS 1M 条规模），
 同机连跑两次都能差 20~30%，换机器/换核数/开省电模式都会变。放进默认集合只会变成
@@ -59,14 +67,7 @@ need_cmd() {
 # 这一节负责在跑测试前补齐，让"克隆 → 跑测试"这条路径真的走得通。
 gen_datasets() {
   echo "==> [vectors] 生成测试向量（pcap / expected.json 均为生成物，不入库）"
-  local py="${PYTHON:-python3}"
-  if ! command -v "$py" >/dev/null 2>&1; then
-    echo "✗ [vectors] 未找到 python3（可用 PYTHON 环境变量指定解释器）" >&2
-    return 1
-  fi
-  "$py" datasets/pcap/generate-samples.py || return 1
-  "$py" datasets/dpi/generate-dpi-samples.py || return 1
-  "$py" datasets/reassembly/generate-reassembly-samples.py || return 1
+  bash scripts/test/prepare-rust-fixtures.sh || return 1
   echo "✓ [vectors] 向量已生成"
 }
 # 本次运行**实际需要**的工具链（纯函数：只读 ${ALL} 与 ${BUILD_*}，因此能被 --self-test 自证）。
@@ -77,15 +78,15 @@ gen_datasets() {
 # 而该机当时确实没装 cmake，且**本次运行根本不需要它**。
 required_tools() {
   if [[ "${ALL}" == "1" ]]; then
-    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark
+    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark git uv
     return 0
   fi
   # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）。
   # --plan 不进这条：容量模型不消费向量（纯算术），要求它下载/生成样本是多余的耦合。
-  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E + BUILD_PLAN + BUILD_SAMPLING)) -gt 0 ]]; then
+  if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E + BUILD_PLAN + BUILD_SAMPLING + BUILD_COLUMNAR)) -gt 0 ]]; then
     printf '%s\n' "${PYTHON:-python3}"
   fi
-  if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS + BUILD_IPFIX + BUILD_SAMPLING)) -gt 0 ]]; then
+  if [[ $((BUILD_RUST + BUILD_PARITY + BUILD_E2E + BUILD_BENCH + BUILD_FLOWS + BUILD_IPFIX + BUILD_SAMPLING + BUILD_COLUMNAR)) -gt 0 ]]; then
     printf 'cargo\n'
   fi
   if [[ $((BUILD_CPP + BUILD_PARITY + BUILD_E2E)) -gt 0 ]]; then
@@ -101,6 +102,13 @@ required_tools() {
   fi
   if [[ $((BUILD_DPI + BUILD_FLOWS + BUILD_IPFIX + BUILD_LIVE + BUILD_SAMPLING)) -gt 0 ]]; then
     printf 'tshark\n'
+  fi
+  # --branch-policy 只吃 git + python3（钩子读 PreToolUse 的 JSON 用 python3），
+  # 刻意不要求任何编译器：它是「流程门禁」，不该因为机器缺 cargo 就退化成未核验。
+  # 也只在这一组里要 git —— 把它塞进"所有 rust/cpp 分组都要 git"会让 --rust 在只有
+  # cargo/python3 替身的自证场景里假红（本自证第一次跑就抓到了这种过度耦合）。
+  if [[ ${BUILD_BRANCH} -eq 1 ]]; then
+    printf '%s\n' "${PYTHON:-python3}" git
   fi
   return 0
 }
@@ -136,12 +144,26 @@ test_cpp() {
 }
 
 test_rust() {
-  echo "==> [rust] cargo test --offline --workspace"
-  if ! cargo test --offline --workspace; then
+  echo "==> [rust] cargo test --frozen --workspace --all-targets --all-features"
+  if ! cargo test --frozen --workspace --all-targets --all-features; then
     echo "✗ [rust] 测试失败" >&2
     return 1
   fi
-  echo "✓ [rust] 测试通过"
+  if ! cargo test --frozen --workspace --doc --all-features; then
+    echo "✗ [rust] 文档测试失败" >&2
+    return 1
+  fi
+  echo "==> [features] Rust/Python 特征契约与逐维向量一致性（含反向注入）"
+  if ! bash scripts/verify/check-features.sh; then
+    echo "✗ [features] 特征契约或双端数值不一致" >&2
+    return 1
+  fi
+  echo "==> [training-features] 训练特征产物验收（CYS-MLT-006，含 CLI/反向注入/Rust parity）"
+  if ! "${PYTHON:-python3}" -m unittest discover -s tests/ml -p 'test_feature_dataset.py' -v; then
+    echo "✗ [training-features] 训练特征产物验收失败" >&2
+    return 1
+  fi
+  echo "✓ [rust] 测试通过（含 CYS-TRF-028 / CYS-MLT-006 特征 parity）"
 }
 
 test_go() {
@@ -271,16 +293,16 @@ STUB
   # 3. 工具链预检的**选择映射**：选了什么就只查什么（2026-10-05 在 2 核虚机上撞到的问题）
   checks=$((checks+1))
   local saved_all="${ALL}"
-  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}${BUILD_PLAN}${BUILD_SAMPLING}"
+  local saved_flags="${BUILD_CPP}${BUILD_RUST}${BUILD_GO}${BUILD_NODE}${BUILD_PARITY}${BUILD_DPI}${BUILD_REASSEMBLY}${BUILD_FLOWS}${BUILD_E2E}${BUILD_LIVE}${BUILD_BENCH}${BUILD_IPFIX}${BUILD_PLAN}${BUILD_SAMPLING}${BUILD_COLUMNAR}${BUILD_BRANCH}"
   ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-  BUILD_PLAN=0; BUILD_SAMPLING=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
   got="$(required_tools | tr '\n' ' ')"
   # 注意用「空格分词的整词」匹配：直接 grep 'go' 会被 "cargo" 命中（本自证第一次跑就抓到了
   # 这个假阳性 —— 断言写松了，等于没验）。
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
-     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm|tshark) '; then
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm|tshark|uv) '; then
     echo "  ✓ 预检映射：只选 --rust → 只要 cargo + ${PYTHON:-python3}（不要求 cmake/go/node）"
   else
     echo "  ✗ 预检映射：只选 --rust 却要求了「${got}」" >&2; fails=$((fails+1))
@@ -292,7 +314,7 @@ STUB
   checks=$((checks+1))
   ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
   BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=1
-  BUILD_PLAN=0; BUILD_SAMPLING=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
   got="$(required_tools | tr '\n' ' ')"
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " tshark " \
@@ -335,6 +357,50 @@ STUB
     echo "  ✗ 预检映射：只选 --sampling 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
 
+  # 3e. --columnar（列式落盘关口）必须要求 cargo + python3，且**不**要求 cmake/go/node/tshark。
+  #     它不需要 tshark：第三方裁判是「独立解码器 + 真实 ClickHouse」，不是 pcap 解析器。
+  #     把这一条钉住的价值：将来改 required_tools 时误把它归到 tshark 组，
+  #     就会在没装 tshark 的机器上退到「未核验」而被当成跑过了。
+  checks=$((checks+1))
+  ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=1; BUILD_BRANCH=0
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE " cargo " \
+     && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|c\+\+|go|node|npm|tshark) '; then
+    echo "  ✓ 预检映射：只选 --columnar → 只要 cargo + ${PYTHON:-python3}（不要求 cmake/tshark）"
+  else
+    echo "  ✗ 预检映射：只选 --columnar 却要求了「${got}」" >&2; fails=$((fails+1))
+  fi
+
+  # 3f. --branch-policy（分支纪律钩子）必须只要求 git + python3，**不**要求编译器/节点/tshark。
+  #     它是流程门禁：如果哪天有人把它塞进 cargo 组，缺 cargo 的机器就会把它退成「未核验」
+  #     而被当成跑过 —— 那正是本钩子要防的那类事。
+  checks=$((checks+1))
+  ALL=0; BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
+  BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
+  BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=1
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE " git " \
+     && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|c\+\+|go|node|npm|tshark) '; then
+    echo "  ✓ 预检映射：只选 --branch-policy → 只要 git + ${PYTHON:-python3}（不要求编译器/tshark）"
+  else
+    echo "  ✗ 预检映射：只选 --branch-policy 却要求了「${got}」" >&2; fails=$((fails+1))
+  fi
+
+  # CYS-MLT-001: the default suite requires uv; selected legacy groups do not.
+  checks=$((checks+1))
+  ALL=1
+  got="$(required_tools | tr '\n' ' ')"
+  if printf '%s' " ${got} " | grep -qE ' uv '; then
+    echo "  ✓ 预检映射：默认全集要求 uv（Python 工程门禁）"
+  else
+    echo "  ✗ 默认全集漏查 uv" >&2; fails=$((fails+1))
+  fi
+  ALL=0
+
   # 端到端反向注入：在**只有 cargo/python3 替身**的 PATH 下
   #   (a) rust-only 必须通过（缺 cmake 不该挡住它）—— 这条就是本次修复要守的行为；
   #   (b) cpp-only 必须红，且报"工具链缺失: cmake"（改成"全都不查"也会被这条抓住）。
@@ -350,7 +416,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-         BUILD_PLAN=0; BUILD_SAMPLING=0
+         BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -eq 0 ]]; then
@@ -362,7 +428,7 @@ STUB
   rc=0
   out="$(ALL=0; BUILD_CPP=1; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0
-         BUILD_PLAN=0; BUILD_SAMPLING=0
+         BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0
          export PATH="${ST_TMP}/bin"
          check_toolchain 2>&1)" || rc=$?
   if [[ ${rc} -ne 0 ]] && printf '%s' "${out}" | grep -q '工具链缺失: cmake'; then
@@ -376,7 +442,8 @@ STUB
   BUILD_NODE="${saved_flags:3:1}"; BUILD_PARITY="${saved_flags:4:1}"; BUILD_DPI="${saved_flags:5:1}"
   BUILD_REASSEMBLY="${saved_flags:6:1}"; BUILD_FLOWS="${saved_flags:7:1}"; BUILD_E2E="${saved_flags:8:1}"
   BUILD_LIVE="${saved_flags:9:1}"; BUILD_BENCH="${saved_flags:10:1}"; BUILD_IPFIX="${saved_flags:11:1}"
-  BUILD_PLAN="${saved_flags:12:1}"; BUILD_SAMPLING="${saved_flags:13:1}"
+  BUILD_PLAN="${saved_flags:12:1}"; BUILD_SAMPLING="${saved_flags:13:1}"; BUILD_COLUMNAR="${saved_flags:14:1}"
+  BUILD_BRANCH="${saved_flags:15:1}"
 
   # 4. 真失败分支：同样非 0，但必须报"真失败"，不许拿环境当挡箭牌
   checks=$((checks+1))
@@ -492,16 +559,26 @@ test_flows() {
   echo "==> [flows] FlowRecord 第三方交叉核验（tshark）+ 反向故障注入"
   local rc=0
   bash scripts/verify/check-flow-records.sh || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    echo "✓ [flows] 交叉核验通过（含反向故障注入全部被检出）"
-    return 0
+  if [[ $rc -ne 0 && $rc -ne 3 ]]; then
+    echo "✗ [flows] 交叉核验失败" >&2
+    return 1
   fi
-  if [[ $rc -eq 3 ]]; then
+  local flows_rc=$rc
+  # CYS-TRF-015 的 TCP 统计三方比对也在本组：同一条样本链、同一个第三方裁判。
+  # 为什么单独成脚本而不是并进 check-flow-records.py：它验的不是“记录字段对不对”，
+  # 而是“重传/乱序/RTT 的**定义**与独立实现能否对上”——注入集与失败含义都不同。
+  rc=0
+  bash scripts/verify/check-tcp-analysis.sh || rc=$?
+  if [[ $rc -ne 0 && $rc -ne 3 ]]; then
+    echo "✗ [flows] TCP 统计三方比对失败（check-tcp-analysis）" >&2
+    return 1
+  fi
+  if [[ $rc -eq 3 || $flows_rc -eq 3 ]]; then
     echo "⚠ [flows] 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
     return 0
   fi
-  echo "✗ [flows] 交叉核验失败" >&2
-  return 1
+  echo "✓ [flows] 交叉核验通过（含反向故障注入全部被检出）"
+  return 0
 }
 
 test_ipfix() {
@@ -609,6 +686,61 @@ test_sampling() {
   return $rc
 }
 
+# 列式落盘（ClickHouse `Native`）关口（CYS-STO-002 / CYS-STO-007 / CYS-TRF-033）。
+#
+# 为什么必须单独成一组、而且必须进默认集合：编码器与解码器在**同一个 crate** 里，
+# 两边一起写错时 `cargo test` 永远全绿（2026-10-19 真实发生过：列头集中写完再写数据，
+# 产物总字节与参考实现相同、自家 decode_blocks 照样解得出，而 ClickHouse 拒读）。
+# 能裁判这件事的只有独立实现的解码器与真实 ClickHouse，它们都不在 Rust 测试里。
+# 另一条教训是关于门禁本身的：`check-columnar.sh` 写完那天并没有被任何脚本调用，
+# 「没人执行的检查器等于没有检查器」（同 §VERSION 那次事故）。
+test_columnar() {
+  local rc=0
+  echo "==> [columnar] 列式落盘关口：生成物一致 + 独立解码逐格比对 + 反向注入（CYS-STO-002/007）"
+  bash scripts/verify/check-columnar.sh || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [columnar] 未核验：环境缺少 cargo/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  if [[ $rc -eq 2 ]]; then
+    echo "✗ [columnar] 前置样本缺失（向量应由 [vectors] 阶段生成，见上方输出）" >&2
+    return 1
+  fi
+  [[ $rc -eq 0 ]] || return $rc
+  # 列式落盘的**字节实测**（CYS-INF-041 收尾）：容量表里「列式能压到几十 B/记录」本来是一个
+  # 没人量过的假设。实测本身需要 cargo + clickhouse，不在默认集合里跑（分钟级），
+  # 但它的**判定逻辑**（较差端规则 / 小样本不许当容量值 / 没 CODEC 对照就拒答）
+  # 是纯 python，跟 measure-storage.py 同样进门禁：脚本烂了时数字仍会印得出来。
+  echo "==> [columnar] 列式落盘字节/记录实测脚本自证（CYS-INF-041）"
+  if ! "${PYTHON:-python3}" scripts/plan/measure-columnar.py --self-test; then
+    echo "✗ [columnar] 列式实测脚本自证失败" >&2
+    return 1
+  fi
+  echo "✓ [columnar] 列式落盘关口通过（A/B/C 全绿 + 实测脚本自证；D 组真实 ClickHouse 的结果见上方，缺参考实现时为「未核验」）"
+  return 0
+}
+
+# 分支纪律钩子关口：「一个问题一条分支，测绿才并入 main」这条规则**真的在被执行**吗。
+#
+# 为什么它必须成组、还必须进默认集合：本仓库记过三次同一族的事故（§VERSION 检查器没人调用、
+# bench-pipeline.sh 没人调用、check-columnar.sh 入库次日仍没人调用）。这次的风险多一层：
+# git 钩子的"存在"与"会被调用"是两件事 —— core.hooksPath 是**本地配置**，不随克隆走，
+# 换机器/新克隆时钩子文件还在、但一次都不执行。所以这道关口既自证钩子的判定逻辑（S1–S7 +
+# 2 项反向注入），也检查本克隆的安装状态；没装就报「未核验」而不是通过。
+test_branch_policy() {
+  local rc=0
+  echo "==> [branch-policy] 分支纪律钩子自证 + 安装状态（先分支、测绿、再 --no-ff 并入）"
+  bash scripts/verify/check-branch-policy.sh || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [branch-policy] 未核验：本克隆未安装钩子（core.hooksPath 未设）→ 规则目前无人执行" >&2
+    echo "    装法：make hooks" >&2
+    return 0
+  fi
+  [[ $rc -eq 0 ]] || { echo "✗ [branch-policy] 分支纪律钩子检查失败（退出 ${rc}）" >&2; return 1; }
+  echo "✓ [branch-policy] 分支纪律钩子通过（钩子逻辑自证 + 本克隆已安装）"
+  return 0
+}
+
 # 跨语言共享环端到端（CYS-TRF-034）。
 #
 # 与 parity 的区别：parity 比的是**契约取值**（两端对同一份 ABI 的常量理解是否一致），
@@ -652,7 +784,7 @@ test_live() {
 
 BUILD_CPP=0; BUILD_RUST=0; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
 BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_IPFIX=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0
-BUILD_PLAN=0; BUILD_SAMPLING=0; ALL=1
+BUILD_PLAN=0; BUILD_SAMPLING=0; BUILD_COLUMNAR=0; BUILD_BRANCH=0; ALL=1
 SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -670,6 +802,8 @@ while [[ $# -gt 0 ]]; do
     --bench) BUILD_BENCH=1; ALL=0 ;;
     --plan)  BUILD_PLAN=1; ALL=0 ;;
     --sampling) BUILD_SAMPLING=1; ALL=0 ;;
+    --columnar) BUILD_COLUMNAR=1; ALL=0 ;;
+    --branch-policy) BUILD_BRANCH=1; ALL=0 ;;
     --self-test) SELF_TEST=1; ALL=0 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -689,6 +823,15 @@ if [[ $ALL -eq 1 ]]; then
   # CYS-TRF-053 采样关口：需要 cargo + tshark；缺任何一个都会显式「未核验」（退出 3），
   # 所以进默认集合不会造成"随机红"。
   BUILD_SAMPLING=1
+  # CYS-STO-002/007 列式落盘关口：需要 cargo + python3；D 组（真实 ClickHouse）缺参考实现时
+  # 脚本自己打印「未核验」并退出 0，不会造成随机红。它守的是「我们写的字节别人读不读得对」，
+  # 编码器与解码器同仓 ⇒ cargo test 永远全绿，因此这道只能放在外部门禁里。
+  BUILD_COLUMNAR=1
+  # 分支纪律钩子：纯 git + python3、秒级、无外部工具 ⇒ 没有"随机红"的理由，进默认集合。
+  # 它守的正是本仓库最容易腐烂的一类东西：**钩子/检查器装了没有**。core.hooksPath 不随克隆走，
+  # 新克隆不跑 `make hooks` 的话，分支纪律一次都不会被执行 —— 本关口会把这种状态显式报成
+  # 「未核验」（退出 3），而不是假装绿。
+  BUILD_BRANCH=1
   # BUILD_BENCH 不进这里：机器相关，见 usage 末尾的说明。
 fi
 # parity 与 e2e 都依赖两侧都能构建：只选了其一却要跑，是用法错误而非失败，
@@ -703,14 +846,21 @@ done
 
 check_toolchain
 
-# Rust / C++ / 两道 tshark 核验都要消费向量；Go 与前端不消费。
-if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E)) -gt 0 ]]; then
+# Rust / C++ / 两道 tshark 核验 / 列式落盘都要消费向量；Go 与前端不消费。
+if [[ $((BUILD_RUST + BUILD_CPP + BUILD_DPI + BUILD_REASSEMBLY + BUILD_FLOWS + BUILD_IPFIX + BUILD_E2E + BUILD_COLUMNAR)) -gt 0 ]]; then
   gen_datasets || { echo "✗ [vectors] 向量生成失败，后续测试不再执行" >&2; exit 1; }
 fi
 
 failed=0
 [[ $BUILD_CPP -eq 1 ]]   && { test_cpp   || failed=$((failed+1)); }
 [[ $BUILD_RUST -eq 1 ]]  && { test_rust  || failed=$((failed+1)); }
+# CYS-MLT-001: isolated packaging gate runs in the default suite; standalone entry below.
+if [[ ${ALL} -eq 1 ]]; then
+  echo "==> [training-project] 锁定环境与隔离安装包验收（CYS-MLT-001）"
+  bash scripts/verify/check-training-project.sh || failed=$((failed+1))
+  echo "==> [python-quality] 静态检查与故障注入（CYS-MLT-002）"
+  bash scripts/verify/check-python-quality.sh || failed=$((failed+1))
+fi
 [[ $BUILD_GO -eq 1 ]]    && { test_go    || failed=$((failed+1)); }
 [[ $BUILD_NODE -eq 1 ]]  && { test_selftest || failed=$((failed+1)); }
 [[ $BUILD_NODE -eq 1 ]]  && { test_node  || failed=$((failed+1)); }
@@ -721,6 +871,8 @@ failed=0
 [[ $BUILD_IPFIX -eq 1 ]]  && { test_ipfix   || failed=$((failed+1)); }
 [[ $BUILD_PLAN -eq 1 ]]   && { test_plan    || failed=$((failed+1)); }
 [[ $BUILD_SAMPLING -eq 1 ]] && { test_sampling || failed=$((failed+1)); }
+[[ $BUILD_COLUMNAR -eq 1 ]] && { test_columnar || failed=$((failed+1)); }
+[[ $BUILD_BRANCH -eq 1 ]] && { test_branch_policy || failed=$((failed+1)); }
 [[ $BUILD_E2E -eq 1 ]]   && { test_e2e   || failed=$((failed+1)); }
 [[ $BUILD_LIVE -eq 1 ]]  && { test_live  || failed=$((failed+1)); }
 [[ $BUILD_BENCH -eq 1 ]] && { test_bench || failed=$((failed+1)); }

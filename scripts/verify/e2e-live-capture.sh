@@ -48,6 +48,7 @@ if [[ "${1:-}" == "--help" ]]; then
 环境变量：
   CYTHSEC_LIVE_IFACE   指定抓包接口（默认取缺省路由出口接口）
   CYTHSEC_LIVE_TARGET  注入流量目的地址（默认取缺省路由网关；无网关时回退 lo + 127.0.0.1）
+  CYTHSEC_LIVE_SUDO=1  仅捕获子进程使用 sudo -n；需先经用户批准并完成 sudo 认证
 
 特权不足时输出 SKIPPED（未验收）并以 0 退出 —— 见脚本头注释的理由。
 
@@ -264,7 +265,13 @@ trap cleanup EXIT
 # 先起采集再起流量：反过来的话前几个包必然漏。
 # 不设 -n 上限：本机实测繁忙口上环境流量 684ms 就能凑满 200 包，采集会在注入
 # 开始前结束 —— 只靠 --timeout 窗口覆盖流量注入全程。包数天然有抖动，故断言下界。
-"${CAP_BIN}" -i "${IFACE}" --timeout 15 -w "${PCAP}" -q >"${CAP_OUT}" 2>&1 &
+CAP_CMD=("${CAP_BIN}")
+if [[ "${CYTHSEC_LIVE_SUDO:-0}" == "1" ]]; then
+  # 构建、第三方解码和共享环继续使用普通用户；只有打开 BPF 的子进程提权。
+  # -n 禁止脚本内索取密码，认证由调用者在用户批准后单独完成。
+  CAP_CMD=(sudo -n -- "${CAP_BIN}")
+fi
+"${CAP_CMD[@]}" -i "${IFACE}" --timeout 15 -w "${PCAP}" -q >"${CAP_OUT}" 2>&1 &
 CAP_PID=$!
 sleep 1
 if [[ -n "${TARGET}" ]]; then

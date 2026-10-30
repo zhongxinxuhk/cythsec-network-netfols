@@ -1,0 +1,9 @@
+{
+  "name": "@cythsec/deepmerge-safe",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "license": "MIT",
+  "description": "Vendored deepmerge 4.3.1 with prototype-key rejection for CVE-2026-93753"
+}

@@ -36,6 +36,7 @@ export default defineConfig({
   test: {
     browser: {
       enabled: true,
+      viewport: { width: 1280, height: 900 },
       provider: playwright(),
       headless: true,
       instances: [{ browser: 'chromium' }],
@@ -43,7 +44,13 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./tests/setupTests.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
-    exclude: ['node_modules', 'dist', '.umi', 'src/utils/*.test.ts'],
+    exclude: [
+      'node_modules',
+      'dist',
+      '.umi',
+      'src/utils/*.test.ts',
+      'src/navigation/catalog.test.ts',
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

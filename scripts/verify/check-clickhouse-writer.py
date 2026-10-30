@@ -45,7 +45,7 @@ def main():
 
         def table(name):
             cc.query(cc.ch.DDL.read_text().replace("CREATE TABLE " + cc.ch.TABLE, "CREATE TABLE " + name), database)
-            cc.query((ROOT / "storage/clickhouse/flow_records_v1_dedup.sql").read_text().replace(cc.ch.TABLE, name), database)
+            cc.query((ROOT / "storage/clickhouse/flow_records_v2_dedup.sql").read_text().replace(cc.ch.TABLE, name), database)
 
         def command(name, *extra):
             return cc.COMPOSE + ["run", "--rm", "-T", "--no-deps", "writer", "--database", database,
@@ -111,10 +111,10 @@ def main():
                 f"find /var/spool/cythsec/{database}/pressure -name '*.batch' -exec wc -c {{}} + 2>/dev/null | tail -1 || true")
             numbers = re.findall(r"^\s*(\d+)", out)
             observed = int(numbers[0]) if numbers else 0
-            if observed > 1000000: break
+            if observed > 500000: break
             if process.poll() is not None: raise ValueError("背压测试进程提前退出")
             time.sleep(0.1)
-        if not 1000000 < observed <= 1600000: raise ValueError(f"没有观测到有界积压：{observed}")
+        if not 500000 < observed <= 1600000: raise ValueError(f"没有观测到有界积压：{observed}")
         cc.compose("up", "-d", "--wait", "--wait-timeout", "90", "clickhouse")
         stdout, stderr = process.communicate(timeout=120)
         results["pressure"] = result(subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr))

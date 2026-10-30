@@ -10,6 +10,8 @@ export default defineConfig({
       'src/utils/*.test.ts',
       'tests/api-client.test.ts',
       'tests/dev-loopback.test.ts',
+      'tests/dependency-security.test.ts',
+      'src/navigation/catalog.test.ts',
     ],
   },
 });

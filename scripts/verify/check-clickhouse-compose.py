@@ -72,7 +72,7 @@ def main():
     def measure_service(_binary, inputs, label):
         nonlocal table_index
         table_index += 1
-        table = f"flow_records_v1_{table_index}"
+        table = f"flow_records_v2_{table_index}"
         expected, provenance = [], []
         for path in inputs:
             data = Path(path).read_bytes()

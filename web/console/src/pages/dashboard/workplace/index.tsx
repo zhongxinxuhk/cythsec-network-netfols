@@ -163,7 +163,7 @@ const Workplace: FC = () => {
             title="进行中的项目"
             variant="borderless"
             extra={
-              <Link to="/" prefetch>
+              <Link to="/" prefetch="intent">
                 全部项目
               </Link>
             }
@@ -175,7 +175,7 @@ const Workplace: FC = () => {
                   title={
                     <div className={styles.cardTitle}>
                       <Avatar size="small" src={item.logo} />
-                      <Link to={item.href || '/'} prefetch>
+                      <Link to={item.href || '/'} prefetch="intent">
                         {item.title}
                       </Link>
                     </div>
@@ -186,7 +186,7 @@ const Workplace: FC = () => {
                   }}
                 />
                 <div className={styles.projectItemContent}>
-                  <Link to={item.memberLink || '/'} prefetch>
+                  <Link to={item.memberLink || '/'} prefetch="intent">
                     {item.member || ''}
                   </Link>
                   {item.updatedAt && (
@@ -281,7 +281,7 @@ const Workplace: FC = () => {
                 {projectNotice.map((item) => {
                   return (
                     <Col span={12} key={`members-item-${item.id}`}>
-                      <Link to={item.memberLink || '/'} prefetch>
+                      <Link to={item.memberLink || '/'} prefetch="intent">
                         <Avatar src={item.logo} size="small" />
                         <span className={styles.member}>
                           {item.member.substring(0, 3)}

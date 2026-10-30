@@ -60,6 +60,12 @@ path = "src/bin/ipfix_collect.rs"
 name = "cythsec-bench"
 path = "src/bin/bench.rs"
 
+# 列契约真源的导出入口（CYS-STO-002）：把 `storage::flow_columns()` 生成 DDL 与列映射表。
+# 与 `dump-abi` 同理：**生成物**而非手写副本，门禁靠重生成 + `cmp` 发现漂移。
+[[bin]]
+name = "cythsec-dump-ddl"
+path = "src/bin/dump_ddl.rs"
+
 [dependencies]
 
 # 零第三方依赖，保持最小工程可离线构建、便于工具链验证。

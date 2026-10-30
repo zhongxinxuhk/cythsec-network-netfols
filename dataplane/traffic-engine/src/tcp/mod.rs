@@ -126,13 +126,36 @@ pub struct TcpObservation {
     pub flags: TcpFlags,
     /// 四层载荷长度，**不含**四层头（TCP 头不算数据）。
     pub l4_payload_len: u32,
+    /// 序号。`None` = 帧被截断到读不到序号。
+    ///
+    /// 必须是 `Option` 而不是 0：`0` 是一个合法序号，拿它当“没读到”会把截断包
+    /// 数成重传（`CYS-TRF-015` 的判定完全建立在这个区分上）。
+    pub seq: Option<u32>,
+    /// 确认号。`None` = 读不到（目前只用于诊断，不参与判定）。
+    pub ack: Option<u32>,
 }
 
 impl TcpObservation {
+    /// 只有标志位与段长、**没有序号信息**的观测。
+    ///
+    /// 用它的调用方（合成脚本、只看标志位的旧路径）不能产出重传/乱序计数：
+    /// 会话侧会把该会话的计数置为“未观测”而不是 0。
     pub const fn new(flags: TcpFlags, l4_payload_len: u32) -> Self {
         Self {
             flags,
             l4_payload_len,
+            seq: None,
+            ack: None,
+        }
+    }
+
+    /// 带序号的观测（真实抓包/共享环路径用这个）。
+    pub const fn with_seq(flags: TcpFlags, l4_payload_len: u32, seq: u32, ack: u32) -> Self {
+        Self {
+            flags,
+            l4_payload_len,
+            seq: Some(seq),
+            ack: Some(ack),
         }
     }
 

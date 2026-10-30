@@ -260,6 +260,26 @@ pub fn tcp_flags(frame: &[u8], d: &DecodedFrame) -> Option<TcpFlags> {
     Some(TcpFlags::from_bytes(b12, b13))
 }
 
+/// 取 TCP 的序号与确认号（帧内偏移 `l4_offset + 4..12`）。
+///
+/// 非 TCP、或帧在确认号之后被截断时返回 `None`。绝不拿 0 兜底：**`0` 是一个合法序号**
+/// （ISO 初始化或回绕后都会出现），用 0 表示"没读到"会让上层把截断包数成
+/// "重传/乱序"，而那是一个看不出来的错（同 [`tcp_flags`] 不为截断包造全零标志位的理由）。
+///
+/// 为什么现在才读它：`CYS-TRF-015`（会话级重传/乱序/RTT）需要按方向的序列号轨迹，
+/// 而此前上层只拿到标志位与段长 —— 所以那个特性**不可能**被实现（交接文档 §6 记的就是这条）。
+pub fn tcp_seq_ack(frame: &[u8], d: &DecodedFrame) -> Option<(u32, u32)> {
+    if d.l4 != Proto::Tcp {
+        return None;
+    }
+    let base = d.l4_offset;
+    let seq_bytes = frame.get(base + 4..base + 8)?;
+    let ack_bytes = frame.get(base + 8..base + 12)?;
+    let seq = u32::from_be_bytes(seq_bytes.try_into().ok()?);
+    let ack = u32::from_be_bytes(ack_bytes.try_into().ok()?);
+    Some((seq, ack))
+}
+
 /// 取四层载荷（跳过四层头）。
 ///
 /// 帧在四层头之前被截断（`l4_header_len` 为 `None`）时返回 `None`。
@@ -1012,6 +1032,33 @@ mod tests {
         let udp = eth_ipv4_udp_frame();
         let du = decode_frame(&udp).expect("应能解出");
         assert_eq!(tcp_flags(&udp, &du), None, "非 TCP 必须返回 None");
+    }
+
+    #[test]
+    fn tcp_seq_ack_is_read_from_the_right_bytes_and_refuses_truncation() {
+        // 先拿现成帧，再把 seq/ack 改成互不相同的值：**用不同的值**才能测出
+        // “把 seq 读成了 ack”或“偏移错了 4 字节”这类照样例全对的错。
+        // 布局：14 以太 + 20 IP → l4_offset=34；seq 在 38..42，ack 在 42..46。
+        let mut f = eth_ipv4_tcp_frame(1024, 443, 0x18, 0, b"abcd");
+        let (seq_at, ack_at) = (38, 42);
+        f[seq_at..seq_at + 4].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
+        f[ack_at..ack_at + 4].copy_from_slice(&0x0000_0001u32.to_be_bytes());
+        let d = decode_frame(&f).expect("应能解出");
+        assert_eq!(tcp_seq_ack(&f, &d), Some((0xDEAD_BEEF, 1)));
+
+        // ack 字段被截断 → None（不得用 0 兜底：seq=0 是合法序号）
+        let cut = f[..ack_at + 3].to_vec();
+        let dc = decode_frame(&cut).expect("短帧仍应能解出五元组");
+        assert_eq!(
+            tcp_seq_ack(&cut, &dc),
+            None,
+            "读不到确认号时必须返回 None，而不是拿 0 当成真序号"
+        );
+
+        // 非 TCP：同样不给值
+        let udp = eth_ipv4_udp_frame();
+        let du = decode_frame(&udp).expect("应能解出");
+        assert_eq!(tcp_seq_ack(&udp, &du), None);
     }
 
     fn eth_ipv4_udp_frame() -> Vec<u8> {

@@ -11,6 +11,7 @@
 | [`architecture/tsg-tech-transfer.md`](architecture/tsg-tech-transfer.md) | 778 行 | TSG（天狗安全网关）技术解构与引入方案 v0.3.0：全量引入 19 项技术 + 13 类处置动作；§3 规划清单、§9 已验证落地记录 |
 | [`planning/SPRINT-01.md`](planning/SPRINT-01.md) | 234 行 | Sprint-01 编排：三原则（先清障、按文件区域切分、可执行验证关口），团队 3 专家 + 1 lead |
 | [`planning/SPRINT-02.md`](planning/SPRINT-02.md) | 171 行 | Sprint-02 编排（**方案，未执行**）：M10 第一批 5 项 P0 地基；5 个工作流独占文件区域，W3→W4 串行、其余三路并行；补「新门禁必须同时入库 + 反向注入 + 挂 CI」原则 |
+| [`deployment/rust-ci.md`](deployment/rust-ci.md) | — | Rust Actions 触发入口、双平台构建测试、互操作裁判、产物与未核验边界 |
 | [`deployment/dev-run-deploy.md`](deployment/dev-run-deploy.md) | 172 行 | 开发/运行/部署手册：纵向切片 packet-engine → traffic-engine → routerd → console，覆盖本机与 openEuler 2403 sp4 |
 | [`security/threat-model.md`](security/threat-model.md) | 142 行 | 威胁模型 v0.1.0（CYS-SEC-001）：资产清单、基于逐行代码核实的威胁条目，为 nftables/netlink/DNS 重定向预留 |
 

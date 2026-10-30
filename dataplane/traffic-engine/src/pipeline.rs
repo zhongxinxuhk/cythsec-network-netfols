@@ -26,12 +26,12 @@ use std::io::Read;
 use std::sync::mpsc;
 use std::thread;
 
-use crate::channel::{decode_frame, l4_payload, tcp_flags, DecodedFrame};
+use crate::channel::{decode_frame, l4_payload, tcp_flags, tcp_seq_ack, DecodedFrame};
 use crate::dpi::{self, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
 use crate::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
-use crate::record::{AppInfo, FlowRecord, RECORD_SCHEMA_VERSION};
+use crate::record::{AppInfo, FlowRecord, TcpSessionStats, RECORD_SCHEMA_VERSION};
 use crate::session::{ManagerStats, SessionConfig, SessionManager};
 use crate::tcp::{Side, TcpConfig, TcpObservation};
 
@@ -103,6 +103,101 @@ pub struct AnalyzeStats {
     /// 采样统计（未启用时为 `None`）。**"声明与执行一致"唯一可被外部检查的地方**：
     /// `observed`/`kept` 由采样器自己记，导出侧的 IE 34 由同一份配置给。
     pub sampling: Option<crate::sampling::SamplingStats>,
+    /// 会话级 TCP 统计（`CYS-TRF-015`）。走**统计行**这个已有出口而不是记录字段：
+    /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
+    /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
+    pub tcp: TcpAnomalyStats,
+}
+
+/// 会话级 TCP 统计的合计（跨 worker 相加；RTT 取 min/max/sum 而不是均值，
+/// 因为均值在合并时会需要额外的样本量字段，而 min/max/sum 本身就是可结合量）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TcpAnomalyStats {
+    /// 有过判定输入的会话数与完全没有的会话数。两者分开报，“没重传”与
+    /// “读不到序号”在输出上必须长得不一样。
+    pub sessions_judged: u64,
+    pub sessions_unobserved: u64,
+    pub judged_segments: u64,
+    pub retransmissions: u64,
+    pub out_of_order: u64,
+    pub rtt_measured: u64,
+    pub rtt_sum_us: u64,
+    pub rtt_min_us: u64,
+    pub rtt_max_us: u64,
+    pub uplink_bytes: u64,
+    pub downlink_bytes: u64,
+    /// 上下行都已知且上行>0 的会话数（报比例时的样本量；没样本量就不报比例）。
+    pub ratio_sessions: u64,
+}
+
+impl TcpAnomalyStats {
+    /// 把一条会话的统计累加进来。调用方必须只对 TCP 会话调用（非 TCP 没有这些语义）。
+    fn add_session(&mut self, s: &crate::session::Session) {
+        if s.seq_judged() == 0 {
+            self.sessions_unobserved += 1;
+        } else {
+            self.sessions_judged += 1;
+            self.judged_segments += s.seq_judged();
+            self.retransmissions += s.retransmissions().unwrap_or(0);
+            self.out_of_order += s.out_of_order().unwrap_or(0);
+        }
+        if let Some(r) = s.handshake_rtt_us() {
+            self.rtt_measured += 1;
+            self.rtt_sum_us += r;
+            self.rtt_min_us = if self.rtt_measured == 1 {
+                r
+            } else {
+                self.rtt_min_us.min(r)
+            };
+            self.rtt_max_us = self.rtt_max_us.max(r);
+        }
+        if let (Some(up), Some(down)) = (s.uplink_bytes(), s.downlink_bytes()) {
+            self.uplink_bytes += up;
+            self.downlink_bytes += down;
+            if up > 0 {
+                self.ratio_sessions += 1;
+            }
+        }
+    }
+
+    fn merge(&mut self, src: &Self) {
+        self.sessions_judged += src.sessions_judged;
+        self.sessions_unobserved += src.sessions_unobserved;
+        self.judged_segments += src.judged_segments;
+        self.retransmissions += src.retransmissions;
+        self.out_of_order += src.out_of_order;
+        self.rtt_measured += src.rtt_measured;
+        self.rtt_sum_us += src.rtt_sum_us;
+        self.rtt_min_us = match (self.rtt_measured, src.rtt_measured) {
+            (0, _) => src.rtt_min_us,
+            (_, 0) => self.rtt_min_us,
+            _ => self.rtt_min_us.min(src.rtt_min_us),
+        };
+        self.rtt_max_us = self.rtt_max_us.max(src.rtt_max_us);
+        self.uplink_bytes += src.uplink_bytes;
+        self.downlink_bytes += src.downlink_bytes;
+        self.ratio_sessions += src.ratio_sessions;
+    }
+
+    /// 单行渲染（给 CLI 统计行；字段名是关口对着比的契约，改名字必须同时改关口）。
+    pub fn render_line(&self) -> String {
+        format!(
+            "tcp retr={} ooo={} judged={} sess_judged={} sess_unobs={} rtt={}/{} sum_us={} min_us={} max_us={} up={} down={} ratio_n={}",
+            self.retransmissions,
+            self.out_of_order,
+            self.judged_segments,
+            self.sessions_judged,
+            self.sessions_unobserved,
+            self.rtt_measured,
+            self.sessions_judged + self.sessions_unobserved,
+            self.rtt_sum_us,
+            self.rtt_min_us,
+            self.rtt_max_us,
+            self.uplink_bytes,
+            self.downlink_bytes,
+            self.ratio_sessions,
+        )
+    }
 }
 
 impl AnalyzeStats {
@@ -158,9 +253,18 @@ impl PipelineState {
         }
         // 状态机要的是**段载荷长度**（不含四层头），字节统计要的是 IP 载荷长度
         // （含四层头）。这两个数必须分别传：混用会把每个纯 ACK 判成 Data。
-        let seg = tcp_flags(&pkt.data, d).zip(payload_view).map(|(f, p)| {
-            TcpObservation::new(f, u32::try_from(p.declared_len).unwrap_or(u32::MAX))
-        });
+        let seg = match (tcp_flags(&pkt.data, d), payload_view) {
+            // 有序号就带上序号（`CYS-TRF-015` 的重传/乱序判定要它）；帧被截断到读不到
+            // 序号时**不拿 0 兜底**，走 `new()` ⇒ 该会话的重传/乱序报"未观测"而不是 0。
+            (Some(f), Some(p)) => {
+                let len = u32::try_from(p.declared_len).unwrap_or(u32::MAX);
+                match tcp_seq_ack(&pkt.data, d) {
+                    Some((seq, ack)) => Some(TcpObservation::with_seq(f, len, seq, ack)),
+                    None => Some(TcpObservation::new(f, len)),
+                }
+            }
+            _ => None,
+        };
 
         let obs = self.mgr.observe(
             &Packet {
@@ -220,6 +324,9 @@ impl PipelineState {
                 .map(|p| p.resolve())
                 .unwrap_or_else(AppInfo::not_inspected);
             *stats.app_outcomes.entry(app.outcome).or_insert(0) += 1;
+            if s.is_tcp() {
+                stats.tcp.add_session(s);
+            }
             records.push(FlowRecord {
                 schema_version: RECORD_SCHEMA_VERSION,
                 session_id: s.id,
@@ -232,6 +339,21 @@ impl PipelineState {
                 initiator: s.initiator(),
                 adopted_midstream: s.adopted_midstream(),
                 illegal_tcp_events: s.tcp.illegal_events(),
+                // 会话级 TCP 统计（`CYS-TRF-015`）。非 TCP 会话整块 `None` ⇒ 六列全 NULL；
+                // TCP 但读不到序号（截断采集）⇒ `seq_judged = 0` 而计数为 NULL。
+                // 下游拿到的记录里“没重传”与“没得判”永远不共用一个字节。
+                tcp_stats: if s.is_tcp() {
+                    Some(TcpSessionStats {
+                        seq_judged: s.seq_judged(),
+                        retransmissions: s.retransmissions(),
+                        out_of_order: s.out_of_order(),
+                        handshake_rtt_us: s.handshake_rtt_us(),
+                        uplink_bytes: s.uplink_bytes(),
+                        downlink_bytes: s.downlink_bytes(),
+                    })
+                } else {
+                    None
+                },
                 first_seen_us: s.first_seen_us,
                 last_seen_us: s.last_seen_us,
                 packets: s.packets,
@@ -277,6 +399,7 @@ fn merge_worker_stats(dst: &mut AnalyzeStats, src: &AnalyzeStats) {
         *dst.app_outcomes.entry(*k).or_insert(0) += *v;
     }
     add_manager_stats(&mut dst.session, &src.session);
+    dst.tcp.merge(&src.tcp);
 }
 
 fn new_stats<R: Read>(reader: &PcapReader<R>, workers: usize) -> AnalyzeStats {

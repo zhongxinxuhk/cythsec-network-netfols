@@ -1,0 +1,8 @@
+{
+  "name": "@cythsec/mockjs-safe",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.cjs",
+  "license": "MIT",
+  "description": "Vendored Mock.js 1.1.0 with official advisory prototype-key workaround"
+}

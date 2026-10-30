@@ -12,7 +12,7 @@ const RegisterResult: React.FC<Record<string, unknown>> = () => {
       <Button size="large" type="primary">
         <span>查看邮箱</span>
       </Button>
-      <Link to="/" prefetch>
+      <Link to="/" prefetch="intent">
         <Button size="large">返回首页</Button>
       </Link>
     </div>

@@ -28,7 +28,14 @@ use crate::tcp::{Side, TcpState};
 
 /// 记录格式版本。**改字段含义或删字段必须升版**；新增可选字段也应升版，
 /// 因为读取方按列取数，"多出来一列"在严格模式下就是解析失败。
-pub const RECORD_SCHEMA_VERSION: u32 = 1;
+///
+/// `1 → 2`（2026-10-23，`CYS-TRF-015`）：`tcp` 块新增六个会话级统计键
+/// （`retransmissions` / `out_of_order` / `seq_judged` / `handshake_rtt_us` /
+/// `uplink_bytes` / `downlink_bytes`）。**只加不改**：v1 的全部字段名、类型与含义逐字
+/// 不变，因此读取方可以"按版本分支 + 同一套老字段"继续读 v1；但**不能**把 v2 的记录
+/// 当 v1 读 —— 那会让列式侧少六列而插入失败（见 `storage::COLUMN_CONTRACT_VERSION`，
+/// 两个版本号为什么必须分开抬，那里的注释写了）。
+pub const RECORD_SCHEMA_VERSION: u32 = 2;
 
 /// 应用识别结果的记录形态。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +96,37 @@ impl AppInfo {
     }
 }
 
+/// 会话级 TCP 统计（`CYS-TRF-015`）。
+///
+/// 三个设计决定，都不是风格问题：
+///
+/// 1. **它是会话级，不是方向级**。一条会话出一份记录（`pipeline::finish` 按
+///    `sessions_sorted()` 逐会话产记录，键是规范方向），所以下面这些数与
+///    `packets`/`bytes` 一样是"这条会话的合计"，下游按记录求和**不会重复计数**。
+/// 2. **重传/乱序/RTT/上下行是 `Option`，`seq_judged` 不是**。`retransmissions == None`
+///    的含义是"这个会话没有任何序号输入"（截断采集 / 只看标志位的调用路径），而
+///    `Some(0)` 的含义是"判定过了，确实没有重传"。把前者落成 `0` 会让下游读到
+///    "全网零重传"，而那是一份没有证据的结论。`seq_judged` 恒有值：它就是
+///    "这条会话到底被判定了多少个段"的样本量，也是把上面两种情况区分开的依据。
+/// 3. **上下行存字节而不是比例**。比例上界无限、且 0 分母要额外表达；存
+///    `uplink_bytes`/`downlink_bytes` 后查询侧除一下就有比例，还留着样本量。
+///    发起方未知（中途接入）⇒ 两者都是 `None`，不拿字典序一侧兜底。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TcpSessionStats {
+    /// 参与过重传/乱序判定的段数（两侧合计）。非 TCP 会话整个结构体为 `None`。
+    pub seq_judged: u64,
+    /// 重传段数。`None` = 没有任何序号输入（**不是** 0）。
+    pub retransmissions: Option<u64>,
+    /// 乱序段数。同上语义。
+    pub out_of_order: Option<u64>,
+    /// 握手 RTT（SYN → 对侧 SYN/ACK，微秒）。没见到完整握手 ⇒ `None`（中途接入不猜）。
+    pub handshake_rtt_us: Option<u64>,
+    /// 发起方方向字节（口径同 `FlowRecord::bytes`：IP 载荷长度，含四层头）。
+    pub uplink_bytes: Option<u64>,
+    /// 应答方方向字节。同上。
+    pub downlink_bytes: Option<u64>,
+}
+
 /// 一条流记录。
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlowRecord {
@@ -104,6 +142,9 @@ pub struct FlowRecord {
     pub adopted_midstream: bool,
     /// 非法 TCP 迁移次数（"被拒绝"的证据，不是被丢弃的包）。
     pub illegal_tcp_events: u64,
+    /// 会话级 TCP 统计（重传/乱序/RTT/上下行）。**非 TCP 会话为 `None`** ——
+    /// 这些量对 UDP/ICMP 没有定义，写 0 等于把"不适用"说成"没有异常"。
+    pub tcp_stats: Option<TcpSessionStats>,
     pub first_seen_us: u64,
     pub last_seen_us: u64,
     pub packets: u64,
@@ -174,6 +215,34 @@ impl FlowRecord {
         s.push(',');
         push_key(&mut s, "illegal_events");
         s.push_str(&self.illegal_tcp_events.to_string());
+        // ---- 会话级 TCP 统计（CYS-TRF-015）----
+        // 非 TCP 会话也必须把这六个键写出来（全 null）：键集合按版本固定，
+        // 不能随流量构成变化 —— 否则列式侧"这一条少一列"的表现是插入失败，
+        // 而 JSONL 侧的表现是下游按行取键时偶发 KeyError。
+        let empty = TcpSessionStats::default();
+        let ts = self.tcp_stats.as_ref().unwrap_or(&empty);
+        let unobserved = self.tcp_stats.is_none();
+        s.push(',');
+        push_key(&mut s, "seq_judged");
+        if unobserved {
+            s.push_str("null");
+        } else {
+            s.push_str(&ts.seq_judged.to_string());
+        }
+        for (key, val) in [
+            ("retransmissions", ts.retransmissions),
+            ("out_of_order", ts.out_of_order),
+            ("handshake_rtt_us", ts.handshake_rtt_us),
+            ("uplink_bytes", ts.uplink_bytes),
+            ("downlink_bytes", ts.downlink_bytes),
+        ] {
+            s.push(',');
+            push_key(&mut s, key);
+            match val {
+                Some(v) => s.push_str(&v.to_string()),
+                None => s.push_str("null"),
+            }
+        }
         s.push('}');
 
         // ---- time ----
@@ -282,6 +351,24 @@ pub fn feature_columns() -> &'static [&'static str] {
     &crate::feature::FEATURE_NAMES
 }
 
+/// `tcp` 块里的键，**顺序与写出顺序一致**。
+///
+/// 为什么钉到块内而不是只看顶层：v2 的六个新键全部落在 `tcp` 块里，顶层仍是 9 个。
+/// 只看 `TOP_LEVEL_COLUMNS` 的门禁会对"加了一个块内键"完全无感，而列式侧少一列的
+/// 表现是插入失败、JSONL 侧的表现是下游偶尔 KeyError —— 两者都不会在这条断言上红。
+pub const TCP_BLOCK_COLUMNS: [&str; 10] = [
+    "state",
+    "initiator",
+    "adopted_midstream",
+    "illegal_events",
+    "seq_judged",
+    "retransmissions",
+    "out_of_order",
+    "handshake_rtt_us",
+    "uplink_bytes",
+    "downlink_bytes",
+];
+
 /// 批量写 JSONL（每行一条，行尾 `\n`）。返回写出的记录数。
 ///
 /// 用 `BufWriter` 由调用方提供：记录可能很多（省网级单次分析百万级会话），
@@ -298,13 +385,16 @@ pub fn write_jsonl<W: Write>(w: &mut W, records: &[FlowRecord]) -> io::Result<us
 
 /// 记录层的方向词汇：`fwd` / `rev`。
 ///
+/// `pub(crate)` 而不是私有：列式落盘（`storage::project_row`）必须用**同一份**词汇，
+/// 两处各写一份时，改一边会让 JSONL 与列式对同一条记录说不同的话。
+///
 /// 为什么不直接把 `Side` 的 `"a"`/`"b"` 写进记录：落盘之后没有代码在旁边解释，
 /// `"a"` 完全不可读；而 `fwd`/`rev` 与特征名 `fwd_packets`/`rev_packets` 是同一套
 /// 方向语义（都按**规范端点序**），读记录的人不需要再猜一次。
 ///
 /// 注意它**不是**"谁发起"：中途接入时没有 SYN，`initiator` 为 `null`；
 /// 即便有值，也只有在握手顺序与规范端点序一致时才恰好等于 fwd。
-fn side_word(side: Side) -> &'static str {
+pub(crate) fn side_word(side: Side) -> &'static str {
     match side {
         Side::A => "fwd",
         Side::B => "rev",
@@ -402,6 +492,15 @@ mod tests {
             initiator: Some(Side::A),
             adopted_midstream: false,
             illegal_tcp_events: 0,
+            tcp_stats: Some(TcpSessionStats {
+                seq_judged: 5,
+                retransmissions: Some(1),
+                // `Some(0)` 而不是 `None`：这是"判定了 5 个段，确实没乱序"。
+                out_of_order: Some(0),
+                handshake_rtt_us: Some(1_500),
+                uplink_bytes: Some(1_200),
+                downlink_bytes: Some(800),
+            }),
             first_seen_us: 1_000_000,
             last_seen_us: 2_000_000,
             packets: 2,
@@ -418,7 +517,7 @@ mod tests {
         // 手写 JSON 必须用**真正的解析器**验证，只靠 contains 猜不出括号与转义错。
         let line = sample_record().to_json_line();
         let v = parse(&line);
-        assert_eq!(num(&v, &["schema_version"]), Some(1));
+        assert_eq!(num(&v, &["schema_version"]), Some(2));
         assert_eq!(num(&v, &["session_id"]), Some(7));
         assert_eq!(num(&v, &["flow", "src_port"]), Some(40000));
         assert_eq!(num(&v, &["flow", "proto"]), Some(6));
@@ -465,8 +564,9 @@ mod tests {
         assert!(v.get("tcp").unwrap().get("state").unwrap().is_null());
         assert!(v.get("tcp").unwrap().get("initiator").unwrap().is_null());
         assert_eq!(text(&v, &["flow", "proto_name"]), Some("udp"));
-        // 非 TCP 的 tcp 块仍必须存在（列不随协议变化，否则读取方要分两种模式解析）。
-        assert_eq!(obj_len(v.get("tcp").unwrap()), 4);
+        // 非 TCP 的 tcp 块仍必须存在且**键集不随协议变**（否则读取方要分两种模式解析）。
+        // v2 后是 10 键：原 4 个 + 会话级 TCP 统计 6 个（全 null）。
+        assert_eq!(obj_len(v.get("tcp").unwrap()), TCP_BLOCK_COLUMNS.len());
     }
 
     #[test]
@@ -571,6 +671,74 @@ mod tests {
         r.last_seen_us = 1_000_000; // 乱序到达的极端情形
         let v = parse(&r.to_json_line());
         assert_eq!(num(&v, &["time", "duration_us"]), Some(0));
+    }
+
+    #[test]
+    fn tcp_block_key_set_and_order_match_the_v2_contract() {
+        // 键集合与**顺序**一起钉：下游里有按位置取数的（CSV/Parquet 导出），
+        // 只改顺序不改名字时名字断言拓不到。
+        let v = parse(&sample_record().to_json_line());
+        let blk = v.get("tcp").expect("tcp 块");
+        let Json::Obj(pairs) = blk else {
+            panic!("tcp 必须是对象");
+        };
+        let got: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(got, TCP_BLOCK_COLUMNS.to_vec());
+        assert_eq!(num(&v, &["tcp", "seq_judged"]), Some(5));
+        assert_eq!(num(&v, &["tcp", "retransmissions"]), Some(1));
+        assert_eq!(num(&v, &["tcp", "out_of_order"]), Some(0));
+        assert_eq!(num(&v, &["tcp", "handshake_rtt_us"]), Some(1_500));
+        assert_eq!(num(&v, &["tcp", "uplink_bytes"]), Some(1_200));
+        assert_eq!(num(&v, &["tcp", "downlink_bytes"]), Some(800));
+    }
+
+    #[test]
+    fn non_tcp_record_still_carries_all_six_keys_and_they_are_null() {
+        // “UDP 没有重传这个概念”与“TCP 会话没重传”不能都写成 0；非 TCP 时整个
+        // tcp_stats 为 None ⇒ 六键全部存而在、全部 null（键集不随流量构成变）。
+        let mut r = sample_record();
+        r.tcp_stats = None;
+        let v = parse(&r.to_json_line());
+        let Json::Obj(pairs) = v.get("tcp").expect("tcp 块") else {
+            panic!("tcp 必须是对象");
+        };
+        let got: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(got, TCP_BLOCK_COLUMNS.to_vec(), "非 TCP 不得省键");
+        for key in [
+            "seq_judged",
+            "retransmissions",
+            "out_of_order",
+            "handshake_rtt_us",
+            "uplink_bytes",
+            "downlink_bytes",
+        ] {
+            let item = pairs.iter().find(|(k, _)| k == key).expect(key);
+            assert!(item.1.is_null(), "{key} 必须是 null，不是 0");
+        }
+    }
+
+    #[test]
+    fn zero_judged_segments_is_null_counts_while_real_zero_is_a_value() {
+        // 本项最不能错的一条：截断采集（读不到序号）与“判定过了确实是 0”在
+        // 记录里必须长得不一样。前者 seq_judged=0 而计数是 null；后者是 Some(0)。
+        let mut r = sample_record();
+        r.tcp_stats = Some(TcpSessionStats {
+            seq_judged: 0,
+            retransmissions: None,
+            out_of_order: None,
+            handshake_rtt_us: None,
+            uplink_bytes: None,
+            downlink_bytes: None,
+        });
+        let v = parse(&r.to_json_line());
+        assert_eq!(num(&v, &["tcp", "seq_judged"]), Some(0), "样本量本身是事实");
+        let Json::Obj(pairs) = v.get("tcp").expect("tcp 块") else {
+            panic!("tcp 必须是对象");
+        };
+        for key in ["retransmissions", "out_of_order"] {
+            let item = pairs.iter().find(|(k, _)| k == key).expect(key);
+            assert!(item.1.is_null(), "{key} 在无判定输入时不得写成 0");
+        }
     }
 
     #[test]

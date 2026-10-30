@@ -62,7 +62,7 @@ def main():
 
         def table(name):
             cc.query(cc.ch.DDL.read_text().replace("CREATE TABLE " + cc.ch.TABLE, "CREATE TABLE " + name), database)
-            cc.query((ROOT / "storage/clickhouse/flow_records_v1_dedup.sql").read_text().replace(cc.ch.TABLE,name),database)
+            cc.query((ROOT / "storage/clickhouse/flow_records_v2_dedup.sql").read_text().replace(cc.ch.TABLE,name),database)
 
         def command(name, path, *extra, named=False):
             options = ["--name",kill_name] if named else []

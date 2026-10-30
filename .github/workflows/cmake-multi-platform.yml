@@ -1,0 +1,66 @@
+name: CMake
+
+# main/PR 统一由 ci.yml 调用，手动检查仍可单独运行。
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cmake-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: C++ (${{ matrix.id }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # 共享环/接口枚举使用 POSIX API；Windows 移植尚未实现，不声明支持。
+      matrix:
+        include:
+          - id: linux-gcc
+            os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+          - id: linux-clang
+            os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+          - id: macos-clang
+            os: macos-15
+            cc: clang
+            cxx: clang++
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: 从空克隆生成测试向量
+        run: bash scripts/test/prepare-rust-fixtures.sh
+      - name: 配置与编译
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="${{ matrix.cc }}" -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}"
+          cmake --build build --parallel 2
+      - name: CTest（失败必须阻断）
+        run: ctest --test-dir build --output-on-failure
+      - name: 失败时保存 CMake 与 CTest 诊断
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cmake-failure-${{ matrix.id }}
+          path: |
+            build/Testing/Temporary/
+            build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
+          retention-days: 7

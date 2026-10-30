@@ -11,3 +11,5 @@ datasets/**/*.bin -text
 
 # pcap 是生成物（已 gitignore），万一被强加入库也必须保持字节原样。
 *.pcap -text
+# Preserve vendored upstream formatting; maintained patches are covered by security regressions.
+web/console/compat/mockjs-safe/index.cjs -whitespace

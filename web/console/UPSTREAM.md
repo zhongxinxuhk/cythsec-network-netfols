@@ -17,3 +17,5 @@ Umi 4.7.27 的 webpack/utoopack 外层 server.listen 未传 host，单靠 HOST �
 
 `src/.umi*`、`.turbopack` 等为自动生成目录，不入库；原 Vite/手写布局入口已被 Umi 替代。
 官方页面保留示例数据；真实 CythSec API 页面与其分开路由，后端业务接入需逐项完成。
+
+Security integration restores audited project adapters, applies the published Mock.js/deepmerge prototype-key workarounds under private package names, updates supported upstream versions, and verifies all lockfile dependencies. The template peer resolution policy remains explicit in .npmrc.

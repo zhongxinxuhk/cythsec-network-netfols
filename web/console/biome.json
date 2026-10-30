@@ -23,7 +23,9 @@
       "!biome.json",
       "!tailwind.css",
       "!package-lock.json",
-      "!**/.worktrees"
+      "!**/.worktrees",
+      "!compat/mockjs-safe/index.cjs",
+      "!compat/deepmerge-safe/index.cjs"
     ]
   },
   "formatter": {

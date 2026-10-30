@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# pre-commit —— 分支纪律的机械门禁：**一个问题一条分支，测绿了才并入 main**。
+#
+# ## 为什么要有这个钩子（理由比结论重要）
+#
+# 「先开分支、测完再合」写成文档只约束得住记得住的人。本仓库的教训是另一条：
+# **注释里声称「有脚本会拦下」的，该脚本必须真实存在并挂在门禁上**（项目约定 3）。
+# 所以这条规则不能只写在 AGENTS.md / CLAUDE.md / CONTRIBUTING.md 里，必须有一个
+# 在 `git commit` 那一刻真的会拒绝东西的钩子。2026-10-22 的活例：上一批列式实测收口
+# （`a906c81`）是直接落在 master 上的——虽然提交前跑过全量门禁，但**「提交内容 = 被测
+# 内容」这件事在历史上无法证明**：测的是当时的工作树，合的是随后又改过几处的树。
+# 分支流程要消除的正是这种歧义。
+#
+# ## 拦什么
+#
+#   1. 在 `master` / `main` 上的**普通** `git commit` → 拒绝，并打印正确做法。
+#   2. 放行「续作」而不是「新问题」的提交：merge / rebase / cherry-pick / revert
+#      进行中（`.git/MERGE_HEAD` 等哨兵文件存在）。`git merge --no-ff <分支>` 就是
+#      规则要求的**并入动作**，必须能过。
+#   3. 放行游离 HEAD（CI、临时 worktree）：那里的提交不落在任何主分支上。
+#   4. 顺带跑 `scripts/security/scan-secrets.sh`（`.pre-commit-config.yaml` 里那条
+#      local 钩子）。`pre-commit` 框架在本机没装时，配置文件里写的「提交前拦住明文密钥」
+#      其实是假的——本钩子把它变成真的。扫描脚本不存在时打印**未核验**，不谎称通过。
+#
+# ## 例外（唯一一条）
+#
+# `CYTHSEC_ALLOW_MAIN_COMMIT=1 git commit …`：给「在 master 上改一个错别字」这类
+# 事情留一道显式越权，钩子会打警告。用它就必须把理由写进提交说明。
+# 不要用 `--no-verify` 绕——那把密钥扫描也一起绕了，且历史上看不出来。
+#
+# 安装（每个克隆一次，`core.hooksPath` 是本地配置、不随克隆走）：`make hooks`
+# 自检是否已安装：`bash scripts/verify/check-branch-policy.sh`
+set -uo pipefail
+
+# 分支名必须用 symbolic-ref 取：`git rev-parse --abbrev-ref HEAD` 在**尚未有提交的 master**
+# （unborn branch）上返回字符串 "HEAD"，会被当成游离分支放行 —— 那等于"第一条提交可以直落 master"。
+BRANCH="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo '')"
+[ -n "${BRANCH}" ] || BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+[ "${BRANCH}" = "HEAD" ] && BRANCH=""
+GIT_DIR_ABS="$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd)" || GIT_DIR_ABS=""
+TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || echo '')"
+
+# 拿不到仓库根（极端情况）时不假装检查过：直接放行并说明。
+if [ -z "${TOPLEVEL}" ] || [ -z "${GIT_DIR_ABS}" ]; then
+  echo "[pre-commit] 拿不到仓库根或 git-dir，未做分支检查（未核验，不计为通过）" >&2
+  exit 0
+fi
+
+# --- 1. 续作哨兵：正在 merge/rebase/cherry-pick/revert 的提交不是「新问题」 ---
+in_progress=""
+for sentinel in MERGE_HEAD rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD bisect; do
+  if [ -e "${GIT_DIR_ABS}/${sentinel}" ]; then
+    in_progress="${sentinel}"
+    break
+  fi
+done
+
+if [ -n "${in_progress}" ]; then
+  echo "[pre-commit] 续作中（${in_progress}）→ 跳过分支限制检查（并入动作允许）"
+else
+  case "${BRANCH}" in
+    master | main) # INJECT-ANCHOR:main-branch
+      if [ "${CYTHSEC_ALLOW_MAIN_COMMIT:-0}" = "1" ]; then
+        echo "[pre-commit] ⚠ 越权放行：正在直接向 ${BRANCH} 提交（CYTHSEC_ALLOW_MAIN_COMMIT=1）" >&2
+        echo "[pre-commit] ⚠ 必须把理由写进提交说明；否则改用分支流程：" >&2
+        echo "[pre-commit] ⚠   git switch -c <type>/<topic> && git commit … && git merge --no-ff <type>/<topic>" >&2
+      else
+        cat >&2 <<EOF
+[pre-commit] ✗ 拒绝：不能直接在 ${BRANCH} 上提交（本仓库的分支纪律：一个问题一条分支，测绿才并入）
+
+  正确做法：
+    1) git switch -c <type>/<topic>          # type ∈ feat fix chore docs refactor test
+                                            # 对得上待办号就写 fix/cys-trf-015
+    2) 在分支上提交该问题范围内的全部改动（状态标记与实现同批提交）
+    3) bash scripts/lint/lint-all.sh
+       bash scripts/test/test-all.sh        # 默认全集；全绿才算「完成」
+    4) git switch ${BRANCH} && git merge --no-ff <type>/<topic>   # --no-ff，让历史上看得见这条分支
+
+  紧急/琐碎例外的唯一出口（会打警告，理由须写进提交说明）：
+    CYTHSEC_ALLOW_MAIN_COMMIT=1 git commit …
+
+  本钩子由 make hooks 安装、由 scripts/verify/check-branch-policy.sh 自证。
+EOF
+        exit 1
+      fi
+      ;;
+    "")
+      # detached HEAD：CI / 临时 worktree，不落在主分支上
+      echo "[pre-commit] 游离 HEAD（非主分支）→ 跳过分支限制检查"
+      ;;
+    *)
+      echo "[pre-commit] 分支：${BRANCH} → 符合分支纪律"
+      ;;
+  esac
+fi
+
+# --- 2. 明文密钥兜底扫描（把 .pre-commit-config.yaml 里的声明变成真的） ---
+SCAN="${TOPLEVEL}/scripts/security/scan-secrets.sh"
+if [ -f "${SCAN}" ]; then
+  if ! bash "${SCAN}" >/tmp/cythsec-precommit-scan.log 2>&1; then
+    echo "[pre-commit] ✗ 明文密钥扫描未通过，详见 /tmp/cythsec-precommit-scan.log" >&2
+    tail -20 /tmp/cythsec-precommit-scan.log >&2
+    exit 1
+  fi
+  echo "[pre-commit] ✓ 明文密钥扫描通过（命中 0 处）"
+else
+  echo "[pre-commit] ⚠ 扫描脚本不存在：${SCAN} → 密钥检查**未核验，不计为通过**" >&2
+fi
+
+exit 0

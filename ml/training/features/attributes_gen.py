@@ -6,6 +6,21 @@
 # 规范标识统一为 ATTR_* 字符串。训练侧使用属性标识时，必须从本模块导入常量，
 # 不得写字面量 —— 否则真源改名后训练与推理两侧会静默错位。
 
+from __future__ import annotations
+
+from typing import TypedDict
+
+
+class Attribute(TypedDict):
+    id: str
+    type: str
+    scope: str
+    stage: str
+    cost: int
+    source: str
+    desc: str
+
+
 REGISTRY_VERSION = 2
 
 # 属性值类型说明。
@@ -149,7 +164,7 @@ ATTR_ML_CONFIDENCE = "ATTR_ML_CONFIDENCE"
 ATTR_DETECTION_SOURCES = "ATTR_DETECTION_SOURCES"
 
 # 全部属性定义，顺序与真源一致。
-ATTRIBUTES = [
+ATTRIBUTES: list[Attribute] = [
     {
         "id": "ATTR_ETH_DST_MAC",
         "type": "string",
@@ -1046,16 +1061,16 @@ ATTRIBUTES = [
 ATTRIBUTE_INDEX = {a["id"]: a for a in ATTRIBUTES}
 
 
-def lookup(attr_id):
+def lookup(attr_id: str) -> Attribute | None:
     """按规范标识返回属性定义；未登记时返回 None。"""
     return ATTRIBUTE_INDEX.get(attr_id)
 
 
-def ids():
+def ids() -> list[str]:
     """按真源顺序返回全部属性标识。"""
     return [a["id"] for a in ATTRIBUTES]
 
 
-def by_stage(stage):
+def by_stage(stage: str) -> list[Attribute]:
     """返回指定计算阶段的属性列表（用于按需计算的分级）。"""
     return [a for a in ATTRIBUTES if a["stage"] == stage]
