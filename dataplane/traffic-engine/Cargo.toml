@@ -56,6 +56,16 @@ path = "src/bin/analyze.rs"
 name = "cythsec-ipfix-collect"
 path = "src/bin/ipfix_collect.rs"
 
+# NetFlow v9 采集器（RFC 3954）：序号单位是导出报文，不能复用 IPFIX 的记录级记账。
+[[bin]]
+name = "cythsec-netflow9-collect"
+path = "src/bin/netflow9_collect.rs"
+
+# sFlow v5 采集器（RFC 3176）：flow/counter sample 与数据报级序号缺口。
+[[bin]]
+name = "cythsec-sflow-collect"
+path = "src/bin/sflow_collect.rs"
+
 [[bin]]
 name = "cythsec-bench"
 path = "src/bin/bench.rs"

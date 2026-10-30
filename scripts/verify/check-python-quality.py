@@ -30,6 +30,8 @@ SUPPORT = (
     'scripts/verify/check-mdns.py',
     'scripts/verify/check-dot.py',
     'scripts/verify/check-doh.py',
+    'scripts/verify/check-smtp.py',
+    'scripts/verify/check-ftp.py',
 )
 
 

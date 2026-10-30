@@ -28,7 +28,8 @@ usage() {
   --dpi          只跑 DPI 向量的 tshark 第三方交叉核验（需 tshark）
   --reassembly   只跑 TCP 重组向量的 tshark 第三方交叉核验（需 tshark）
   --flows        只跑 FlowRecord 的 tshark 第三方交叉核验 + TCP 统计三方比对（CYS-TRF-015）+ 反向故障注入（需 tshark）
-  --ipfix        只跑 IPFIX 导出的 tshark 第三方交叉核验 + UDP 通道字节比对 + 反向故障注入（需 tshark）
+  --ipfix        只跑 IPFIX 导出的 tshark 第三方交叉核验 + UDP 通道字节比对 + 反向故障注入，
+                 以及 NetFlow v9 / sFlow v5 采集回路（独立语料 + tshark，需 tshark）
   --e2e          只跑跨语言共享环端到端（C++ 写 → 环 → Rust 读，需 C++ 与 Rust）
   --live         只跑真实网卡抓包验收（需捕获特权；无特权时显式 SKIPPED 不显绿）
   --bench        只跑数据面基准的回归门禁（CYS-TRF-037）+ 反向故障注入
@@ -193,6 +194,14 @@ test_rust() {
   fi
   if ! bash scripts/verify/check-doh.sh; then
     echo "✗ [B019] DoH消息入口回归失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-smtp.sh; then
+    echo "✗ [B020] SMTP回归失败" >&2
+    return 1
+  fi
+  if ! bash scripts/verify/check-ftp.sh; then
+    echo "✗ [B021] FTP回归失败" >&2
     return 1
   fi
   echo "✓ [rust] 测试通过（含特征 parity、识别 CLI 与独立聚合观测）"
@@ -654,7 +663,35 @@ test_ipfix() {
     echo "✗ [ipfix] 异厂互操作失败（独立实现的报文没被正确还原）" >&2
     return 1
   fi
-  echo "✓ [ipfix] 交叉核验通过（导出：UDP 通道字节比对；采集：丢包率可复算；异厂：5 场景逐条相符；三处注入全部被检出）"
+  echo "  ✓ IPFIX 侧通过（导出：UDP 通道字节比对；采集：丢包率可复算；异厂：5 场景逐条相符）"
+
+  # NetFlow v9 采集（RFC 3954）：与 IPFIX 共用端口附近的运维习惯，但序号语义不同
+  # （v9 是导出报文序号），所以单独一道关口，不能拿 IPFIX 的绿灯代替。
+  echo "==> [ipfix] NetFlow v9 采集（独立语料 + 序号缺口 + tshark）"
+  rc=0
+  bash scripts/verify/check-netflow9.sh --tshark || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [ipfix] NetFlow v9 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "✗ [ipfix] NetFlow v9 采集核验失败" >&2
+    return 1
+  fi
+  # sFlow v5 采集（RFC 3176）：自描述 sample/record，序号也是数据报级，但线格式与 v9 不同。
+  # 单独一道关口；不能因为 v9 绿了就推断 sFlow 也绿。
+  echo "==> [ipfix] sFlow v5 采集（独立语料 + 数据报级丢包 + tshark）"
+  rc=0
+  bash scripts/verify/check-sflow.sh --tshark || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo "⚠ [ipfix] sFlow 未核验：环境缺少 tshark/cargo/python3（该项未执行，不计为通过）" >&2
+    return 0
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "✗ [ipfix] sFlow 采集核验失败" >&2
+    return 1
+  fi
+  echo "✓ [ipfix] 交叉核验通过（IPFIX：导出/采集/异厂；NetFlow v9：模板/记录/报文级丢包；sFlow v5：flow/counter/数据报级丢包 + tshark）"
   return 0
 }
 
@@ -882,6 +919,8 @@ failed=0
 [[ $BUILD_RUST -eq 1 ]]  && { test_rust  || failed=$((failed+1)); }
 # CYS-MLT-001: isolated packaging gate runs in the default suite; standalone entry below.
 if [[ ${ALL} -eq 1 ]]; then
+  bash scripts/verify/check-ftp.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-smtp.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-doh.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-dot.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-mdns.sh --tshark || failed=$((failed+1))

@@ -39,3 +39,33 @@ B018 DoT的显式TLS明文入口、受控TLS字节对照及本轮门禁见
 [DoT验收记录](protocol-b018-dot-verification.md)。
 
 B019 DoH的已解码HTTPS消息表示与原目录CLion MCP实跑见[DoH验收记录](protocol-b019-doh-verification.md)。
+
+B020 SMTP的首条命令/多行应答、端口上下文与tshark对照见
+[SMTP验收记录](protocol-b020-smtp-verification.md)；本轮不沿用B019的门禁退出码。
+
+B021 FTP的控制命令/应答、FTP式多行格式与tshark对照见
+[FTP验收记录](protocol-b021-ftp-verification.md)；本轮不沿用B020的门禁退出码。
+
+B014 的“主流水线 TCP 重组”缺口已于 2026-10-30 单独验收：SYN 锚定的有界前缀重组、
+乱序/冲突/缺尾/中途接入与 tshark 独立重组对照见
+[DNS/TCP主流水线验收记录](protocol-b014-dns-tcp-pipeline-verification.md)。
+本页上方“尚无主流水线重组”的表述保留为当时状态，不据此改写历史结论。
+
+B022 的 IPFIX v10 独立对照已于 2026-10-30 补齐：导出侧由 tshark 逐字段核验并比对
+UDP 通道字节，采集侧用删除中间 datagram 的方式证明丢包率可复算，异厂侧由不引用仓库
+常量的独立实现覆盖 5 个场景。Options Template、真实厂商语料与长期运行矩阵仍未完成，
+故 `reference_tested=true`、`accepted=false`，详见
+[IPFIX v10独立对照验收](protocol-b022-ipfix-verification.md)。
+
+B023 NetFlow v9 已于 2026-10-31 补齐采集侧实现与对照：`cythsec-netflow9-collect`
+解模板/数据流集，按 RFC 3954 的**导出报文序号**报缺口，并用独立拼字节的 pcap
+经 tshark 交叉确认五元组与计数。Options Template、真实厂商语料、TCP/SCTP 与
+长期运行矩阵仍未完成，故 `reference_tested=true`、`accepted=false`，详见
+[NetFlow v9采集验收](protocol-b023-netflow9-verification.md)。
+
+B024 sFlow v5 已于 2026-10-31 补齐采集侧实现与对照：`cythsec-sflow-collect`
+解 flow sample（1/3）、counter sample（2/4），按 RFC 3176 的**数据报序号**报缺口，
+并用独立拼字节的 pcap 经 tshark `sflow_245` 交叉确认五元组、接口计数与 VLAN。
+扩展记录（MPLS/AS/URL/NAT/socket/host）、真实厂商语料、TCP/SCTP 与长期运行矩阵
+仍未完成，故 `reference_tested=true`、`accepted=false`，详见
+[sFlow v5采集验收](protocol-b024-sflow-verification.md)。
