@@ -26,13 +26,13 @@ jobs:
 
         go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12'
     - name: Validate workflows and negative tests
-      run: 'actionlint -shellcheck= -pyflakes=
-
+      run: |
+        actionlint -shellcheck= -pyflakes=
         python3 -m unittest discover -s tests/ci -v
         make hooks
         bash scripts/verify/check-branch-policy.sh
+        git ls-files -z '*.sh' | xargs -0 -n 1 bash -n
 
-        git ls-files -z ''*.sh'' | xargs -0 -n 1 bash -n'
   cpp:
     name: C++ 多平台编译与测试
     uses: ./.github/workflows/cmake-multi-platform.yml

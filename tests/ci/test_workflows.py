@@ -47,6 +47,12 @@ class WorkflowTests(unittest.TestCase):
             events = load(name)['on']
             self.assertIn('workflow_call', events)
             self.assertNotIn('push', events); self.assertNotIn('pull_request', events)
+    def test_workflow_bootstrap_preserves_command_boundaries(self):
+        steps = self.ci['jobs']['workflow-tests']['steps']
+        script = next(s['run'] for s in steps if s.get('name') == 'Validate workflows and negative tests')
+        for command in ['python3 -m unittest discover -s tests/ci -v', 'make hooks', 'bash scripts/verify/check-branch-policy.sh']:
+            self.assertIn(command, script.splitlines())
+
     def test_stage_order(self):
         jobs=self.ci['jobs']
         for name in ['lint','security']: self.assertEqual(needs(jobs[name]), ['workflow-tests'])
@@ -82,6 +88,14 @@ class WorkflowTests(unittest.TestCase):
         text='\n'.join(s.get('run','') for s in job['steps'])
         self.assertIn('sha256sum --check',text);self.assertIn('--verify-tag --draft',text)
         self.assertIn('m["commit"] == os.environ["GITHUB_SHA"]',text)
+    def test_release_contains_every_declared_rust_cli(self):
+        manifest = (ROOT / 'dataplane/traffic-engine/Cargo.toml').read_text()
+        binaries = re.findall(r'\[\[bin\]\]\s*name\s*=\s*"([^"]+)"', manifest)
+        package = (ROOT / 'scripts/release/package.sh').read_text()
+        self.assertTrue(binaries)
+        for binary in binaries:
+            self.assertIn(binary, package)
+
     def test_source_paths_are_case_portable(self):
         import subprocess
         paths = subprocess.check_output(['git','ls-files'], cwd=ROOT, text=True).splitlines()

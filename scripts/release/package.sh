@@ -19,7 +19,7 @@ done
 for binary in cythsec-capture cythsec-parse cythsec-dump-abi cythsec-ring-feed; do
   cp "build/package-cpp/dataplane/packet-engine/${binary}" "${PACKAGE_DIR}/bin/"
 done
-for binary in traffic-engine cythsec-analyze cythsec-ipfix-collect cythsec-bench cythsec-dump-ddl dump-abi ring-consume; do
+for binary in traffic-engine cythsec-analyze cythsec-ipfix-collect cythsec-bench cythsec-dump-ddl cythsec-identify cythsec-observe dump-abi ring-consume; do
   cp "target/release/${binary}" "${PACKAGE_DIR}/bin/"
 done
 chmod +x "${PACKAGE_DIR}"/bin/*
