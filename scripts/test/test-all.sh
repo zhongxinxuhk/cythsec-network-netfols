@@ -78,7 +78,7 @@ gen_datasets() {
 # 而该机当时确实没装 cmake，且**本次运行根本不需要它**。
 required_tools() {
   if [[ "${ALL}" == "1" ]]; then
-    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark git uv
+    printf '%s\n' "${PYTHON:-python3}" cargo cmake c++ go node npm tshark git uv openssl
     return 0
   fi
   # 向量生成是 rust/cpp/dpi/reassembly/flows/e2e 的前置（生成器内部再查一次 python3）。
@@ -92,6 +92,9 @@ required_tools() {
   if [[ $((BUILD_CPP + BUILD_PARITY + BUILD_E2E)) -gt 0 ]]; then
     printf 'cmake\n'
     printf 'c++\n'
+  fi
+  if [[ ${BUILD_RUST} -eq 1 ]]; then
+    printf 'uv\nopenssl\n'
   fi
   if [[ ${BUILD_GO} -eq 1 ]]; then
     printf 'go\n'
@@ -334,8 +337,10 @@ STUB
   # 这个假阳性 —— 断言写松了，等于没验）。
   if printf '%s' " ${got} " | grep -qE " cargo " \
      && printf '%s' " ${got} " | grep -qE " ${PYTHON:-python3} " \
-     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm|tshark|uv) '; then
-    echo "  ✓ 预检映射：只选 --rust → 只要 cargo + ${PYTHON:-python3}（不要求 cmake/go/node）"
+     && printf '%s' " ${got} " | grep -qE ' uv ' \
+     && printf '%s' " ${got} " | grep -qE ' openssl ' \
+     && ! printf '%s' " ${got} " | grep -qE ' (cmake|go|node|npm|tshark) '; then
+    echo "  ✓ 预检映射：只选 --rust → 只要 cargo + ${PYTHON:-python3} + uv + openssl（不要求 cmake/go/node）"
   else
     echo "  ✗ 预检映射：只选 --rust 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
@@ -422,7 +427,7 @@ STUB
     echo "  ✗ 预检映射：只选 --branch-policy 却要求了「${got}」" >&2; fails=$((fails+1))
   fi
 
-  # CYS-MLT-001: the default suite requires uv; selected legacy groups do not.
+  # CYS-MLT-001: the default suite requires uv; Rust DoT/DoH regressions also require uv.
   checks=$((checks+1))
   ALL=1
   got="$(required_tools | tr '\n' ' ')"
@@ -445,6 +450,8 @@ STUB
 exit 0
 STUB
   chmod +x "${ST_TMP}/bin/cargo" "${ST_TMP}/bin/python3"
+  cp "${ST_TMP}/bin/cargo" "${ST_TMP}/bin/uv"
+  cp "${ST_TMP}/bin/cargo" "${ST_TMP}/bin/openssl"
   rc=0
   out="$(ALL=0; BUILD_CPP=0; BUILD_RUST=1; BUILD_GO=0; BUILD_NODE=0; BUILD_PARITY=0; BUILD_DPI=0
          BUILD_REASSEMBLY=0; BUILD_FLOWS=0; BUILD_E2E=0; BUILD_LIVE=0; BUILD_BENCH=0; BUILD_IPFIX=0

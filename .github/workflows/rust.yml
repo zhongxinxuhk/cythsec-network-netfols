@@ -109,6 +109,16 @@ jobs:
         cargo build --frozen --workspace --all-targets --all-features
 
         '
+    - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      with:
+        version: 0.12.1
+        enable-cache: true
+        cache-dependency-glob: ml/training/uv.lock
+    - name: Prepare locked Python for DoT and DoH regressions
+      run: |
+        uv python install "$(cat ml/training/.python-version)"
+        uv sync --project ml/training --locked
+        openssl version
     - name: Rust 单元、集成、文档测试与 Rust/Python 特征契约
       run: bash scripts/test/test-all.sh --rust 2>&1 | tee build/ci-rust/tests.log
     - name: Release 构建与测试（覆盖优化模式）
@@ -120,7 +130,7 @@ jobs:
         \ --short HEAD)\" build/ci-rust/version.log\ntarget/release/cythsec-analyze --help\ntarget/release/cythsec-dump-ddl\
         \ --help\ntarget/release/dump-abi > build/ci-rust/abi.txt\nmkdir -p build/ci-rust/package\ncp VERSION Cargo.lock\
         \ build/ci-rust/package/\nfor bin in traffic-engine cythsec-analyze cythsec-ipfix-collect cythsec-bench\
-        \ cythsec-dump-ddl dump-abi ring-consume; do\n  cp \"target/release/$bin\" build/ci-rust/package/\ndone\n\
+        \ cythsec-dump-ddl cythsec-identify cythsec-observe dump-abi ring-consume; do\n  cp \"target/release/$bin\" build/ci-rust/package/\ndone\n\
         tar -czf \"build/ci-rust/rust-${{ runner.os }}-${{ runner.arch }}.tar.gz\" -C build/ci-rust/package .\n"
     - name: 保存构建与测试日志
       if: always()
@@ -172,6 +182,16 @@ jobs:
         tshark --version
 
         '
+    - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      with:
+        version: 0.12.1
+        enable-cache: true
+        cache-dependency-glob: ml/training/uv.lock
+    - name: Prepare locked Python for DoT and DoH regressions
+      run: |
+        uv python install "$(cat ml/training/.python-version)"
+        uv sync --project ml/training --locked
+        openssl version
     - name: ABI、共享环、DPI、TCP 重组、FlowRecord、IPFIX 与采样（含反向注入）
       run: "mkdir -p build/ci-rust\nbash scripts/test/test-all.sh --cpp --rust --parity --e2e --dpi --reassembly\
         \ --flows --ipfix --sampling \\\n  2>&1 | tee build/ci-rust/interoperability.log\n# 既有第三方裁判例外必须显示出来，不能算成已完成核验。\n\

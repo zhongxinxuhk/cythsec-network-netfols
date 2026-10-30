@@ -31,6 +31,7 @@ runs:
         uv python install "$(cat ml/training/.python-version)"
         uv sync --project ml/training --locked --group quality
         python3 -m pip install "clang-format==$(cat .clang-format-version)"
+        npm install --global "npm@$(cat .npm-version)"
         npm ci --prefix web/console
         (cd web/console && npx playwright install --with-deps chromium)
         make hooks

@@ -66,4 +66,6 @@ jobs:
         node-version-file: .node-version
     - name: 完整锁文件审计，任一严重级别或扫描错误均阻断
       working-directory: web/console
-      run: npm audit --package-lock-only --audit-level=low
+      run: |
+        npm install --global "npm@$(cat ../../.npm-version)"
+        npm audit --package-lock-only --audit-level=low

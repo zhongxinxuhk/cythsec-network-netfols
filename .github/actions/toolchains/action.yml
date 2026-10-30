@@ -41,3 +41,10 @@ runs:
         node-version: ${{ inputs.node }}
         cache: npm
         cache-dependency-path: web/console/package-lock.json
+    - if: inputs.node != ''
+      name: Install repository npm version
+      shell: bash
+      run: |
+        npm install --global "npm@$(cat .npm-version)"
+        node --version
+        npm --version

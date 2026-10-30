@@ -50,6 +50,9 @@ jobs:
 
         '
     - name: 安装前端依赖（eslint 需要 node_modules）
-      run: cd web/console && npm ci
+      run: |
+        npm install --global "npm@$(cat .npm-version)"
+        cd web/console
+        npm ci
     - name: 运行静态检查
       run: bash scripts/lint/lint-all.sh

@@ -185,5 +185,6 @@
       "create-umi"
     ]
   },
-  "antDesignProTemplateVersion": "6.0.3"
+  "antDesignProTemplateVersion": "6.0.3",
+  "packageManager": "npm@11.12.1"
 }

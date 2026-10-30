@@ -96,6 +96,37 @@ class WorkflowTests(unittest.TestCase):
         for binary in binaries:
             self.assertIn(binary, package)
 
+    def test_rust_regressions_have_bootstrapped_python(self):
+        workflow = load('rust.yml')
+        def validate(job):
+            steps = job['steps']
+            target = next(i for i, step in enumerate(steps) if '--rust' in step.get('run', ''))
+            prior = steps[:target]
+            if not any(step.get('uses', '').startswith('astral-sh/setup-uv@') for step in prior):
+                raise ValueError('missing uv before Rust protocol regressions')
+            commands = '\n'.join(step.get('run', '') for step in prior)
+            if 'uv python install' not in commands or 'uv sync --project ml/training --locked' not in commands:
+                raise ValueError('missing locked Python before offline protocol regressions')
+        for name in ['build-test', 'interoperability']:
+            job = workflow['jobs'][name]
+            validate(job)
+            broken = deepcopy(job)
+            broken['steps'] = [s for s in broken['steps'] if not s.get('uses', '').startswith('astral-sh/setup-uv@')]
+            with self.subTest(job=name), self.assertRaises(ValueError): validate(broken)
+
+    def test_node_jobs_use_the_lockfile_package_manager(self):
+        import json
+        version = (ROOT / '.npm-version').read_text().strip()
+        self.assertEqual(json.loads((ROOT / 'web/console/package.json').read_text())['packageManager'], f'npm@{version}')
+        shared = (ROOT / '.github/actions/toolchains/action.yml').read_text()
+        self.assertIn('npm install --global "npm@$(cat .npm-version)"', shared)
+        for name in ['lint.yml', 'security.yml']:
+            text = '\n'.join(step.get('run', '') for job in load(name)['jobs'].values() for step in job.get('steps', []))
+            self.assertIn('npm install --global', text)
+            self.assertIn('.npm-version', text)
+        full = (ROOT / '.github/actions/full-environment/action.yml').read_text()
+        self.assertLess(full.index('npm install --global'), full.index('npm ci --prefix'))
+
     def test_source_paths_are_case_portable(self):
         import subprocess
         paths = subprocess.check_output(['git','ls-files'], cwd=ROOT, text=True).splitlines()
