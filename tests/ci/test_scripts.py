@@ -75,7 +75,9 @@ class ScriptTests(unittest.TestCase):
         modules = dict(line.split("\t", 1) for line in run.stdout.splitlines() if line)
         self.assertEqual(set(modules), {"cpp", "rust", "go", "console", "training"})
         self.assertTrue(modules["cpp"].startswith("cythsec-cpp-"))
-        self.assertIn("cythsec-netflow9-collect", (ROOT / "scripts/ci/package-release.sh").read_text())
+        script = (ROOT / "scripts/ci/package-release.sh").read_text()
+        self.assertIn("cythsec-netflow9-collect", script)
+        self.assertIn("cythsec-sflow-collect", script)
 
     def test_prerelease_publish_requires_token(self):
         env = {k: v for k, v in os.environ.items() if k not in {"GH_TOKEN", "HEAD_SHA"}}
