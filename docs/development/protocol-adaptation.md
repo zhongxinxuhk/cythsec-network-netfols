@@ -52,3 +52,8 @@ B018 DoT在显式TLS应用明文入口中解析长度帧，见[B018验收记录]
 B019 DoH对调用方提供的完整、已解码HTTPS消息校验GET/POST/2xx DNS表示，见
 [B019验收记录](../planning/protocol-b019-doh-verification.md)。不凭443/路径推断应用，不把该接口等同HTTP/2/3帧解码。
 本轮在原始项目目录经CLion MCP构建/验证，来源绑定、完整事务与流记录接线仍有缺口。
+
+B020 SMTP在TCP 25/587/2525的明文上下文里判定首条命令或一条多行应答，见
+[B020验收记录](../planning/protocol-b020-smtp-verification.md)。只取第一条消息，
+不解析DATA正文、AUTH凭据或投递结果；465隐式TLS不在明文端口内，裸应答只给medium。
+端口只做路由，FTP端口上的同名问候不得命中；完整适配保持未勾选。

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-29.6",
+  "revision": "2026-10-30.1",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3872,15 +3872,30 @@
     {
       "id": "B020",
       "name": "SMTP",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "尚未完成本条范围适配与验收"
+      "scope": "TCP 25/587/2525 明文上下文中的首条SMTP命令或一条多行应答识别；EHLO/HELO域、MAIL/RCPT路径、AUTH/BDAT参数、应答码与扩展关键字有界解析，保持截断/预算/端口上下文语义",
+      "code": [
+        "dataplane/traffic-engine/src/dpi/smtp.rs#parse",
+        "dataplane/traffic-engine/src/dpi/mod.rs#identify_with_ports",
+        "dataplane/traffic-engine/src/dpi/types.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/dpi/smtp.rs#greeting_commands_and_envelope_paths_are_bounded",
+        "dataplane/traffic-engine/src/dpi/smtp.rs#multiline_replies_keep_code_continuation_and_keywords",
+        "dataplane/traffic-engine/src/dpi/smtp.rs#incomplete_lines_are_need_more_not_guesses",
+        "dataplane/traffic-engine/src/dpi/smtp.rs#malformed_claims_and_other_protocols_are_distinguished",
+        "dataplane/traffic-engine/src/dpi/smtp.rs#transport_context_is_service_port_only",
+        "dataplane/traffic-engine/src/dpi/mod.rs#smtp_requires_the_service_port_context",
+        "scripts/verify/check-smtp.py"
+      ],
+      "reference": [
+        "scripts/verify/check-smtp.sh",
+        "docs/planning/protocol-b020-smtp-verification.md"
+      ],
+      "gap": "仅首条消息与端口上下文；2048字节/行、8192字节/方向、多行应答16行；DATA正文、邮件事务/投递结果、AUTH凭据语义、STARTTLS后的TLS与隐式TLS(SMTPS/465)、流水线多命令、明细进FlowRecord/存储、真实语料精度/规模与Linux矩阵待完成"
     },
     {
       "id": "B021",

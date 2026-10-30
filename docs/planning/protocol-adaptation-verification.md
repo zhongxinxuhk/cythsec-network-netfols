@@ -39,3 +39,6 @@ B018 DoT的显式TLS明文入口、受控TLS字节对照及本轮门禁见
 [DoT验收记录](protocol-b018-dot-verification.md)。
 
 B019 DoH的已解码HTTPS消息表示与原目录CLion MCP实跑见[DoH验收记录](protocol-b019-doh-verification.md)。
+
+B020 SMTP的首条命令/多行应答、端口上下文与tshark对照见
+[SMTP验收记录](protocol-b020-smtp-verification.md)；本轮不沿用B019的门禁退出码。

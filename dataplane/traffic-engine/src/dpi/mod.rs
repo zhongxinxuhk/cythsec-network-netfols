@@ -26,6 +26,7 @@ pub mod doh;
 pub mod dot;
 pub mod http;
 pub mod mdns;
+pub mod smtp;
 pub mod tls;
 pub mod wire;
 
@@ -120,6 +121,17 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
             };
         }
     }
+    // SMTP 只在服务端口上下文里判定；465 是隐式 TLS，不在 smtp::transport 里。
+    // Rejected 必须继续走后面的候选（587 上的 STARTTLS 之后就是 TLS 记录），
+    // 不能像 mDNS/DHCP 那样无条件返回。
+    if proto == IPPROTO_TCP && smtp::transport(src_port, dst_port) {
+        match smtp::detect(payload) {
+            Detect::Hit(d) => return Outcome::Identified(d),
+            Detect::NeedMore => return Outcome::NeedMore,
+            Detect::Malformed => return Outcome::Malformed,
+            Detect::Rejected => {}
+        }
+    }
     let structural = wire::inspect_standard(payload, proto, 0, dst_port);
     let mut saw_need_more = matches!(structural, wire::Verdict::NeedMore)
         || proto == IPPROTO_UDP && matches!(dhcp::detect(payload), Detect::NeedMore);
@@ -198,6 +210,25 @@ mod framework_tests {
         assert!(
             matches!(identify(&framed, IPPROTO_TCP, PORT_HTTP), Outcome::Identified(d) if d.app == AppId::Dns)
         );
+    }
+
+    #[test]
+    fn smtp_requires_the_service_port_context() {
+        assert!(
+            matches!(identify(b"220 mail.example.com ESMTP Postfix\r\n", IPPROTO_TCP, 25), Outcome::Identified(d) if d.app == AppId::Smtp)
+        );
+        assert!(
+            matches!(identify(b"EHLO client.example\r\n", IPPROTO_TCP, 587), Outcome::Identified(d) if d.app == AppId::Smtp)
+        );
+        // 同样的字节出现在 FTP 端口上不能算 SMTP；端口不是证据，只是路由。
+        assert!(
+            !matches!(identify(b"220 mail.example.com ESMTP Postfix\r\n", IPPROTO_TCP, 21), Outcome::Identified(d) if d.app == AppId::Smtp)
+        );
+        // 587 上的 TLS 记录必须回落到 TLS 检测器，而不是被 SMTP 抢走。
+        assert!(!matches!(
+            identify(b"\x16\x03\x01\x00\x05hello", IPPROTO_TCP, 587),
+            Outcome::Identified(d) if d.app == AppId::Smtp
+        ));
     }
 
     #[test]

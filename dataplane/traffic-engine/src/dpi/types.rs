@@ -23,6 +23,7 @@ pub enum AppId {
     Mdns,
     Dot,
     Doh,
+    Smtp,
     Quic,
     Ssh,
     WireGuard,
@@ -87,6 +88,7 @@ impl AppId {
             AppId::Mdns => AppId::encode(AppId::NS_BUILTIN, 26),
             AppId::Dot => AppId::encode(AppId::NS_BUILTIN, 27),
             AppId::Doh => AppId::encode(AppId::NS_BUILTIN, 28),
+            AppId::Smtp => AppId::encode(AppId::NS_BUILTIN, 29),
             AppId::Unknown => AppId::encode(AppId::NS_CUSTOM, 0),
         }
     }
@@ -102,6 +104,7 @@ impl AppId {
             AppId::Mdns => "mdns",
             AppId::Dot => "dot",
             AppId::Doh => "doh",
+            AppId::Smtp => "smtp",
             AppId::Quic => "quic",
             AppId::Ssh => "ssh",
             AppId::WireGuard => "wireguard",
@@ -354,6 +357,8 @@ mod tests {
         assert_eq!(AppId::Dot.as_str(), "dot");
         assert_eq!(AppId::Doh.as_u32(), 0x0001_001c);
         assert_eq!(AppId::Doh.as_str(), "doh");
+        assert_eq!(AppId::Smtp.as_u32(), 0x0001_001d);
+        assert_eq!(AppId::Smtp.as_str(), "smtp");
         // 自定义段与内置段不能撞号
         assert!(AppId::Unknown.as_u32() >= AppId::encode(AppId::NS_CUSTOM, 0));
         assert!(AppId::Tls.as_u32() < AppId::encode(AppId::NS_CUSTOM, 0));
