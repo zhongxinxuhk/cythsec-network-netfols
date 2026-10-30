@@ -2,13 +2,15 @@ name: cythsec-storage-test
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.10.2.103
+    image: ${CYTHSEC_TEST_CLICKHOUSE_IMAGE:?prepare middleware test environment}
     environment:
-      CLICKHOUSE_USER: cythsec_test
-      # 仅供内部测试网络使用；没有宿主机端口映射。
-      CLICKHOUSE_PASSWORD: local_storage_test # example internal test fixture
+      CLICKHOUSE_USER: ${CYTHSEC_TEST_CLICKHOUSE_USER:?prepare middleware test environment}
+      CLICKHOUSE_PASSWORD: ${CYTHSEC_TEST_CLICKHOUSE_PASSWORD:?prepare middleware test environment}
+      CYTHSEC_TEST_CLICKHOUSE_HOST: ${CYTHSEC_TEST_CLICKHOUSE_HOST:?prepare middleware test environment}
+      CYTHSEC_TEST_CLICKHOUSE_PORT: ${CYTHSEC_TEST_CLICKHOUSE_PORT:?prepare middleware test environment}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse-test.xml:/etc/clickhouse-server/config.d/cythsec-test.xml:ro
     networks:
       - storage_test
     ulimits:
@@ -16,7 +18,7 @@ services:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1' >/dev/null"]
+      test: ["CMD-SHELL", "clickhouse-client --host \"$$CYTHSEC_TEST_CLICKHOUSE_HOST\" --port \"$$CYTHSEC_TEST_CLICKHOUSE_PORT\" --user \"$$CLICKHOUSE_USER\" --query 'SELECT 1' >/dev/null"]
       interval: 2s
       timeout: 5s
       retries: 30
@@ -24,12 +26,13 @@ services:
 
   writer:
     profiles: ["writer"]
-    image: clickhouse/clickhouse-server:26.10.2.103
+    image: ${CYTHSEC_TEST_CLICKHOUSE_IMAGE:?prepare middleware test environment}
     entrypoint: ["/opt/cythsec/cythsec-ch-write-linux"]
     environment:
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_USER: cythsec_test
-      CLICKHOUSE_PASSWORD: local_storage_test # example internal test fixture
+      CLICKHOUSE_HOST: ${CYTHSEC_TEST_CLICKHOUSE_HOST:?prepare middleware test environment}
+      CLICKHOUSE_USER: ${CYTHSEC_TEST_CLICKHOUSE_USER:?prepare middleware test environment}
+      CLICKHOUSE_PASSWORD: ${CYTHSEC_TEST_CLICKHOUSE_PASSWORD:?prepare middleware test environment}
+      CLICKHOUSE_PORT: ${CYTHSEC_TEST_CLICKHOUSE_PORT:?prepare middleware test environment}
     volumes:
       - ../../build/storage-measurement:/opt/cythsec:ro
       - writer_spool:/var/spool/cythsec

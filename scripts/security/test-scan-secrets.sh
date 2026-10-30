@@ -58,3 +58,18 @@ rc=0; bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/outpu
 printf '%s\n' 'const config = {"TOKEN":"literal-credential"};' > "$scratch/source.ts" # sample fixture
 rc=0; bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
 [[ "$rc" == 1 ]]
+
+# Compose interpolation permits only exact environment references, never literal fallback values.
+rm -f "$scratch/source.ts"
+mkdir -p "$scratch/deploy/docker"
+fixture="$scratch/deploy/docker/compose.test.yml"
+key="$(printf '%s%s' CLICKHOUSE_ PASSWORD)"
+check_case compose-env '${CYTHSEC_TEST_CLICKHOUSE_PASSWORD}' 0
+check_case compose-required '${CYTHSEC_TEST_CLICKHOUSE_PASSWORD:?prepare middleware test environment}' 0 # sample fixture
+check_case compose-fallback '${CYTHSEC_TEST_CLICKHOUSE_PASSWORD:-literal-value}' 1 # sample fixture
+check_case compose-suffix '${CYTHSEC_TEST_CLICKHOUSE_PASSWORD}-literal-value' 1
+check_case compose-literal literal-value 1
+rm "$fixture"
+printf '%s: %s\n' "$key" '${CYTHSEC_TEST_CLICKHOUSE_PASSWORD}' > "$scratch/config.yml"
+rc=0; bash "$ROOT/scripts/security/scan-secrets.sh" "$scratch" > "$scratch/output" 2>&1 || rc=$?
+[[ "$rc" == 1 ]]

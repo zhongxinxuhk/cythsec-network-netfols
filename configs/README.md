@@ -61,3 +61,12 @@
 `registry/features.json` 是 21 维流特征布局与定义的唯一真源。版本/维数/列顺序/单位/公式语义/小包阈值均在此登记。修改维数或含义必须升版；包记录的版本与特征版本独立。
 
 生成：`python3 tools/codegen/gen-features.py`；只读检查：追加 `--check`。生成物为 Rust `feature/schema_gen.rs` 与 Python `ml/training/features/schema_gen.py`，不得手改。生成需要 python3 与 rustfmt；Python 提取器只用标准库。公式实现保持独立，数值一致性由 `scripts/verify/check-features.sh` 验证，挂在 lint/test-all `--rust` 与 CI Rust job。
+
+## 中间件连接
+
+- `middleware.example.json`：当前 ClickHouse 客户端的版本化配置模板。
+- `middleware.env.example`：连接环境变量和后续组件命名约定，无实际凭据。
+- `testing/middleware.json`：隔离 CI 的镜像/版本/拓扑参数，不含密码。
+
+真实覆盖使用 `config.local.*` 或部署侧文件，凭据由环境或 Secrets 挂载文件提供。
+完整优先级、GitHub Actions 初始化及新增组件约定见 [中间件配置](../docs/deployment/MIDDLEWARE-CONFIG.md)。

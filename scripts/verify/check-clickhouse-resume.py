@@ -33,7 +33,7 @@ def main():
         cc.prepare()
         directory = ROOT / "build/storage-measurement"
         source_dir = directory / ("resume-" + run_id); source_dir.mkdir()
-        arch = json.loads(subprocess.check_output(["docker", "image", "inspect", "clickhouse/clickhouse-server:26.10.2.103"]))[0]["Architecture"]
+        arch = json.loads(subprocess.check_output(["docker", "image", "inspect", cc.image()]))[0]["Architecture"]
         version = (ROOT / "VERSION").read_text().strip()
         env = dict(os.environ, GOOS="linux", GOARCH=arch, CGO_ENABLED="0", GOWORK="off", GOPROXY="off", GOTOOLCHAIN="local")
         subprocess.run(["go", "build", "-ldflags", f"-X cythsec/services/pkg/versioninfo.Version={version}",

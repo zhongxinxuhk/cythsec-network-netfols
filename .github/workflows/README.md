@@ -51,3 +51,10 @@ bash scripts/test/test-all.sh
 
 macOS live BPF capture requires capture permission; an unavailable capture is not a local green result.
 Linux hosted CI validates privileged capture on an isolated veth/namespace and cleans it afterward.
+
+Middleware acceptance loads the versioned `configs/testing/middleware.json` profile. Before Compose,
+the middleware-test-environment action creates a random job-scoped password, registers masking and
+exports private test connection variables. CI needs no repository or production connection secrets.
+The environment file stays in RUNNER_TEMP and is never a release/test artifact. All Compose clients,
+health probes and writer tests share those variables and keep passwords out of command-line arguments.
+See `docs/deployment/MIDDLEWARE-CONFIG.md` for deployment and future-component conventions.

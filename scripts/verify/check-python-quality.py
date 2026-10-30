@@ -21,6 +21,7 @@ GENERATED = {'features/attributes_gen.py', 'features/schema_gen.py'}
 SUPPORT = (
     'scripts/verify/check-features.py',
     'scripts/verify/check-clickhouse-inbox.py',
+    'scripts/ci/middleware_test_env.py',
     'scripts/verify/check-training-project.py',
     'scripts/verify/check-python-quality.py',
     'services/routerd/internal/networkcfg/netplan_projection.py',

@@ -1,0 +1,3 @@
+<clickhouse>
+    <tcp_port from_env="CYTHSEC_TEST_CLICKHOUSE_PORT"/>
+</clickhouse>

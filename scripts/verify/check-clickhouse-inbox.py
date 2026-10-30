@@ -38,9 +38,9 @@ def main():
     try:
         cc.compose("up", "-d", "--wait", "--wait-timeout", "90", "clickhouse")
         cc.prepare()
-        architecture = json.loads(
-            subprocess.check_output(["docker", "image", "inspect", "clickhouse/clickhouse-server:26.10.2.103"])
-        )[0]["Architecture"]
+        architecture = json.loads(subprocess.check_output(["docker", "image", "inspect", cc.image()]))[0][
+            "Architecture"
+        ]
         env = dict(
             os.environ,
             GOOS="linux",

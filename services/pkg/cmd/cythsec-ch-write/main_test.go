@@ -17,7 +17,20 @@ func runArgs(t *testing.T, args ...string) error {
 	return run()
 }
 
+func isolateConnectionEnvironment(t *testing.T) {
+	t.Helper()
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if strings.HasPrefix(key, "CLICKHOUSE_") || key == "CYTHSEC_MIDDLEWARE_CONFIG" {
+			old := os.Getenv(key)
+			t.Setenv(key, old)
+			os.Unsetenv(key)
+		}
+	}
+}
+
 func TestInboxCLIRejectsConflictingSourceOwnership(t *testing.T) {
+	isolateConnectionEnvironment(t)
 	for _, args := range [][]string{
 		{"--input-dir", t.TempDir(), "--input", "-"},
 		{"--input-dir", t.TempDir(), "--resume-file"},
@@ -36,6 +49,7 @@ func TestInboxCLIRejectsConflictingSourceOwnership(t *testing.T) {
 }
 
 func TestInboxCLIScanOnceUsesPerFileCheckpoints(t *testing.T) {
+	isolateConnectionEnvironment(t)
 	root := t.TempDir()
 	incoming := filepath.Join(root, "incoming")
 	spool := filepath.Join(root, "state")
@@ -70,5 +84,38 @@ func TestInboxCLIScanOnceUsesPerFileCheckpoints(t *testing.T) {
 	}
 	if checkpoints != 1 {
 		t.Fatal("one source must retain one durable checkpoint", checkpoints)
+	}
+}
+
+func TestCLIConnectionFlagsOverrideFileAndEnvironment(t *testing.T) {
+	isolateConnectionEnvironment(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "middleware.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"clickhouse":{"host":"file-host","port":9440,"user":"file_user","secure":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := filepath.Join(root, "client.sh")
+	captured := filepath.Join(root, "args")
+	if err := os.WriteFile(client, []byte("#!/bin/sh\ncat >/dev/null\nprintf '%s\n' \"$@\" > \"$TEST_ARGS\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(root, "input.jsonl")
+	if err := os.WriteFile(input, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CYTHSEC_MIDDLEWARE_CONFIG", filepath.Join(root, "missing"))
+	t.Setenv("CLICKHOUSE_PORT", "19000")
+	t.Setenv("CLICKHOUSE_USER", "env_user")
+	t.Setenv("TEST_ARGS", captured)
+	if err := runArgs(t, "--config", path, "--input", input, "--spool", filepath.Join(root, "spool"), "--client", client, "--port", "21000", "--secure=false"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	if !strings.Contains(args, "--host\nfile-host\n") || !strings.Contains(args, "--port\n21000\n") || !strings.Contains(args, "--user\nenv_user\n") || strings.Contains(args, "--secure") {
+		t.Fatal("CLI/environment/file precedence mismatch")
 	}
 }

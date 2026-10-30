@@ -17,23 +17,17 @@ import (
 	"cythsec/services/pkg/versioninfo"
 )
 
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 func run() error {
-	var client clickhousewriter.Client
-	flag.StringVar(&client.Binary, "client", "clickhouse-client", "官方 native 客户端可执行文件")
-	flag.StringVar(&client.Host, "host", env("CLICKHOUSE_HOST", "127.0.0.1"), "ClickHouse 主机")
-	flag.IntVar(&client.Port, "port", 9000, "native TCP 端口")
-	flag.StringVar(&client.User, "user", env("CLICKHOUSE_USER", "default"), "用户；密码继承 CLICKHOUSE_PASSWORD")
-	flag.StringVar(&client.Database, "database", "default", "目标库")
-	flag.StringVar(&client.Table, "table", "flow_records_v2", "目标表")
-	flag.BoolVar(&client.Secure, "secure", false, "使用 TLS native 连接")
-	flag.DurationVar(&client.Timeout, "timeout", 10*time.Second, "单次 native 写入超时")
+	client := clickhousewriter.DefaultClient()
+	configPath := flag.String("config", os.Getenv("CYTHSEC_MIDDLEWARE_CONFIG"), "中间件 JSON 配置文件")
+	flag.StringVar(&client.Binary, "client", client.Binary, "官方 native 客户端可执行文件")
+	flag.StringVar(&client.Host, "host", client.Host, "ClickHouse 主机")
+	flag.IntVar(&client.Port, "port", client.Port, "native TCP 端口")
+	flag.StringVar(&client.User, "user", client.User, "用户；密码继承 CLICKHOUSE_PASSWORD")
+	flag.StringVar(&client.Database, "database", client.Database, "目标库")
+	flag.StringVar(&client.Table, "table", client.Table, "目标表")
+	flag.BoolVar(&client.Secure, "secure", client.Secure, "使用 TLS native 连接")
+	flag.DurationVar(&client.Timeout, "timeout", client.Timeout, "单次 native 写入超时")
 	spool := flag.String("spool", "", "持久化队列目录（必填，独占并绑定目标）")
 	capacity := flag.Int64("max-pending-bytes", 64<<20, "含在途批次的队列文件字节上限")
 	rows := flag.Int("batch-rows", 2000, "每批最大条数")
@@ -57,6 +51,31 @@ func run() error {
 	if flag.NArg() != 0 {
 		return errors.New("不接受位置参数")
 	}
+	resolved, err := clickhousewriter.LoadClientConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "client":
+			resolved.Binary = client.Binary
+		case "host":
+			resolved.Host = client.Host
+		case "port":
+			resolved.Port = client.Port
+		case "user":
+			resolved.User = client.User
+		case "database":
+			resolved.Database = client.Database
+		case "table":
+			resolved.Table = client.Table
+		case "secure":
+			resolved.Secure = client.Secure
+		case "timeout":
+			resolved.Timeout = client.Timeout
+		}
+	})
+	client = resolved
 	if err := client.Validate(); err != nil {
 		return err
 	}

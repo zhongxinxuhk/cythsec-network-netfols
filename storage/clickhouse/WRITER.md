@@ -165,3 +165,10 @@ python3 scripts/verify/check-clickhouse-inbox.py
 SIGKILL、内容变化拒绝、常驻发现新文件、临时文件忽略和重复所有者拒绝；结束仅清理该项目。
 报告位于 `build/storage-measurement/clickhouse-inbox.json`。这项已接入统一 CI 的 ClickHouse 阶段；
 本地功能验收不能代替新的远端运行或持续吞吐/长期去重验证。
+
+## 连接配置
+
+所有连接参数可通过 CLICKHOUSE_* 环境变量或 `--config` / CYTHSEC_MIDDLEWARE_CONFIG 指定的
+JSON 配置提供，显式命令行参数优先。密码只从 CLICKHOUSE_PASSWORD、CLICKHOUSE_PASSWORD_FILE
+或配置中的 password_file 引用读取，不作为参数或明文 JSON password 字段使用。
+示例和 CI 隔离约定见 [中间件配置](../../docs/deployment/MIDDLEWARE-CONFIG.md)。
