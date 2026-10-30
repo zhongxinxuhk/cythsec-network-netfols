@@ -136,6 +136,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("--release", commands(rust["build-test"]))
         self.assertIn("--tshark", commands(rust["interoperability"]))
 
+    def test_prerelease_publishes_only_after_successful_push(self):
+        workflow = self.workflows["prerelease.yml"]
+        self.assertEqual(set(workflow["on"]), {"workflow_run", "workflow_dispatch"})
+        self.assertEqual(workflow["on"]["workflow_run"]["workflows"], ["CI"])
+        job = workflow["jobs"]["publish"]
+        self.assertEqual(job["permissions"], {"contents": "write"})
+        self.assertIn("workflow_run.conclusion == 'success'", job["if"])
+        self.assertIn("workflow_run.event == 'push'", job["if"])
+        self.assertEqual(job["timeout-minutes"], 45)
+        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["ref"], "${{ github.event.workflow_run.head_sha || github.sha }}")
+        run = commands(job)
+        self.assertIn("bash scripts/ci/package-release.sh dist/release", run)
+        self.assertIn("bash scripts/ci/publish-prerelease.sh dist/release", run)
+        self.assertIn("actions/upload-artifact@", str(job["steps"]))
+        self.assertIn("prerelease-packages", str(job["steps"]))
+
     def test_permissions_pins_and_no_soft_failure(self):
         self.assertEqual(self.ci["jobs"]["security"]["permissions"]["pull-requests"], "read")
         for name, workflow in self.workflows.items():
