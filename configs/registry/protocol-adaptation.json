@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-30.3",
+  "revision": "2026-10-30.4",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3939,17 +3939,50 @@
       "name": "IPFIX v10",
       "implemented": true,
       "local_tested": true,
-      "reference_tested": false,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "IPFIX v10模板/记录及显式异常处理",
+      "scope": "IPFIX v10模板/记录解码与显式异常；采集侧序列号缺口/丢包率/去重/模板生存期；导出侧模板与数据集编码；tshark与独立实现交叉核验；Options Template仅跳过计数",
       "code": [
-        "dataplane/traffic-engine/src/ipfix/collector.rs"
+        "dataplane/traffic-engine/src/ipfix/collector.rs",
+        "dataplane/traffic-engine/src/ipfix/mod.rs",
+        "dataplane/traffic-engine/src/ipfix/estimate.rs",
+        "dataplane/traffic-engine/src/export/mod.rs",
+        "dataplane/traffic-engine/src/bin/ipfix_collect.rs",
+        "dataplane/traffic-engine/src/bin/analyze.rs"
       ],
       "tests": [
-        "dataplane/traffic-engine/src/ipfix/collector.rs#version_mismatch_is_reported_not_parsed"
+        "dataplane/traffic-engine/src/ipfix/collector.rs#decodes_template_then_record",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#sequence_gap_counts_lost_records",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#backward_sequence_is_out_of_order_not_loss",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#sequence_wraps_at_32_bits_without_false_loss",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#different_exporters_do_not_share_sequence_state",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#conflicting_redefinition_keeps_old_template_and_counts_conflict",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#data_without_template_is_counted_as_set_not_invented_records",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#template_expires_after_lifetime_then_recovers_on_refresh",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#template_withdrawal_over_udp_is_ignored",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#reduced_size_encoding_is_accepted",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#unknown_ie_is_skipped_without_shifting_other_fields",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#duplicate_record_within_window_is_dropped_and_counted",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#version_mismatch_is_reported_not_parsed",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#template_declaring_record_len_one_cannot_flood_records",
+        "dataplane/traffic-engine/src/ipfix/collector.rs#collected_flow_to_record_is_honest_about_what_is_missing",
+        "dataplane/traffic-engine/src/export/mod.rs#ie_codes_match_iana_registry",
+        "dataplane/traffic-engine/src/export/mod.rs#sequence_number_counts_data_records_only",
+        "dataplane/traffic-engine/src/export/mod.rs#template_refresh_resends_periodically",
+        "dataplane/traffic-engine/src/export/mod.rs#ipv6_record_uses_v6_template_and_length",
+        "dataplane/traffic-engine/src/export/mod.rs#every_set_length_is_a_multiple_of_4_and_zero_padded",
+        "scripts/verify/check-ipfix-export.py",
+        "scripts/verify/check-ipfix-collect.py",
+        "scripts/verify/check-ipfix-interop.sh",
+        "scripts/verify/interop-ipfix.py"
       ],
-      "reference": [],
-      "gap": "跨厂商IE、现场模板与持久运行矩阵待验收"
+      "reference": [
+        "scripts/verify/check-ipfix-export.sh",
+        "scripts/verify/check-ipfix-collect.sh",
+        "scripts/verify/check-ipfix-interop.sh",
+        "docs/planning/protocol-b022-ipfix-verification.md"
+      ],
+      "gap": "Options Template未解码、完整跨厂商IE字典与真实现场模板语料、长期运行与Linux矩阵待验收"
     },
     {
       "id": "B023",

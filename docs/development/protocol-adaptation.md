@@ -66,3 +66,8 @@ B021 FTP在TCP 21/2121的明文控制通道里判定首条命令或一条应答�
 B014 主流水线重组的端到端证据（乱序分片、缺尾、冲突、无锚点与端口上下文）见
 [B014验收记录](../planning/protocol-b014-dns-tcp-pipeline-verification.md)。
 本轮不改变单包长度帧契约，只把“已接入”这件事钉在流水线测试与 tshark 重组对照上。
+
+B022 的 IPFIX v10 验收边界需要单独说明：清单登记的是**报文编码/解码与采集口径**，
+不是把 IPFIX 标成某个 `AppId`。导出的 tshark 交叉核验、采集回路的丢包率手算、
+异厂独立实现的 5 个场景与反向注入见
+[B022验收记录](../planning/protocol-b022-ipfix-verification.md)。
