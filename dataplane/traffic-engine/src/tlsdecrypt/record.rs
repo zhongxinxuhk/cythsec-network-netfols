@@ -1,8 +1,8 @@
-//! TLS 1.3 记录层解析与按流量密钥解密。
+//! TLS 1.3 / TLS 1.2 记录层解析与按 key log 解密。
 //!
-//! 只处理 RFC 8446 的 TLS 1.3 记录：外层 `application_data`（23），
-//! 内层 content type 在解密后剥离。TLS 1.2 及其 AEAD 记录不在此模块范围内，
-//! 遇到 TLS 1.2 的 key log 行会被忽略，最终以"没有可用应用流量密钥"报错。
+//! TLS 1.3：外层 `application_data`（23），内层 content type 在解密后剥离。
+//! TLS 1.2：支持 AES-128-GCM / AES-256-GCM 套件的 AEAD 记录；主密钥来自
+//! key log 的 `CLIENT_RANDOM` 行。TLS 1.2 的 CBC/非 AES-GCM 套件仍明确报错。
 
 use crate::tlsdecrypt::crypto::{
     aes_gcm_open, chacha20_poly1305_open, expand_label, expand_label_sha384,
@@ -12,6 +12,12 @@ use crate::tlsdecrypt::keylog::KeyLog;
 pub const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
 pub const TLS_AES_256_GCM_SHA384: u16 = 0x1302;
 pub const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsVersion {
+    Tls12,
+    Tls13,
+}
 
 const MAX_RECORD: usize = 18_432;
 
@@ -167,6 +173,14 @@ pub fn suite_name(suite: u16) -> &'static str {
         TLS_AES_128_GCM_SHA256 => "TLS_AES_128_GCM_SHA256",
         TLS_AES_256_GCM_SHA384 => "TLS_AES_256_GCM_SHA384",
         TLS_CHACHA20_POLY1305_SHA256 => "TLS_CHACHA20_POLY1305_SHA256",
+        0xc02b => "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        0xc02c => "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+        0xc02f => "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+        0xc030 => "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+        0x009c => "TLS_RSA_WITH_AES_128_GCM_SHA256",
+        0x009d => "TLS_RSA_WITH_AES_256_GCM_SHA384",
+        0x009e => "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+        0x009f => "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
         _ => "unknown",
     }
 }
@@ -260,7 +274,7 @@ pub struct Plaintext {
 }
 
 #[derive(Debug, Clone)]
-pub struct Direction {
+pub struct Tls13Direction {
     keys: TrafficKeys,
     seq: u64,
     started: bool,
@@ -268,7 +282,7 @@ pub struct Direction {
     skipped: u64,
 }
 
-impl Direction {
+impl Tls13Direction {
     pub fn new(keys: TrafficKeys) -> Self {
         Self {
             keys,
@@ -347,9 +361,225 @@ impl Direction {
     }
 }
 
-/// 一条已完成握手的 TLS 1.3 会话。
+/// TLS 1.2 AEAD 套件的密钥材料。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tls12Keys {
+    pub key: Vec<u8>,
+    pub fixed_iv: [u8; 4],
+}
+
+impl Tls12Keys {
+    /// 从 48 字节 master secret 派生客户端/服务端写密钥。
+    ///
+    /// 只覆盖 AES-128-GCM / AES-256-GCM 套件；CBC 与 ChaCha20 套件不在此处。
+    pub fn derive(
+        legacy_material: &[u8],
+        client_random: &[u8; 32],
+        server_random: &[u8; 32],
+        suite: u16,
+    ) -> Result<(Self, Self), String> {
+        let (key_len, sha384) = tls12_suite_spec(suite).ok_or_else(|| {
+            format!(
+                "unsupported TLS 1.2 cipher suite {} ({}); only AES-GCM suites are implemented",
+                suite,
+                suite_name(suite)
+            )
+        })?;
+        if legacy_material.len() != 48 {
+            return Err(format!(
+                "TLS 1.2 master secret length {} is not 48",
+                legacy_material.len()
+            ));
+        }
+        let mut seed = Vec::with_capacity(64);
+        seed.extend_from_slice(server_random);
+        seed.extend_from_slice(client_random);
+        let total = 2 * key_len + 8;
+        let block = tls12_prf(legacy_material, b"key expansion", &seed, total, sha384);
+        let client_key = block[..key_len].to_vec();
+        let server_key = block[key_len..2 * key_len].to_vec();
+        let mut client_iv = [0u8; 4];
+        client_iv.copy_from_slice(&block[2 * key_len..2 * key_len + 4]);
+        let mut server_iv = [0u8; 4];
+        server_iv.copy_from_slice(&block[2 * key_len + 4..2 * key_len + 8]);
+        Ok((
+            Self {
+                key: client_key,
+                fixed_iv: client_iv,
+            },
+            Self {
+                key: server_key,
+                fixed_iv: server_iv,
+            },
+        ))
+    }
+}
+
+impl Drop for Tls12Keys {
+    fn drop(&mut self) {
+        self.key.fill(0);
+        self.fixed_iv.fill(0);
+    }
+}
+
+fn tls12_suite_spec(suite: u16) -> Option<(usize, bool)> {
+    match suite {
+        // ECDHE_ECDSA / ECDHE_RSA / RSA / DHE_RSA with AES-128-GCM-SHA256
+        0xc02b | 0xc02f | 0x009c | 0x009e => Some((16, false)),
+        // Same key exchange families with AES-256-GCM-SHA384
+        0xc02c | 0xc030 | 0x009d | 0x009f => Some((32, true)),
+        _ => None,
+    }
+}
+
+fn p_hash_sha256(prf_input: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut a = crate::tlsdecrypt::crypto::hmac_sha256(prf_input, seed).to_vec();
+    while out.len() < len {
+        let mut msg = Vec::with_capacity(a.len() + seed.len());
+        msg.extend_from_slice(&a);
+        msg.extend_from_slice(seed);
+        out.extend_from_slice(&crate::tlsdecrypt::crypto::hmac_sha256(prf_input, &msg));
+        a = crate::tlsdecrypt::crypto::hmac_sha256(prf_input, &a).to_vec();
+    }
+    out.truncate(len);
+    out
+}
+
+fn p_hash_sha384(prf_input: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut a = crate::tlsdecrypt::crypto::hmac_sha384(prf_input, seed).to_vec();
+    while out.len() < len {
+        let mut msg = Vec::with_capacity(a.len() + seed.len());
+        msg.extend_from_slice(&a);
+        msg.extend_from_slice(seed);
+        out.extend_from_slice(&crate::tlsdecrypt::crypto::hmac_sha384(prf_input, &msg));
+        a = crate::tlsdecrypt::crypto::hmac_sha384(prf_input, &a).to_vec();
+    }
+    out.truncate(len);
+    out
+}
+
+fn tls12_prf(prf_input: &[u8], label: &[u8], seed: &[u8], len: usize, sha384: bool) -> Vec<u8> {
+    let mut full = Vec::with_capacity(label.len() + seed.len());
+    full.extend_from_slice(label);
+    full.extend_from_slice(seed);
+    if sha384 {
+        p_hash_sha384(prf_input, &full, len)
+    } else {
+        p_hash_sha256(prf_input, &full, len)
+    }
+}
+
+/// TLS 1.2 单向解密状态。ChangeCipherSpec 之后的所有记录都用同一组写密钥。
+#[derive(Debug, Clone)]
+pub struct Tls12Direction {
+    keys: Tls12Keys,
+    seq: u64,
+    active: bool,
+    opened: u64,
+    skipped: u64,
+}
+
+impl Tls12Direction {
+    pub fn new(keys: Tls12Keys) -> Self {
+        Self {
+            keys,
+            seq: 0,
+            active: false,
+            opened: 0,
+            skipped: 0,
+        }
+    }
+
+    pub fn open(&mut self, rec: &Record) -> Result<Option<Plaintext>, String> {
+        if rec.content_type == 20 {
+            if rec.payload == [1] {
+                self.active = true;
+                self.seq = 0;
+            }
+            return Ok(None);
+        }
+        if !self.active {
+            self.skipped += 1;
+            return Ok(None);
+        }
+        if rec.payload.len() < 24 {
+            return Err("TLS 1.2 GCM record shorter than explicit nonce + tag".into());
+        }
+        let explicit = &rec.payload[..8];
+        let sealed = &rec.payload[8..];
+        let plaintext_len = sealed.len() - 16;
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&self.keys.fixed_iv);
+        nonce[4..].copy_from_slice(explicit);
+        let mut aad = [0u8; 13];
+        aad[..8].copy_from_slice(&self.seq.to_be_bytes());
+        aad[8] = rec.content_type;
+        aad[9..11].copy_from_slice(&rec.version.to_be_bytes());
+        aad[11..13].copy_from_slice(&(plaintext_len as u16).to_be_bytes());
+        let pt = aes_gcm_open(&self.keys.key, &nonce, &aad, sealed)
+            .map_err(|e| format!("TLS 1.2 record tag mismatch at sequence {}: {e}", self.seq))?;
+        self.seq += 1;
+        self.opened += 1;
+        Ok(Some(Plaintext {
+            content_type: rec.content_type,
+            data: pt,
+        }))
+    }
+
+    pub fn opened(&self) -> u64 {
+        self.opened
+    }
+
+    pub fn skipped(&self) -> u64 {
+        self.skipped
+    }
+}
+
+/// 会话方向：按协商版本分派 TLS 1.3 / TLS 1.2 记录处理。
+#[derive(Debug, Clone)]
+pub enum Direction {
+    Tls13(Tls13Direction),
+    Tls12(Tls12Direction),
+}
+
+impl Direction {
+    /// 兼容旧测试/调用方的 TLS 1.3 构造入口。
+    pub fn new(keys: TrafficKeys) -> Self {
+        Self::Tls13(Tls13Direction::new(keys))
+    }
+
+    pub fn new_tls12(keys: Tls12Keys) -> Self {
+        Self::Tls12(Tls12Direction::new(keys))
+    }
+
+    pub fn open(&mut self, rec: &Record) -> Result<Option<Plaintext>, String> {
+        match self {
+            Self::Tls13(dir) => dir.open(rec),
+            Self::Tls12(dir) => dir.open(rec),
+        }
+    }
+
+    pub fn opened(&self) -> u64 {
+        match self {
+            Self::Tls13(dir) => dir.opened(),
+            Self::Tls12(dir) => dir.opened(),
+        }
+    }
+
+    pub fn skipped(&self) -> u64 {
+        match self {
+            Self::Tls13(dir) => dir.skipped(),
+            Self::Tls12(dir) => dir.skipped(),
+        }
+    }
+}
+
+/// 一条已完成握手、可解密应用记录的 TLS 1.3 / TLS 1.2 会话。
 #[derive(Debug, Clone)]
 pub struct TlsSession {
+    pub version: TlsVersion,
     pub client_random: [u8; 32],
     pub cipher_suite: u16,
     pub server_name: Option<String>,
@@ -358,8 +588,10 @@ pub struct TlsSession {
 }
 
 impl TlsSession {
-    /// 从两个方向的 TCP 重组流建立会话；key log 必须同时包含
-    /// `CLIENT_TRAFFIC_SECRET_0` 与 `SERVER_TRAFFIC_SECRET_0`。
+    /// 从两个方向的 TCP 重组流建立会话。
+    ///
+    /// TLS 1.3 需要 `CLIENT_TRAFFIC_SECRET_0` 与 `SERVER_TRAFFIC_SECRET_0`；
+    /// TLS 1.2 需要 `CLIENT_RANDOM` 的 48 字节 master secret。
     pub fn from_streams(
         client_stream: &[u8],
         server_stream: &[u8],
@@ -370,6 +602,29 @@ impl TlsSession {
         let entry = keylog
             .get(&ch.random)
             .ok_or_else(|| format!("keylog has no entry for client random {}", hex(&ch.random)))?;
+        if tls12_suite_spec(sh.cipher_suite).is_some() {
+            let master = entry
+                .legacy_master
+                .as_deref()
+                .ok_or("keylog entry lacks CLIENT_RANDOM for TLS 1.2")?;
+            let (client_keys, server_keys) =
+                Tls12Keys::derive(master, &ch.random, &sh.random, sh.cipher_suite)?;
+            return Ok(Self {
+                version: TlsVersion::Tls12,
+                client_random: ch.random,
+                cipher_suite: sh.cipher_suite,
+                server_name: ch.server_name,
+                client: Direction::Tls12(Tls12Direction::new(client_keys)),
+                server: Direction::Tls12(Tls12Direction::new(server_keys)),
+            });
+        }
+        if !matches!(sh.cipher_suite, 0x1301..=0x1305) {
+            return Err(format!(
+                "unsupported TLS cipher suite {} ({}); TLS 1.2 supports only AES-GCM suites",
+                sh.cipher_suite,
+                suite_name(sh.cipher_suite)
+            ));
+        }
         let client_value = entry
             .client_app
             .as_deref()
@@ -381,11 +636,12 @@ impl TlsSession {
         let client_keys = TrafficKeys::derive(client_value, sh.cipher_suite)?;
         let server_keys = TrafficKeys::derive(server_value, sh.cipher_suite)?;
         Ok(Self {
+            version: TlsVersion::Tls13,
             client_random: ch.random,
             cipher_suite: sh.cipher_suite,
             server_name: ch.server_name,
-            client: Direction::new(client_keys),
-            server: Direction::new(server_keys),
+            client: Direction::Tls13(Tls13Direction::new(client_keys)),
+            server: Direction::Tls13(Tls13Direction::new(server_keys)),
         })
     }
 
@@ -619,6 +875,119 @@ fe 51 37 12 1c 74 bc 26 97 68 7e 24 87 46 d6 df 35 30 05 f3 bc e1 86 96 12 9c 81
         assert_eq!(pt.data, b"chacha");
         assert_eq!(dir.opened(), 1);
         assert_eq!(dir.skipped(), 0);
+    }
+
+    #[test]
+    fn tls12_key_block_matches_independent_hmac() {
+        let master: Vec<u8> = (1u8..=48).collect();
+        let client_random = [0x11u8; 32];
+        let server_random = [0x22u8; 32];
+
+        let (client, server) =
+            Tls12Keys::derive(&master, &client_random, &server_random, 0xc02f).unwrap();
+        assert_eq!(client.key, hexv("21444f2064b5b63368804c604b6a6b3e"));
+        assert_eq!(server.key, hexv("3ae6365fea4589989fbf82a7cdcc2691"));
+        assert_eq!(client.fixed_iv, [0x6e, 0x9a, 0x10, 0x78]);
+        assert_eq!(server.fixed_iv, [0x24, 0x9b, 0x1d, 0x32]);
+
+        let (client, server) =
+            Tls12Keys::derive(&master, &client_random, &server_random, 0xc030).unwrap();
+        assert_eq!(
+            client.key,
+            hexv("bcb9889cde17b80c916d7c9a157afd89f42582ec06828f9a73c86e366106c95e")
+        );
+        assert_eq!(
+            server.key,
+            hexv("7d719c664fa2f22014d832ee7baccb90cc36c9bed8b45035cf2f2ac56f9068e3")
+        );
+        assert_eq!(client.fixed_iv, [0x05, 0xfa, 0x26, 0xa0]);
+        assert_eq!(server.fixed_iv, [0x56, 0x2a, 0xbe, 0x59]);
+    }
+
+    fn tls12_record(keys: &Tls12Keys, seq: u64, content_type: u8, data: &[u8]) -> Record {
+        let explicit = seq.to_be_bytes();
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&keys.fixed_iv);
+        nonce[4..].copy_from_slice(&explicit);
+        let mut aad = [0u8; 13];
+        aad[..8].copy_from_slice(&explicit);
+        aad[8] = content_type;
+        aad[9..11].copy_from_slice(&0x0303u16.to_be_bytes());
+        aad[11..13].copy_from_slice(&(data.len() as u16).to_be_bytes());
+        let sealed = aes_gcm_seal(&keys.key, &nonce, &aad, data).unwrap();
+        let mut payload = explicit.to_vec();
+        payload.extend_from_slice(&sealed);
+        let len = payload.len() as u16;
+        let header = [content_type, 3, 3, (len >> 8) as u8, len as u8];
+        Record {
+            content_type,
+            version: 0x0303,
+            payload,
+            header,
+        }
+    }
+
+    #[test]
+    fn tls12_decrypts_after_ccs_and_advances_sequence() {
+        let master: Vec<u8> = (1u8..=48).collect();
+        let (client_keys, _) =
+            Tls12Keys::derive(&master, &[0x11u8; 32], &[0x22u8; 32], 0xc02f).unwrap();
+        let mut dir = Tls12Direction::new(client_keys.clone());
+        let ccs = Record {
+            content_type: 20,
+            version: 0x0303,
+            payload: vec![1],
+            header: [20, 3, 3, 0, 1],
+        };
+        assert!(dir.open(&ccs).unwrap().is_none());
+        let finished = tls12_record(&client_keys, 0, 22, &[0x14, 0, 0, 12]);
+        let pt = dir.open(&finished).unwrap().unwrap();
+        assert_eq!(pt.content_type, 22);
+        assert_eq!(pt.data, [0x14, 0, 0, 12]);
+        let app = tls12_record(&client_keys, 1, 23, b"GET / HTTP/1.1\r\n\r\n");
+        let pt = dir.open(&app).unwrap().unwrap();
+        assert_eq!(pt.content_type, 23);
+        assert_eq!(pt.data, b"GET / HTTP/1.1\r\n\r\n");
+        assert_eq!(dir.opened(), 2);
+        assert_eq!(dir.skipped(), 0);
+    }
+
+    #[test]
+    fn tls12_aes256_gcm_record_roundtrip() {
+        let master: Vec<u8> = (1u8..=48).collect();
+        let (client_keys, _) =
+            Tls12Keys::derive(&master, &[0x11u8; 32], &[0x22u8; 32], 0xc030).unwrap();
+        let mut dir = Tls12Direction::new(client_keys.clone());
+        let ccs = Record {
+            content_type: 20,
+            version: 0x0303,
+            payload: vec![1],
+            header: [20, 3, 3, 0, 1],
+        };
+        assert!(dir.open(&ccs).unwrap().is_none());
+        let app = tls12_record(&client_keys, 0, 23, b"legacy aes256");
+        let pt = dir.open(&app).unwrap().unwrap();
+        assert_eq!(pt.data, b"legacy aes256");
+        assert_eq!(dir.opened(), 1);
+    }
+
+    #[test]
+    fn tls12_tampering_is_an_error() {
+        let master: Vec<u8> = (1u8..=48).collect();
+        let (client_keys, _) =
+            Tls12Keys::derive(&master, &[0x11u8; 32], &[0x22u8; 32], 0xc02f).unwrap();
+        let mut dir = Tls12Direction::new(client_keys.clone());
+        let ccs = Record {
+            content_type: 20,
+            version: 0x0303,
+            payload: vec![1],
+            header: [20, 3, 3, 0, 1],
+        };
+        assert!(dir.open(&ccs).unwrap().is_none());
+        let mut rec = tls12_record(&client_keys, 0, 23, b"hello");
+        let last = rec.payload.len() - 1;
+        rec.payload[last] ^= 1;
+        assert!(dir.open(&rec).is_err());
     }
 
     #[test]

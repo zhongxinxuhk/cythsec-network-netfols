@@ -1,4 +1,4 @@
-// 端到端：pcap → TCP 重组 → TLS 1.3 记录解密 → DPI → JSONL。
+// 端到端：Pcap → TCP 重组 → TLS 1.3 记录解密 → DPI → JSONL。
 //
 // 这里刻意不用 RFC 8448 的固定记录做“唯一”验证：那条向量已经验证了密码学与
 // 序号处理（见 tlsdecrypt::record 单元测试）。本测试要验证的是**另一件事**：
@@ -13,7 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use traffic_engine::tlsdecrypt::crypto::{aes_gcm_seal, chacha20_poly1305_seal};
 use traffic_engine::tlsdecrypt::record::{
-    Aead, TrafficKeys, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256,
+    Aead, Tls12Keys, TrafficKeys, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+    TLS_CHACHA20_POLY1305_SHA256,
 };
 
 fn u16be(v: u16) -> [u8; 2] {
@@ -277,6 +278,141 @@ fn run_decrypt_case(tag: &str, suite: u16, c_traffic: &[u8], s_traffic: &[u8]) -
     text
 }
 
+fn tls12_ccs() -> Vec<u8> {
+    record([20, 3, 3, 0, 1], &[1])
+}
+
+fn tls12_record(keys: &Tls12Keys, seq: u64, content_type: u8, data: &[u8]) -> Vec<u8> {
+    let explicit = seq.to_be_bytes();
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(&keys.fixed_iv);
+    nonce[4..].copy_from_slice(&explicit);
+    let mut aad = [0u8; 13];
+    aad[..8].copy_from_slice(&explicit);
+    aad[8] = content_type;
+    aad[9..11].copy_from_slice(&0x0303u16.to_be_bytes());
+    aad[11..13].copy_from_slice(&(data.len() as u16).to_be_bytes());
+    let sealed = aes_gcm_seal(&keys.key, &nonce, &aad, data).unwrap();
+    let mut payload = explicit.to_vec();
+    payload.extend_from_slice(&sealed);
+    let len = payload.len() as u16;
+    record([content_type, 3, 3, (len >> 8) as u8, len as u8], &payload)
+}
+
+fn run_tls12_case() -> String {
+    let dir = temp_dir("tls12");
+    let random = [0x11u8; 32];
+    let server_random = [0x22u8; 32];
+    let master: Vec<u8> = (1u8..=48).collect();
+    let suite = 0xc02fu16;
+    let (c_keys, s_keys) = Tls12Keys::derive(&master, &random, &server_random, suite).unwrap();
+    let request = b"GET /legacy?x=1 HTTP/1.1\r\nHost: legacy.test\r\n\r\n";
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+
+    let mut client_payload = client_hello(random, suite);
+    client_payload.extend_from_slice(&tls12_ccs());
+    client_payload.extend_from_slice(&tls12_record(&c_keys, 0, 22, &[0x14, 0, 0, 12]));
+    client_payload.extend_from_slice(&tls12_record(&c_keys, 1, 23, request));
+
+    let mut server_payload = server_hello(server_random, suite);
+    server_payload.extend_from_slice(&tls12_ccs());
+    server_payload.extend_from_slice(&tls12_record(&s_keys, 0, 22, &[0x14, 0, 0, 12]));
+    server_payload.extend_from_slice(&tls12_record(&s_keys, 1, 23, response));
+
+    let cport = 12346u16;
+    let sport = 443u16;
+    let cseq = 2000u32;
+    let sseq = 6000u32;
+    let packets = vec![
+        frame(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            cport,
+            sport,
+            cseq,
+            0,
+            0x02,
+            &[],
+        ),
+        frame(
+            [10, 0, 0, 2],
+            [10, 0, 0, 1],
+            sport,
+            cport,
+            sseq,
+            cseq + 1,
+            0x12,
+            &[],
+        ),
+        frame(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            cport,
+            sport,
+            cseq + 1,
+            sseq + 1,
+            0x10,
+            &[],
+        ),
+        frame(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            cport,
+            sport,
+            cseq + 1,
+            sseq + 1,
+            0x18,
+            &client_payload,
+        ),
+        frame(
+            [10, 0, 0, 2],
+            [10, 0, 0, 1],
+            sport,
+            cport,
+            sseq + 1,
+            cseq + 1 + client_payload.len() as u32,
+            0x18,
+            &server_payload,
+        ),
+    ];
+    let pcap_path = dir.join("in.pcap");
+    fs::write(&pcap_path, pcap(&packets)).unwrap();
+    let log_path = dir.join("tls.keys");
+    fs::write(
+        &log_path,
+        format!("CLIENT_RANDOM {} {}\n", hex(&random), hex(&master)),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out_path = dir.join("out.jsonl");
+    let out = Command::new(env!("CARGO_BIN_EXE_cythsec-tls-inspect"))
+        .args([
+            "-r",
+            pcap_path.to_str().unwrap(),
+            "--keylog",
+            log_path.to_str().unwrap(),
+            "--dpi",
+            "deep",
+            "--decrypt",
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = fs::read_to_string(&out_path).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    text
+}
+
 fn assert_http_dpi(text: &str) {
     assert!(text.contains("\"event\":\"tls_flow\""), "{text}");
     assert!(text.contains("\"app\":\"http\""), "{text}");
@@ -329,6 +465,22 @@ fn cli_decrypts_tls13_chacha20_http_and_reports_dpi() {
         text.contains("\"cipher_suite\":\"TLS_CHACHA20_POLY1305_SHA256\""),
         "{text}"
     );
+}
+
+#[test]
+fn cli_decrypts_tls12_aes128_gcm_and_reports_dpi() {
+    let text = run_tls12_case();
+    assert!(text.contains("\"event\":\"tls_flow\""), "{text}");
+    assert!(text.contains("\"tls_version\":\"1.2\""), "{text}");
+    assert!(
+        text.contains("\"cipher_suite\":\"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256\""),
+        "{text}"
+    );
+    assert!(text.contains("\"app\":\"http\""), "{text}");
+    assert!(text.contains("\"method\":\"GET\""), "{text}");
+    assert!(text.contains("\"host\":\"legacy.test\""), "{text}");
+    assert!(text.contains("\"status\":200"), "{text}");
+    assert!(text.contains("\"opened\":2"), "{text}");
 }
 
 #[test]
