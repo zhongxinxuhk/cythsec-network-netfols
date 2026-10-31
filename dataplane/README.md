@@ -47,11 +47,13 @@ cmake -B build && cmake --build build && ctest --test-dir build
 
 ⚠️ 当前是**单包实现**（`crates/` 下 9 个子目录均为 `.gitkeep` 占位），Cargo.toml 注释明确：统一在单包内演进，子 crate 后续拆分。依赖为空 —— 零第三方依赖。
 
-**产物**：lib `traffic_engine` + 3 个 bin：
+**产物**：lib `traffic_engine` + 主要 bin：
 
 - `traffic-engine` — 演示入口（支持 `--version`）
 - `dump-abi` — ABI 输出，与 C++ 侧 `cythsec-dump-abi` 逐行 diff
 - `ring-consume` — 共享内存环消费端，解码为 Flow
+- `cythsec-analyze` — 离线 pcap → FlowRecord（JSONL/IPFIX/Native）
+- `cythsec-tls-inspect` — NSS key log → TLS 1.3 应用记录解密 → DPI JSONL 事件
 
 **模块布局**（约 6700 行）：
 
@@ -60,6 +62,7 @@ cmake -B build && cmake --build build && ctest --test-dir build
 | `src/flow/` | 五元组 `FlowKey`（实现 `Ord` 保证输出确定性）+ `Packet` |
 | `src/session/` | 双向会话（TCP SYN→Established→Closed 状态雏形） |
 | `src/dpi/` | 三级递进检测：端口 → 载荷特征 → unknown；DNS/HTTP/TLS/MD5 子模块；`policy.rs` 负责总开关/强度/逐协议开关，策略契约见 [DPI 策略](../docs/development/dpi-policy.md) |
+| `src/tlsdecrypt/` | TLS 1.3 key log 解析、记录层 AES-128-GCM 解密与 HKDF；零第三方依赖，仅离线分析使用 |
 | `src/channel/` | 跨语言共享内存消费端：mmap+校验、SPSC 内存序、以太帧→五元组解码 |
 | `src/attributes_gen.rs` | 属性字典 Rust 绑定（codegen 生成） |
 

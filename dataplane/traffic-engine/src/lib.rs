@@ -50,6 +50,8 @@ pub mod session;
 // 与 export（IPFIX）一样，它只依赖 record/feature/flow 的类型，不反向依赖 pipeline。
 pub mod storage;
 pub mod tcp;
+// TLS 1.3 keylog 解密（仅离线 DPI；零第三方依赖的密码学原语见模块注释）。
+pub mod tlsdecrypt;
 
 /// 测试专用的最小 JSON 解析器，供各向量驱动测试共用。
 #[cfg(test)]

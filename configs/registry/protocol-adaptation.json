@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-31.2",
+  "revision": "2026-10-31.3",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -1375,15 +1375,22 @@
       "local_tested": true,
       "reference_tested": false,
       "accepted": false,
-      "scope": "可见ClientHello字段有界提取；不解密应用载荷",
+      "scope": "可见 ClientHello 字段有界提取；keylog 下 TLS 1.3 AES-128-GCM 应用记录可选解密（独立工具）",
       "code": [
-        "dataplane/traffic-engine/src/dpi/tls.rs"
+        "dataplane/traffic-engine/src/dpi/tls.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/mod.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/crypto.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/keylog.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs",
+        "dataplane/traffic-engine/src/bin/tls_inspect.rs"
       ],
       "tests": [
-        "dataplane/traffic-engine/src/dpi/tests.rs#tls_vectors_match_expected"
+        "dataplane/traffic-engine/src/dpi/tests.rs#tls_vectors_match_expected",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs#decrypts_rfc8448_application_data_and_tickets",
+        "dataplane/traffic-engine/tests/tls_inspect.rs#cli_decrypts_tls13_http_and_reports_dpi"
       ],
       "reference": [],
-      "gap": "握手完整性、ECH可见性及真实样本验收待完成"
+      "gap": "握手完整性、ECH 可见性、TLS 1.2/其它 TLS 1.3 套件与真实样本验收待完成"
     },
     {
       "id": "T003",
