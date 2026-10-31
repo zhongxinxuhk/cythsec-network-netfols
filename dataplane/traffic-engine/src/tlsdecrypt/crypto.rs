@@ -1,17 +1,17 @@
 //! TLS 1.3 记录层解密所需的密码学原语。
 //!
 //! 本仓库的核心数据面**零第三方依赖**（Rust/Go 均自研），因此这里手写
-//! SHA-256 / SHA-384 / HMAC / HKDF / AES / GCM，而不是引入 `sha2`、`aes-gcm`。
-//! 这些实现只服务一个很窄的用途：用运维方提供的 NSS key log 解开
-//! TLS 1.3 的 AES-128-GCM / AES-256-GCM 应用记录。
-//! **不做密钥协商、不导出密钥、不猜测密钥。**
+//! SHA-256 / SHA-384 / HMAC / HKDF / AES / GCM / ChaCha20-Poly1305，而不是引入
+//! `sha2`、`aes-gcm`、`chacha20poly1305`。这些实现只服务一个很窄的用途：用运维方
+//! 提供的 NSS key log 解开 TLS 1.3 的 AES-128-GCM / AES-256-GCM /
+//! ChaCha20-Poly1305 应用记录。**不做密钥协商、不导出密钥、不猜测密钥。**
 //!
 //! 安全性说明：
 //! * AES / GCM 的常量时间性质没有经过侧信道审计；本模块只在**离线**
 //!   分析进程里处理已捕获的密文，不接收远程输入来触发解密。
 //! * GCM 标签比较使用累积 XOR，避免明显的提前返回；仍不宣称抗计时攻击。
-//! * 只支持 TLS 1.3 的 AES-GCM 套件（0x1301 / 0x1302）。其它套件显式报错，
-//!   而不是悄悄输出"解密失败"。
+//! * 只支持 TLS 1.3 的三个标准 AEAD 套件（0x1301 / 0x1302 / 0x1303）。
+//!   其它套件显式报错，而不是悄悄输出"解密失败"。
 
 /// SHA-256 的 64 个轮常量：前 64 个素数立方根小数部分的前 32 位。
 ///
@@ -793,6 +793,305 @@ pub fn aes_gcm_seal(
     Ok(ct)
 }
 
+// ---------------------------------------------------------------------------
+// ChaCha20-Poly1305（RFC 8439）
+// ---------------------------------------------------------------------------
+
+fn quarter_round(x: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+    x[a] = x[a].wrapping_add(x[b]);
+    x[d] ^= x[a];
+    x[d] = x[d].rotate_left(16);
+    x[c] = x[c].wrapping_add(x[d]);
+    x[b] ^= x[c];
+    x[b] = x[b].rotate_left(12);
+    x[a] = x[a].wrapping_add(x[b]);
+    x[d] ^= x[a];
+    x[d] = x[d].rotate_left(8);
+    x[c] = x[c].wrapping_add(x[d]);
+    x[b] ^= x[c];
+    x[b] = x[b].rotate_left(7);
+}
+
+fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
+    let mut state = [0u32; 16];
+    state[0] = 0x61707865;
+    state[1] = 0x3320646e;
+    state[2] = 0x79622d32;
+    state[3] = 0x6b206574;
+    for i in 0..8 {
+        state[4 + i] = u32::from_le_bytes(key[i * 4..i * 4 + 4].try_into().unwrap());
+    }
+    state[12] = counter;
+    for i in 0..3 {
+        state[13 + i] = u32::from_le_bytes(nonce[i * 4..i * 4 + 4].try_into().unwrap());
+    }
+    let mut x = state;
+    for _ in 0..10 {
+        quarter_round(&mut x, 0, 4, 8, 12);
+        quarter_round(&mut x, 1, 5, 9, 13);
+        quarter_round(&mut x, 2, 6, 10, 14);
+        quarter_round(&mut x, 3, 7, 11, 15);
+        quarter_round(&mut x, 0, 5, 10, 15);
+        quarter_round(&mut x, 1, 6, 11, 12);
+        quarter_round(&mut x, 2, 7, 8, 13);
+        quarter_round(&mut x, 3, 4, 9, 14);
+    }
+    let mut out = [0u8; 64];
+    for i in 0..16 {
+        let v = x[i].wrapping_add(state[i]);
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// ChaCha20 流加密/解密（RFC 8439 §2.4）。
+pub fn chacha20_xor(
+    key: &[u8],
+    nonce: &[u8],
+    counter: u32,
+    data: &[u8],
+) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err(format!("ChaCha20 key length {} is not 32", key.len()));
+    }
+    if nonce.len() != 12 {
+        return Err(format!("ChaCha20 nonce length {} is not 12", nonce.len()));
+    }
+    let mut key_arr = [0u8; 32];
+    key_arr.copy_from_slice(key);
+    let mut nonce_arr = [0u8; 12];
+    nonce_arr.copy_from_slice(nonce);
+    let mut out = Vec::with_capacity(data.len());
+    for (i, chunk) in data.chunks(64).enumerate() {
+        let block = chacha20_block(&key_arr, counter.wrapping_add(i as u32), &nonce_arr);
+        for (j, b) in chunk.iter().enumerate() {
+            out.push(b ^ block[j]);
+        }
+    }
+    Ok(out)
+}
+
+fn load32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// Poly1305 MAC（RFC 8439 §2.5），5x26 位实现。
+pub fn poly1305_mac(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
+    const M: u32 = 0x3ffffff;
+    let r0 = load32(&key[0..4]) & 0x3ffffff;
+    let r1 = (load32(&key[3..7]) >> 2) & 0x3ffff03;
+    let r2 = (load32(&key[6..10]) >> 4) & 0x3ffc0ff;
+    let r3 = (load32(&key[9..13]) >> 6) & 0x3f03fff;
+    let r4 = (load32(&key[12..16]) >> 8) & 0x00fffff;
+    let s1 = r1 * 5;
+    let s2 = r2 * 5;
+    let s3 = r3 * 5;
+    let s4 = r4 * 5;
+    let (mut h0, mut h1, mut h2, mut h3, mut h4) = (0u32, 0u32, 0u32, 0u32, 0u32);
+
+    for chunk in msg.chunks(16) {
+        let mut block = [0u8; 17];
+        block[..chunk.len()].copy_from_slice(chunk);
+        block[chunk.len()] = 1;
+        let t0 = load32(&block[0..4]);
+        let t1 = load32(&block[4..8]);
+        let t2 = load32(&block[8..12]);
+        let t3 = load32(&block[12..16]);
+        let hibit = if chunk.len() == 16 { 1u32 << 24 } else { 0 };
+        h0 = h0.wrapping_add(t0 & M);
+        h1 = h1.wrapping_add(((t0 >> 26) | (t1 << 6)) & M);
+        h2 = h2.wrapping_add(((t1 >> 20) | (t2 << 12)) & M);
+        h3 = h3.wrapping_add(((t2 >> 14) | (t3 << 18)) & M);
+        h4 = h4.wrapping_add((t3 >> 8) | hibit);
+
+        let d0 = (h0 as u64) * (r0 as u64)
+            + (h1 as u64) * (s4 as u64)
+            + (h2 as u64) * (s3 as u64)
+            + (h3 as u64) * (s2 as u64)
+            + (h4 as u64) * (s1 as u64);
+        let d1 = (h0 as u64) * (r1 as u64)
+            + (h1 as u64) * (r0 as u64)
+            + (h2 as u64) * (s4 as u64)
+            + (h3 as u64) * (s3 as u64)
+            + (h4 as u64) * (s2 as u64);
+        let d2 = (h0 as u64) * (r2 as u64)
+            + (h1 as u64) * (r1 as u64)
+            + (h2 as u64) * (r0 as u64)
+            + (h3 as u64) * (s4 as u64)
+            + (h4 as u64) * (s3 as u64);
+        let d3 = (h0 as u64) * (r3 as u64)
+            + (h1 as u64) * (r2 as u64)
+            + (h2 as u64) * (r1 as u64)
+            + (h3 as u64) * (r0 as u64)
+            + (h4 as u64) * (s4 as u64);
+        let d4 = (h0 as u64) * (r4 as u64)
+            + (h1 as u64) * (r3 as u64)
+            + (h2 as u64) * (r2 as u64)
+            + (h3 as u64) * (r1 as u64)
+            + (h4 as u64) * (r0 as u64);
+        let mut c = (d0 >> 26) as u32;
+        h0 = d0 as u32 & M;
+        let d1 = d1 + c as u64;
+        c = (d1 >> 26) as u32;
+        h1 = d1 as u32 & M;
+        let d2 = d2 + c as u64;
+        c = (d2 >> 26) as u32;
+        h2 = d2 as u32 & M;
+        let d3 = d3 + c as u64;
+        c = (d3 >> 26) as u32;
+        h3 = d3 as u32 & M;
+        let d4 = d4 + c as u64;
+        c = (d4 >> 26) as u32;
+        h4 = d4 as u32 & M;
+        h0 += c * 5;
+        c = h0 >> 26;
+        h0 &= M;
+        h1 += c;
+    }
+
+    let mut c = h1 >> 26;
+    h1 &= M;
+    h2 += c;
+    c = h2 >> 26;
+    h2 &= M;
+    h3 += c;
+    c = h3 >> 26;
+    h3 &= M;
+    h4 += c;
+    c = h4 >> 26;
+    h4 &= M;
+    h0 += c * 5;
+    c = h0 >> 26;
+    h0 &= M;
+    h1 += c;
+
+    let mut g0 = h0 + 5;
+    c = g0 >> 26;
+    g0 &= M;
+    let mut g1 = h1 + c;
+    c = g1 >> 26;
+    g1 &= M;
+    let mut g2 = h2 + c;
+    c = g2 >> 26;
+    g2 &= M;
+    let mut g3 = h3 + c;
+    c = g3 >> 26;
+    g3 &= M;
+    let g4 = (h4 + c).wrapping_sub(1 << 26);
+    let select = (g4 >> 31).wrapping_sub(1);
+    let keep = !select;
+    h0 = (h0 & keep) | (g0 & select);
+    h1 = (h1 & keep) | (g1 & select);
+    h2 = (h2 & keep) | (g2 & select);
+    h3 = (h3 & keep) | (g3 & select);
+    h4 = (h4 & keep) | (g4 & select);
+
+    let pad0 = load32(&key[16..20]) as u64;
+    let pad1 = load32(&key[20..24]) as u64;
+    let pad2 = load32(&key[24..28]) as u64;
+    let pad3 = load32(&key[28..32]) as u64;
+    let mut f0 = ((h0 as u64) | ((h1 as u64) << 26)) & 0xffffffff;
+    let mut f1 = (((h1 >> 6) as u64) | ((h2 as u64) << 20)) & 0xffffffff;
+    let mut f2 = (((h2 >> 12) as u64) | ((h3 as u64) << 14)) & 0xffffffff;
+    let mut f3 = (((h3 >> 18) as u64) | ((h4 as u64) << 8)) & 0xffffffff;
+    f0 += pad0;
+    let mut carry = f0 >> 32;
+    f0 &= 0xffffffff;
+    f1 += pad1 + carry;
+    carry = f1 >> 32;
+    f1 &= 0xffffffff;
+    f2 += pad2 + carry;
+    carry = f2 >> 32;
+    f2 &= 0xffffffff;
+    f3 += pad3 + carry;
+    f3 &= 0xffffffff;
+
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&(f0 as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&(f1 as u32).to_le_bytes());
+    out[8..12].copy_from_slice(&(f2 as u32).to_le_bytes());
+    out[12..16].copy_from_slice(&(f3 as u32).to_le_bytes());
+    out
+}
+
+fn poly1305_pad16(out: &mut Vec<u8>) {
+    while out.len() % 16 != 0 {
+        out.push(0);
+    }
+}
+
+fn poly1305_input(aad: &[u8], ct: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(aad.len() + ct.len() + 32);
+    out.extend_from_slice(aad);
+    poly1305_pad16(&mut out);
+    out.extend_from_slice(ct);
+    poly1305_pad16(&mut out);
+    out.extend_from_slice(&(aad.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(ct.len() as u64).to_le_bytes());
+    out
+}
+
+/// ChaCha20-Poly1305 AEAD 解密并校验标签，`sealed` = 密文 || 16 字节标签。
+pub fn chacha20_poly1305_open(
+    key: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+    sealed: &[u8],
+) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err(format!("ChaCha20 key length {} is not 32", key.len()));
+    }
+    if nonce.len() != 12 {
+        return Err(format!("ChaCha20 nonce length {} is not 12", nonce.len()));
+    }
+    if sealed.len() < 16 {
+        return Err("ChaCha20-Poly1305 ciphertext shorter than tag".into());
+    }
+    let (ct, tag) = sealed.split_at(sealed.len() - 16);
+    let mut key_arr = [0u8; 32];
+    key_arr.copy_from_slice(key);
+    let mut nonce_arr = [0u8; 12];
+    nonce_arr.copy_from_slice(nonce);
+    let block0 = chacha20_block(&key_arr, 0, &nonce_arr);
+    let mut poly_key = [0u8; 32];
+    poly_key.copy_from_slice(&block0[..32]);
+    let expected = poly1305_mac(&poly_key, &poly1305_input(aad, ct));
+    let mut diff = 0u8;
+    for i in 0..16 {
+        diff |= expected[i] ^ tag[i];
+    }
+    if diff != 0 {
+        return Err("ChaCha20-Poly1305 tag mismatch".into());
+    }
+    chacha20_xor(key, nonce, 1, ct)
+}
+
+/// ChaCha20-Poly1305 AEAD 加密，返回密文 || 16 字节标签。
+pub fn chacha20_poly1305_seal(
+    key: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err(format!("ChaCha20 key length {} is not 32", key.len()));
+    }
+    if nonce.len() != 12 {
+        return Err(format!("ChaCha20 nonce length {} is not 12", nonce.len()));
+    }
+    let mut key_arr = [0u8; 32];
+    key_arr.copy_from_slice(key);
+    let mut nonce_arr = [0u8; 12];
+    nonce_arr.copy_from_slice(nonce);
+    let block0 = chacha20_block(&key_arr, 0, &nonce_arr);
+    let mut poly_key = [0u8; 32];
+    poly_key.copy_from_slice(&block0[..32]);
+    let mut ct = chacha20_xor(key, nonce, 1, plaintext)?;
+    let tag = poly1305_mac(&poly_key, &poly1305_input(aad, &ct));
+    ct.extend_from_slice(&tag);
+    Ok(ct)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,6 +1277,49 @@ mod tests {
             aes_gcm_seal(&key256, &nonce, &[], &[0u8; 16]).unwrap(),
             sealed
         );
+    }
+
+    #[test]
+    fn chacha20_block_rfc8439() {
+        let key = hex32("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&hex("000000090000004a00000000"));
+        assert_eq!(
+            chacha20_block(&key, 1, &nonce).to_vec(),
+            hex("10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4ed2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e")
+        );
+    }
+
+    #[test]
+    fn poly1305_rfc8439() {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&hex(
+            "85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b",
+        ));
+        assert_eq!(
+            poly1305_mac(&k, b"Cryptographic Forum Research Group").to_vec(),
+            hex("a8061dc1305136c6c22b8baf0c0127a9")
+        );
+    }
+
+    #[test]
+    fn chacha20_poly1305_rfc8439() {
+        let key = hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&hex("070000004041424344454647"));
+        let aad = hex("50515253c0c1c2c3c4c5c6c7");
+        let plaintext = b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        let expected = hex("d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd0600691");
+        let sealed = chacha20_poly1305_seal(&key, &nonce, &aad, plaintext).unwrap();
+        assert_eq!(sealed, expected);
+        assert_eq!(
+            chacha20_poly1305_open(&key, &nonce, &aad, &sealed).unwrap(),
+            plaintext.to_vec()
+        );
+        let mut broken = sealed.clone();
+        let last = broken.len() - 1;
+        broken[last] ^= 1;
+        assert!(chacha20_poly1305_open(&key, &nonce, &aad, &broken).is_err());
     }
 
     #[test]

@@ -62,7 +62,7 @@ cmake -B build && cmake --build build && ctest --test-dir build
 | `src/flow/` | 五元组 `FlowKey`（实现 `Ord` 保证输出确定性）+ `Packet` |
 | `src/session/` | 双向会话（TCP SYN→Established→Closed 状态雏形） |
 | `src/dpi/` | 三级递进检测：端口 → 载荷特征 → unknown；DNS/HTTP/TLS/MD5 子模块；`policy.rs` 负责总开关/强度/逐协议开关，策略契约见 [DPI 策略](../docs/development/dpi-policy.md) |
-| `src/tlsdecrypt/` | TLS 1.3 key log 解析、记录层 AES-128/256-GCM 解密与 SHA-256/384 HKDF；零第三方依赖，仅离线分析使用 |
+| `src/tlsdecrypt/` | TLS 1.3 key log 解析、记录层 AES-128/256-GCM / ChaCha20-Poly1305 解密与 SHA-256/384 HKDF；零第三方依赖，仅离线分析使用 |
 | `src/channel/` | 跨语言共享内存消费端：mmap+校验、SPSC 内存序、以太帧→五元组解码 |
 | `src/attributes_gen.rs` | 属性字典 Rust 绑定（codegen 生成） |
 

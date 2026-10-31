@@ -2,18 +2,18 @@
 //
 // 这里刻意不用 RFC 8448 的固定记录做“唯一”验证：那条向量已经验证了密码学与
 // 序号处理（见 tlsdecrypt::record 单元测试）。本测试要验证的是**另一件事**：
-// 解密后的明文确实被送进了 DPI，而不是只把字节数写进报告。因此用同一个
-// AES-GCM 实现构造一条带 HTTP 明文的 TLS 1.3 记录；AES-GCM 本身由 NIST 向量
-// 独立校验，不会变成“自己加密自己解密”的循环论证。
+// 解密后的明文确实被送进了 DPI，而不是只把字节数写进报告。因此用仓库内的
+// AEAD 构造一条带 HTTP 明文的 TLS 1.3 记录；AES-GCM 与 ChaCha20-Poly1305
+// 本身分别由 NIST/RFC 8439 向量独立校验，不会变成“自己加密自己解密”的循环论证。
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use traffic_engine::tlsdecrypt::crypto::aes_gcm_seal;
+use traffic_engine::tlsdecrypt::crypto::{aes_gcm_seal, chacha20_poly1305_seal};
 use traffic_engine::tlsdecrypt::record::{
-    TrafficKeys, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+    Aead, TrafficKeys, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256,
 };
 
 fn u16be(v: u16) -> [u8; 2] {
@@ -72,7 +72,14 @@ fn app_record(keys: &TrafficKeys, seq: u64, inner_type: u8, data: &[u8]) -> Vec<
     for (i, b) in seq.to_be_bytes().iter().enumerate() {
         nonce[4 + i] ^= b;
     }
-    let sealed = aes_gcm_seal(&keys.key, &nonce, &header, &inner).unwrap();
+    let sealed = match keys.aead {
+        Aead::Aes128Gcm | Aead::Aes256Gcm => {
+            aes_gcm_seal(&keys.key, &nonce, &header, &inner).unwrap()
+        }
+        Aead::ChaCha20Poly1305 => {
+            chacha20_poly1305_seal(&keys.key, &nonce, &header, &inner).unwrap()
+        }
+    };
     record(header, &sealed)
 }
 
@@ -305,6 +312,21 @@ fn cli_decrypts_tls13_aes256_http_and_reports_dpi() {
     assert_http_dpi(&text);
     assert!(
         text.contains("\"cipher_suite\":\"TLS_AES_256_GCM_SHA384\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn cli_decrypts_tls13_chacha20_http_and_reports_dpi() {
+    let text = run_decrypt_case(
+        "chacha20",
+        TLS_CHACHA20_POLY1305_SHA256,
+        &[0x22u8; 32],
+        &[0x33u8; 32],
+    );
+    assert_http_dpi(&text);
+    assert!(
+        text.contains("\"cipher_suite\":\"TLS_CHACHA20_POLY1305_SHA256\""),
         "{text}"
     );
 }

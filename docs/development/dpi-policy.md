@@ -142,9 +142,9 @@ cythsec-tls-inspect -r capture.pcap \
   不支持的套件；不会把"解不开"写成"没有应用数据"。
 - key log 必须是普通文件、非符号链接、权限 `0600`（或更严）、不超过 4 MiB。
   只读取；不复制、不导出、不打印路径以外的内容。
-- 支持 TLS 1.3 + `TLS_AES_128_GCM_SHA256`（0x1301）与
-  `TLS_AES_256_GCM_SHA384`（0x1302）。`TLS_CHACHA20_POLY1305_SHA256` 会明确报
-  "unsupported"，不是静默跳过。
+- 支持 TLS 1.3 的三个标准 AEAD 套件：`TLS_AES_128_GCM_SHA256`（0x1301）、
+  `TLS_AES_256_GCM_SHA384`（0x1302）与 `TLS_CHACHA20_POLY1305_SHA256`（0x1303）。
+  TLS 1.2 等其它套件会明确报 "unsupported"，不是静默跳过。
 - TLS 1.2、0-RTT early data、握手密钥 epoch 的记录不解密；前两者不支持，
   后者按设计跳过（应用密钥解不开握手记录，序号不推进）。
 - 一旦解出第一条应用密钥记录，后续标签失败即报错：继续试序号会让整条流
@@ -154,6 +154,6 @@ cythsec-tls-inspect -r capture.pcap \
   抓包必须覆盖 ClientHello/ServerHello，只有应用记录而没有握手的流无法建立密钥上下文。
 - ECH 下 SNI 不可见是预期结果，工具不尝试解密 ECH；`server_name` 为 `null`。
 
-密码学实现为零第三方依赖：SHA-256/SHA-384、HMAC、HKDF、AES-128/256、AES-GCM
-均为本仓库实现，并用 NIST/RFC 4231/RFC 5869/RFC 8448 向量验证。它们只用于
-离线分析，不宣称抗侧信道；不用于在线密钥协商或生产加密。
+密码学实现为零第三方依赖：SHA-256/SHA-384、HMAC、HKDF、AES-128/256、AES-GCM、
+ChaCha20-Poly1305 均为本仓库实现，并用 NIST/RFC 4231/RFC 5869/RFC 8439/RFC 8448
+向量验证。它们只用于离线分析，不宣称抗侧信道；不用于在线密钥协商或生产加密。
