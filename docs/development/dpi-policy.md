@@ -25,7 +25,7 @@
   - `off`：0 字节，0 个检测器。
   - `basic`：仅 TLS/HTTP/DNS，窗口上限 128 字节。
   - `standard`：全部已启用模块，窗口沿用调用方上限（CLI 默认 512）。
-  - `deep`：窗口至少 4096 字节；配置密钥日志后尝试解密 TLS 1.3。
+  - `deep`：窗口至少 4096 字节；配置密钥日志后尝试解密 TLS 1.2/1.3。
 - `inspect_bytes`：显式覆盖 64..=65536；`null` 表示按强度取默认。
 - `modules`：键与 `AppId` 一一对应；缺省项按目录 `default_enabled` 处理。
   拼错的键、未知强度、相对 key log 路径都会导致加载失败，不静默回落。
@@ -104,11 +104,11 @@ routerd -dpi-policy-dir /var/lib/cythsec/dpi
 - 关闭模块是真实跳过调用，不是"解析完再丢结果"；
 - 本功能不提供主动探测、指纹规避或封锁实现。
 
-## 6. TLS 1.3 key log 解密
+## 6. TLS 1.2/1.3 key log 解密
 
-`cythsec-tls-inspect` 是独立二进制：读 pcap，按方向重组 TCP，解析 TLS 1.3
-记录，用 NSS key log 解密应用数据，再把明文送入现有 DPI。它**不修改**
-FlowRecord 的字节布局，也不把明文写进事件。
+`cythsec-tls-inspect` 是独立二进制：读 pcap，按方向重组 TCP，解析 TLS 记录，
+用 NSS key log 解密应用数据，再把明文送入现有 DPI。它**不修改** FlowRecord
+的字节布局，也不把明文写进事件。
 
 ```bash
 # 策略文件方式（推荐）：enabled=true、intensity=deep、tls_decrypt.enabled=true
@@ -128,7 +128,7 @@ cythsec-tls-inspect -r capture.pcap \
 ```json
 {"schema_version":1,"event":"tls_flow","client":"10.0.0.1:12345",
  "server":"10.0.0.2:443","server_name":"example.test",
- "cipher_suite":"TLS_AES_128_GCM_SHA256",
+ "cipher_suite":"TLS_AES_128_GCM_SHA256","tls_version":"1.3",
  "records":{"client":{"opened":1,"skipped":0},"server":{"opened":1,"skipped":0}},
  "messages":[{"direction":"client","bytes":42,"sha256":"…",
    "dpi":{"outcome":"identified","app":"http","confidence":"high",
@@ -144,9 +144,13 @@ cythsec-tls-inspect -r capture.pcap \
   只读取；不复制、不导出、不打印路径以外的内容。
 - 支持 TLS 1.3 的三个标准 AEAD 套件：`TLS_AES_128_GCM_SHA256`（0x1301）、
   `TLS_AES_256_GCM_SHA384`（0x1302）与 `TLS_CHACHA20_POLY1305_SHA256`（0x1303）。
-  TLS 1.2 等其它套件会明确报 "unsupported"，不是静默跳过。
-- TLS 1.2、0-RTT early data、握手密钥 epoch 的记录不解密；前两者不支持，
-  后者按设计跳过（应用密钥解不开握手记录，序号不推进）。
+- 支持 TLS 1.2 的 AES-GCM 套件：ECDHE_ECDSA/ECDHE_RSA/RSA/DHE_RSA 下的
+  AES-128-GCM-SHA256 与 AES-256-GCM-SHA384（0xC02B/0xC02C/0xC02F/0xC030/
+  0x009C/0x009D/0x009E/0x009F）。TLS 1.2 需要 key log 中的 `CLIENT_RANDOM`
+  48 字节 master secret；ChangeCipherSpec 之前的记录跳过，之后按序号解密。
+- TLS 1.2 CBC/ChaCha20 套件、0-RTT early data、握手密钥 epoch 的记录不解密；
+  不支持的套件明确报 "unsupported"，不是静默跳过。TLS 1.3 的握手记录按设计
+  跳过（应用密钥解不开握手记录，序号不推进）。
 - 一旦解出第一条应用密钥记录，后续标签失败即报错：继续试序号会让整条流
   错位，把后面的记录解成垃圾。
 - TCP 只使用连续前缀；乱序空洞、snaplen 截断与抓包起点过晚都会导致

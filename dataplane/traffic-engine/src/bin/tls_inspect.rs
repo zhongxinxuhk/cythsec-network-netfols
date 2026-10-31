@@ -1,4 +1,4 @@
-// tls_inspect.rs —— `cythsec-tls-inspect`：key log 驱动的 TLS 1.3 离线解密 + DPI。
+// tls_inspect.rs —— `cythsec-tls-inspect`：key log 驱动的 TLS 1.2/1.3 离线解密 + DPI。
 //
 // 为什么单独成一个二进制，而不是改 FlowRecord：
 //   FlowRecord 的字节布局与列式落盘是已实测的对外契约，往里塞"明文结论"会改变
@@ -26,17 +26,20 @@ use traffic_engine::reassembly::stream::{Stream, StreamConfig};
 use traffic_engine::reassembly::tcp;
 use traffic_engine::tlsdecrypt::crypto::sha256;
 use traffic_engine::tlsdecrypt::keylog::KeyLog;
-use traffic_engine::tlsdecrypt::record::{hex, parse_client_hello, Plaintext, TlsSession};
+use traffic_engine::tlsdecrypt::record::{
+    hex, parse_client_hello, Plaintext, TlsSession, TlsVersion,
+};
 
 const USAGE: &str = "\
-cythsec-tls-inspect —— 用 NSS key log 解密 TLS 1.3 应用记录并做 DPI
+cythsec-tls-inspect —— 用 NSS key log 解密 TLS 1.2/1.3 应用记录并做 DPI
 
 用法:
   cythsec-tls-inspect -r <input.pcap> --keylog <FILE> --decrypt [选项]
 
 选项:
   -r, --read <FILE>        输入经典 pcap（链路层必须是以太网）
-      --keylog <FILE>      NSS key log（SSLKEYLOGFILE 格式），必须是 0600 普通文件
+      --keylog <FILE>      NSS key log（SSLKEYLOGFILE 格式），必须是 0600 普通文件；
+                           TLS 1.3 需要 CLIENT/SERVER_TRAFFIC_SECRET_0，TLS 1.2 需要 CLIENT_RANDOM
       --dpi-policy <FILE>  DPI 策略 JSON；必须 enabled=true、intensity=deep、
                            tls_decrypt.enabled=true
       --decrypt            显式允许解密（策略文件未打开时必须同时给出）
@@ -310,9 +313,13 @@ fn run() -> Result<(), String> {
                             .chain(render_messages("server", &s, &policy, &mut stats))
                             .collect::<Vec<_>>();
                         let alerts = alerts(&c, &s);
+                        let version = match session.version {
+                            TlsVersion::Tls12 => "1.2",
+                            TlsVersion::Tls13 => "1.3",
+                        };
                         let line = format!(
                             "{{\"schema_version\":1,\"event\":\"tls_flow\",\"client\":{},\"server\":{},\
-                             \"server_name\":{},\"cipher_suite\":\"{}\",\"client_random\":\"{}\",\
+                             \"server_name\":{},\"cipher_suite\":\"{}\",\"tls_version\":\"{}\",\"client_random\":\"{}\",\
                              \"records\":{{\"client\":{{\"opened\":{},\"skipped\":{}}},\
                              \"server\":{{\"opened\":{},\"skipped\":{}}}}},\
                              \"stream\":{{\"client_bytes\":{},\"server_bytes\":{},\
@@ -326,6 +333,7 @@ fn run() -> Result<(), String> {
                                 .map(jstr)
                                 .unwrap_or_else(|| "null".into()),
                             traffic_engine::tlsdecrypt::record::suite_name(session.cipher_suite),
+                            version,
                             hex(&session.client_random),
                             session.client.opened(),
                             session.client.skipped(),

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-/// 单个 client random 对应的 TLS 1.3 流量密钥。
+/// 单个 client random 对应的 TLS 1.3 流量密钥或 TLS 1.2 主密钥。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Entry {
     pub client_app: Option<Vec<u8>>,
@@ -15,6 +15,8 @@ pub struct Entry {
     pub client_handshake: Option<Vec<u8>>,
     pub server_handshake: Option<Vec<u8>>,
     pub client_early: Option<Vec<u8>>,
+    /// TLS 1.2 的 `CLIENT_RANDOM` 条目（48 字节 master secret）。
+    pub legacy_master: Option<Vec<u8>>,
 }
 
 impl Entry {
@@ -25,12 +27,17 @@ impl Entry {
             "CLIENT_HANDSHAKE_TRAFFIC_SECRET" => Some(&mut self.client_handshake),
             "SERVER_HANDSHAKE_TRAFFIC_SECRET" => Some(&mut self.server_handshake),
             "CLIENT_EARLY_TRAFFIC_SECRET" => Some(&mut self.client_early),
+            "CLIENT_RANDOM" => Some(&mut self.legacy_master),
             _ => None,
         }
     }
 
     pub fn has_application_traffic(&self) -> bool {
         self.client_app.is_some() && self.server_app.is_some()
+    }
+
+    pub fn has_legacy_master(&self) -> bool {
+        self.legacy_master.is_some()
     }
 }
 
@@ -46,6 +53,7 @@ impl Drop for Entry {
         wipe(&mut self.client_handshake);
         wipe(&mut self.server_handshake);
         wipe(&mut self.client_early);
+        wipe(&mut self.legacy_master);
     }
 }
 
@@ -86,8 +94,8 @@ impl KeyLog {
             }
             let mut entry = Entry::default();
             if entry.slot(label).is_none() {
-                // 其它标签（例如 TLS 1.2 的 CLIENT_RANDOM / EXPORTER_SECRET）不参与
-                // TLS 1.3 应用记录解密；忽略而不是报错，便于直接使用 OpenSSL 原始文件。
+                // 其它标签（例如 EXPORTER_SECRET）不参与应用记录解密；
+                // 忽略而不是报错，便于直接使用 OpenSSL 原始文件。
                 log.ignored_lines += 1;
                 continue;
             }
@@ -95,7 +103,16 @@ impl KeyLog {
                 .map_err(|e| format!("keylog line {}: client random: {e}", line_no + 1))?;
             let value = decode_hex(value_hex)
                 .map_err(|e| format!("keylog line {}: value: {e}", line_no + 1))?;
-            if value.len() != 32 && value.len() != 48 {
+            let expected_len = if label == "CLIENT_RANDOM" { 48 } else { 0 };
+            if expected_len != 0 && value.len() != expected_len {
+                return Err(format!(
+                    "keylog line {}: value length {} is not {} for {label}",
+                    line_no + 1,
+                    value.len(),
+                    expected_len
+                ));
+            }
+            if expected_len == 0 && value.len() != 32 && value.len() != 48 {
                 return Err(format!(
                     "keylog line {}: value length {} is not 32 or 48",
                     line_no + 1,
@@ -116,7 +133,7 @@ impl KeyLog {
             }
         }
         if log.entries.is_empty() {
-            return Err("keylog contains no TLS 1.3 application traffic entries".into());
+            return Err("keylog contains no application traffic or legacy master entries".into());
         }
         Ok(log)
     }
@@ -214,6 +231,7 @@ mod tests {
     const RANDOM: &str = "cb34ecb1e78163ba1c38c6dacb196a6dffa21a8d9912ec18a2ef6283024dece7";
     const CLIENT_APP: &str = "9e40646ce79a7f9dc05af8889bce6552875afa0b06df0087f792ebb7c17504a5";
     const SERVER_APP: &str = "a11af9f05531f856ad47116b45a950328204b4f44bfb6b3a4b4f1f3fcb631643";
+    const LEGACY_MASTER: &str = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30";
 
     #[test]
     fn parses_rfc8448_style_file_and_ignores_unknown_labels() {
@@ -222,7 +240,8 @@ mod tests {
              SERVER_HANDSHAKE_TRAFFIC_SECRET {RANDOM} {SERVER_APP}\n\
              CLIENT_TRAFFIC_SECRET_0 {RANDOM} {CLIENT_APP}\n\
              SERVER_TRAFFIC_SECRET_0 {RANDOM} {SERVER_APP}\n\
-             CLIENT_RANDOM {RANDOM} {SERVER_APP}\n"
+             CLIENT_RANDOM {RANDOM} {LEGACY_MASTER}\n\
+             EXPORTER_SECRET {RANDOM} {CLIENT_APP}\n"
         );
         let log = KeyLog::parse(&text).unwrap();
         assert_eq!(log.len(), 1);
@@ -238,6 +257,11 @@ mod tests {
             Some(&decode_hex(SERVER_APP).unwrap()[..])
         );
         assert!(e.has_application_traffic());
+        assert!(e.has_legacy_master());
+        assert_eq!(
+            e.legacy_master.as_deref(),
+            Some(&decode_hex(LEGACY_MASTER).unwrap()[..])
+        );
     }
 
     #[test]
@@ -248,6 +272,7 @@ mod tests {
         assert!(KeyLog::parse(&(a.clone() + &b)).is_err());
         assert!(KeyLog::parse(&(a.clone() + &a)).is_ok());
         assert!(KeyLog::parse("CLIENT_TRAFFIC_SECRET_0").is_err());
+        assert!(KeyLog::parse(&format!("CLIENT_RANDOM {RANDOM} {CLIENT_APP}\n")).is_err());
         assert!(KeyLog::parse("CLIENT_TRAFFIC_SECRET_0 xx yy").is_err());
         assert!(KeyLog::parse("").is_err());
     }

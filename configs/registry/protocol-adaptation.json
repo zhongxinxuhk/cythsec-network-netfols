@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-31.3",
+  "revision": "2026-10-31.4",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -1359,15 +1359,24 @@
       "local_tested": true,
       "reference_tested": false,
       "accepted": false,
-      "scope": "可见ClientHello字段有界提取；不解密应用载荷",
+      "scope": "可见 ClientHello 字段有界提取；keylog 下 TLS 1.2 AES-128-GCM / AES-256-GCM 应用记录可选解密（独立工具）",
       "code": [
-        "dataplane/traffic-engine/src/dpi/tls.rs"
+        "dataplane/traffic-engine/src/dpi/tls.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/mod.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/crypto.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/keylog.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs",
+        "dataplane/traffic-engine/src/bin/tls_inspect.rs"
       ],
       "tests": [
-        "dataplane/traffic-engine/src/dpi/tests.rs#tls_vectors_match_expected"
+        "dataplane/traffic-engine/src/dpi/tests.rs#tls_vectors_match_expected",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs#tls12_key_block_matches_independent_hmac",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs#tls12_decrypts_after_ccs_and_advances_sequence",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs#tls12_aes256_gcm_record_roundtrip",
+        "dataplane/traffic-engine/tests/tls_inspect.rs#cli_decrypts_tls12_aes128_gcm_and_reports_dpi"
       ],
       "reference": [],
-      "gap": "握手完整性、ECH可见性及真实样本验收待完成"
+      "gap": "握手完整性、ECH 可见性、TLS 1.2 CBC/ChaCha20 套件与真实样本验收待完成"
     },
     {
       "id": "T002",
@@ -1394,7 +1403,7 @@
         "dataplane/traffic-engine/tests/tls_inspect.rs#cli_decrypts_tls13_chacha20_http_and_reports_dpi"
       ],
       "reference": [],
-      "gap": "握手完整性、ECH 可见性、TLS 1.2 与真实样本验收待完成"
+      "gap": "握手完整性、ECH 可见性、真实样本验收待完成"
     },
     {
       "id": "T003",
@@ -3506,15 +3515,24 @@
       "local_tested": true,
       "reference_tested": false,
       "accepted": false,
-      "scope": "可见ClientHello字段有界提取；不解密应用载荷",
+      "scope": "可见 ClientHello 字段有界提取；keylog 下 TLS 1.2 AES-128-GCM / AES-256-GCM 应用记录可选解密（独立工具）",
       "code": [
-        "dataplane/traffic-engine/src/dpi/tls.rs"
+        "dataplane/traffic-engine/src/dpi/tls.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/mod.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/crypto.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/keylog.rs",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs",
+        "dataplane/traffic-engine/src/bin/tls_inspect.rs"
       ],
       "tests": [
-        "dataplane/traffic-engine/src/dpi/tests.rs#tls_vectors_match_expected"
+        "dataplane/traffic-engine/src/dpi/tests.rs#tls_vectors_match_expected",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs#tls12_key_block_matches_independent_hmac",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs#tls12_decrypts_after_ccs_and_advances_sequence",
+        "dataplane/traffic-engine/src/tlsdecrypt/record.rs#tls12_aes256_gcm_record_roundtrip",
+        "dataplane/traffic-engine/tests/tls_inspect.rs#cli_decrypts_tls12_aes128_gcm_and_reports_dpi"
       ],
       "reference": [],
-      "gap": "握手完整性、ECH可见性及真实样本验收待完成"
+      "gap": "握手完整性、ECH 可见性、TLS 1.2 CBC/ChaCha20 套件与真实样本验收待完成"
     },
     {
       "id": "B001",
