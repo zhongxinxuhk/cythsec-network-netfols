@@ -1,9 +1,11 @@
 //! TLS 1.3 / TLS 1.2 记录层解析与按 key log 解密。
 //!
 //! TLS 1.3：外层 `application_data`（23），内层 content type 在解密后剥离。
-//! TLS 1.2：支持 AES-128-GCM / AES-256-GCM 套件的 AEAD 记录；主密钥来自
-//! key log 的 `CLIENT_RANDOM` 行。TLS 1.2 的 CBC/非 AES-GCM 套件仍明确报错。
+//! TLS 1.2：支持 AES-128-GCM / AES-256-GCM / ChaCha20-Poly1305 套件的 AEAD
+//! 记录；主密钥来自 key log 的 `CLIENT_RANDOM` 行。TLS 1.2 的 CBC 套件仍明确报错。
 
+#[cfg(test)]
+use crate::tlsdecrypt::crypto::chacha20_poly1305_seal;
 use crate::tlsdecrypt::crypto::{
     aes_gcm_open, chacha20_poly1305_open, expand_label, expand_label_sha384,
 };
@@ -181,6 +183,9 @@ pub fn suite_name(suite: u16) -> &'static str {
         0x009d => "TLS_RSA_WITH_AES_256_GCM_SHA384",
         0x009e => "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
         0x009f => "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
+        0xcca8 => "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+        0xcca9 => "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+        0xccaa => "TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
         _ => "unknown",
     }
 }
@@ -365,22 +370,24 @@ impl Tls13Direction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tls12Keys {
     pub key: Vec<u8>,
-    pub fixed_iv: [u8; 4],
+    /// AES-GCM 为 4 字节，ChaCha20-Poly1305 为 12 字节。
+    pub fixed_iv: Vec<u8>,
+    pub aead: Aead,
 }
 
 impl Tls12Keys {
     /// 从 48 字节 master secret 派生客户端/服务端写密钥。
     ///
-    /// 只覆盖 AES-128-GCM / AES-256-GCM 套件；CBC 与 ChaCha20 套件不在此处。
+    /// 覆盖 AES-128-GCM / AES-256-GCM / ChaCha20-Poly1305 套件；CBC 不在此处。
     pub fn derive(
         legacy_material: &[u8],
         client_random: &[u8; 32],
         server_random: &[u8; 32],
         suite: u16,
     ) -> Result<(Self, Self), String> {
-        let (key_len, sha384) = tls12_suite_spec(suite).ok_or_else(|| {
+        let (key_len, sha384, aead) = tls12_suite_spec(suite).ok_or_else(|| {
             format!(
-                "unsupported TLS 1.2 cipher suite {} ({}); only AES-GCM suites are implemented",
+                "unsupported TLS 1.2 cipher suite {} ({}); only AES-GCM and ChaCha20-Poly1305 suites are implemented",
                 suite,
                 suite_name(suite)
             )
@@ -391,25 +398,29 @@ impl Tls12Keys {
                 legacy_material.len()
             ));
         }
+        let iv_len = match aead {
+            Aead::ChaCha20Poly1305 => 12,
+            Aead::Aes128Gcm | Aead::Aes256Gcm => 4,
+        };
         let mut seed = Vec::with_capacity(64);
         seed.extend_from_slice(server_random);
         seed.extend_from_slice(client_random);
-        let total = 2 * key_len + 8;
+        let total = 2 * key_len + 2 * iv_len;
         let block = tls12_prf(legacy_material, b"key expansion", &seed, total, sha384);
         let client_key = block[..key_len].to_vec();
         let server_key = block[key_len..2 * key_len].to_vec();
-        let mut client_iv = [0u8; 4];
-        client_iv.copy_from_slice(&block[2 * key_len..2 * key_len + 4]);
-        let mut server_iv = [0u8; 4];
-        server_iv.copy_from_slice(&block[2 * key_len + 4..2 * key_len + 8]);
+        let client_iv = block[2 * key_len..2 * key_len + iv_len].to_vec();
+        let server_iv = block[2 * key_len + iv_len..2 * key_len + 2 * iv_len].to_vec();
         Ok((
             Self {
                 key: client_key,
                 fixed_iv: client_iv,
+                aead,
             },
             Self {
                 key: server_key,
                 fixed_iv: server_iv,
+                aead,
             },
         ))
     }
@@ -422,12 +433,14 @@ impl Drop for Tls12Keys {
     }
 }
 
-fn tls12_suite_spec(suite: u16) -> Option<(usize, bool)> {
+fn tls12_suite_spec(suite: u16) -> Option<(usize, bool, Aead)> {
     match suite {
         // ECDHE_ECDSA / ECDHE_RSA / RSA / DHE_RSA with AES-128-GCM-SHA256
-        0xc02b | 0xc02f | 0x009c | 0x009e => Some((16, false)),
+        0xc02b | 0xc02f | 0x009c | 0x009e => Some((16, false, Aead::Aes128Gcm)),
         // Same key exchange families with AES-256-GCM-SHA384
-        0xc02c | 0xc030 | 0x009d | 0x009f => Some((32, true)),
+        0xc02c | 0xc030 | 0x009d | 0x009f => Some((32, true, Aead::Aes256Gcm)),
+        // ECDHE_ECDSA / ECDHE_RSA / DHE_RSA with ChaCha20-Poly1305-SHA256
+        0xcca8 | 0xcca9 | 0xccaa => Some((32, false, Aead::ChaCha20Poly1305)),
         _ => None,
     }
 }
@@ -504,22 +517,51 @@ impl Tls12Direction {
             self.skipped += 1;
             return Ok(None);
         }
-        if rec.payload.len() < 24 {
-            return Err("TLS 1.2 GCM record shorter than explicit nonce + tag".into());
-        }
-        let explicit = &rec.payload[..8];
-        let sealed = &rec.payload[8..];
-        let plaintext_len = sealed.len() - 16;
-        let mut nonce = [0u8; 12];
-        nonce[..4].copy_from_slice(&self.keys.fixed_iv);
-        nonce[4..].copy_from_slice(explicit);
+        let (sealed, plaintext_len, nonce) = match self.keys.aead {
+            Aead::Aes128Gcm | Aead::Aes256Gcm => {
+                if rec.payload.len() < 24 {
+                    return Err("TLS 1.2 GCM record shorter than explicit nonce + tag".into());
+                }
+                let iv = self
+                    .keys
+                    .fixed_iv
+                    .get(..4)
+                    .ok_or("TLS 1.2 AES-GCM fixed IV must be 4 bytes")?;
+                let explicit = &rec.payload[..8];
+                let sealed = &rec.payload[8..];
+                let plaintext_len = sealed.len() - 16;
+                let mut nonce = [0u8; 12];
+                nonce[..4].copy_from_slice(iv);
+                nonce[4..].copy_from_slice(explicit);
+                (sealed, plaintext_len, nonce)
+            }
+            Aead::ChaCha20Poly1305 => {
+                if rec.payload.len() < 16 {
+                    return Err("TLS 1.2 ChaCha20-Poly1305 record shorter than tag".into());
+                }
+                let iv: [u8; 12] = self
+                    .keys
+                    .fixed_iv
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "TLS 1.2 ChaCha20-Poly1305 fixed IV must be 12 bytes")?;
+                let mut nonce = iv;
+                for (slot, seq_byte) in nonce[4..].iter_mut().zip(self.seq.to_be_bytes()) {
+                    *slot ^= seq_byte;
+                }
+                (&rec.payload[..], rec.payload.len() - 16, nonce)
+            }
+        };
         let mut aad = [0u8; 13];
         aad[..8].copy_from_slice(&self.seq.to_be_bytes());
         aad[8] = rec.content_type;
         aad[9..11].copy_from_slice(&rec.version.to_be_bytes());
         aad[11..13].copy_from_slice(&(plaintext_len as u16).to_be_bytes());
-        let pt = aes_gcm_open(&self.keys.key, &nonce, &aad, sealed)
-            .map_err(|e| format!("TLS 1.2 record tag mismatch at sequence {}: {e}", self.seq))?;
+        let pt = match self.keys.aead {
+            Aead::Aes128Gcm | Aead::Aes256Gcm => aes_gcm_open(&self.keys.key, &nonce, &aad, sealed),
+            Aead::ChaCha20Poly1305 => chacha20_poly1305_open(&self.keys.key, &nonce, &aad, sealed),
+        }
+        .map_err(|e| format!("TLS 1.2 record tag mismatch at sequence {}: {e}", self.seq))?;
         self.seq += 1;
         self.opened += 1;
         Ok(Some(Plaintext {
@@ -620,7 +662,7 @@ impl TlsSession {
         }
         if !matches!(sh.cipher_suite, 0x1301..=0x1305) {
             return Err(format!(
-                "unsupported TLS cipher suite {} ({}); TLS 1.2 supports only AES-GCM suites",
+                "unsupported TLS cipher suite {} ({}); supported: TLS 1.3 standard AEAD and TLS 1.2 AES-GCM/ChaCha20-Poly1305",
                 sh.cipher_suite,
                 suite_name(sh.cipher_suite)
             ));
@@ -887,8 +929,8 @@ fe 51 37 12 1c 74 bc 26 97 68 7e 24 87 46 d6 df 35 30 05 f3 bc e1 86 96 12 9c 81
             Tls12Keys::derive(&master, &client_random, &server_random, 0xc02f).unwrap();
         assert_eq!(client.key, hexv("21444f2064b5b63368804c604b6a6b3e"));
         assert_eq!(server.key, hexv("3ae6365fea4589989fbf82a7cdcc2691"));
-        assert_eq!(client.fixed_iv, [0x6e, 0x9a, 0x10, 0x78]);
-        assert_eq!(server.fixed_iv, [0x24, 0x9b, 0x1d, 0x32]);
+        assert_eq!(client.fixed_iv, hexv("6e9a1078"));
+        assert_eq!(server.fixed_iv, hexv("249b1d32"));
 
         let (client, server) =
             Tls12Keys::derive(&master, &client_random, &server_random, 0xc030).unwrap();
@@ -900,23 +942,54 @@ fe 51 37 12 1c 74 bc 26 97 68 7e 24 87 46 d6 df 35 30 05 f3 bc e1 86 96 12 9c 81
             server.key,
             hexv("7d719c664fa2f22014d832ee7baccb90cc36c9bed8b45035cf2f2ac56f9068e3")
         );
-        assert_eq!(client.fixed_iv, [0x05, 0xfa, 0x26, 0xa0]);
-        assert_eq!(server.fixed_iv, [0x56, 0x2a, 0xbe, 0x59]);
+        assert_eq!(client.fixed_iv, hexv("05fa26a0"));
+        assert_eq!(server.fixed_iv, hexv("562abe59"));
+    }
+
+    #[test]
+    fn tls12_chacha20_key_block_matches_independent_hmac() {
+        let master: Vec<u8> = (1u8..=48).collect();
+        let (client, server) =
+            Tls12Keys::derive(&master, &[0x11u8; 32], &[0x22u8; 32], 0xcca8).unwrap();
+        assert_eq!(client.aead, Aead::ChaCha20Poly1305);
+        assert_eq!(server.aead, Aead::ChaCha20Poly1305);
+        assert_eq!(
+            client.key,
+            hexv("21444f2064b5b63368804c604b6a6b3e3ae6365fea4589989fbf82a7cdcc2691")
+        );
+        assert_eq!(
+            server.key,
+            hexv("6e9a1078249b1d32163e17bd2d4e358f13a1ef98cdeb95d589e232dc0d335779")
+        );
+        assert_eq!(client.fixed_iv, hexv("41a56e25208fe50482870091"));
+        assert_eq!(server.fixed_iv, hexv("5903d34b4c72f6c179ec59b8"));
     }
 
     fn tls12_record(keys: &Tls12Keys, seq: u64, content_type: u8, data: &[u8]) -> Record {
         let explicit = seq.to_be_bytes();
-        let mut nonce = [0u8; 12];
-        nonce[..4].copy_from_slice(&keys.fixed_iv);
-        nonce[4..].copy_from_slice(&explicit);
         let mut aad = [0u8; 13];
         aad[..8].copy_from_slice(&explicit);
         aad[8] = content_type;
         aad[9..11].copy_from_slice(&0x0303u16.to_be_bytes());
         aad[11..13].copy_from_slice(&(data.len() as u16).to_be_bytes());
-        let sealed = aes_gcm_seal(&keys.key, &nonce, &aad, data).unwrap();
-        let mut payload = explicit.to_vec();
-        payload.extend_from_slice(&sealed);
+        let payload = match keys.aead {
+            Aead::Aes128Gcm | Aead::Aes256Gcm => {
+                let mut nonce = [0u8; 12];
+                nonce[..4].copy_from_slice(&keys.fixed_iv[..4]);
+                nonce[4..].copy_from_slice(&explicit);
+                let sealed = aes_gcm_seal(&keys.key, &nonce, &aad, data).unwrap();
+                let mut payload = explicit.to_vec();
+                payload.extend_from_slice(&sealed);
+                payload
+            }
+            Aead::ChaCha20Poly1305 => {
+                let mut nonce: [u8; 12] = keys.fixed_iv.as_slice().try_into().unwrap();
+                for (slot, seq_byte) in nonce[4..].iter_mut().zip(explicit) {
+                    *slot ^= seq_byte;
+                }
+                chacha20_poly1305_seal(&keys.key, &nonce, &aad, data).unwrap()
+            }
+        };
         let len = payload.len() as u16;
         let header = [content_type, 3, 3, (len >> 8) as u8, len as u8];
         Record {
@@ -969,6 +1042,57 @@ fe 51 37 12 1c 74 bc 26 97 68 7e 24 87 46 d6 df 35 30 05 f3 bc e1 86 96 12 9c 81
         let pt = dir.open(&app).unwrap().unwrap();
         assert_eq!(pt.data, b"legacy aes256");
         assert_eq!(dir.opened(), 1);
+    }
+
+    #[test]
+    fn tls12_chacha20_record_roundtrip() {
+        let master: Vec<u8> = (1u8..=48).collect();
+        let (client_keys, _) =
+            Tls12Keys::derive(&master, &[0x11u8; 32], &[0x22u8; 32], 0xcca8).unwrap();
+        let mut dir = Tls12Direction::new(client_keys.clone());
+        let ccs = Record {
+            content_type: 20,
+            version: 0x0303,
+            payload: vec![1],
+            header: [20, 3, 3, 0, 1],
+        };
+        assert!(dir.open(&ccs).unwrap().is_none());
+        let finished = tls12_record(&client_keys, 0, 22, &[0x14, 0, 0, 12]);
+        assert_eq!(dir.open(&finished).unwrap().unwrap().content_type, 22);
+        let app = tls12_record(&client_keys, 1, 23, b"legacy chacha");
+        let pt = dir.open(&app).unwrap().unwrap();
+        assert_eq!(pt.content_type, 23);
+        assert_eq!(pt.data, b"legacy chacha");
+        assert_eq!(dir.opened(), 2);
+        assert_eq!(dir.skipped(), 0);
+    }
+
+    #[test]
+    fn tls12_chacha20_record_matches_independent_aead_vector() {
+        let keys = Tls12Keys {
+            key: hexv("21444f2064b5b63368804c604b6a6b3e3ae6365fea4589989fbf82a7cdcc2691"),
+            fixed_iv: hexv("41a56e25208fe50482870091"),
+            aead: Aead::ChaCha20Poly1305,
+        };
+        // RFC 7905 记录：nonce = fixed_iv XOR (0^4 || seq)，AAD 与 AES-GCM 相同。
+        // 期望值由 Python cryptography 的 ChaCha20Poly1305 独立生成。
+        let expected = hexv("7f082a7971b281c0b10293d9b50cfc85c6d146db9bffee766c80eb01afb456890c60");
+        let encoded = tls12_record(&keys, 1, 23, b"GET / HTTP/1.1\r\n\r\n");
+        assert_eq!(encoded.payload, expected);
+        let finished = tls12_record(&keys, 0, 22, &[0x14, 0, 0, 12]);
+
+        let mut dir = Tls12Direction::new(keys);
+        let ccs = Record {
+            content_type: 20,
+            version: 0x0303,
+            payload: vec![1],
+            header: [20, 3, 3, 0, 1],
+        };
+        assert!(dir.open(&ccs).unwrap().is_none());
+        assert!(dir.open(&finished).unwrap().is_some());
+        let pt = dir.open(&encoded).unwrap().unwrap();
+        assert_eq!(pt.content_type, 23);
+        assert_eq!(pt.data, b"GET / HTTP/1.1\r\n\r\n");
     }
 
     #[test]

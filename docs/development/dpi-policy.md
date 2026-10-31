@@ -144,11 +144,14 @@ cythsec-tls-inspect -r capture.pcap \
   只读取；不复制、不导出、不打印路径以外的内容。
 - 支持 TLS 1.3 的三个标准 AEAD 套件：`TLS_AES_128_GCM_SHA256`（0x1301）、
   `TLS_AES_256_GCM_SHA384`（0x1302）与 `TLS_CHACHA20_POLY1305_SHA256`（0x1303）。
-- 支持 TLS 1.2 的 AES-GCM 套件：ECDHE_ECDSA/ECDHE_RSA/RSA/DHE_RSA 下的
+- 支持 TLS 1.2 的 AEAD 套件：ECDHE_ECDSA/ECDHE_RSA/RSA/DHE_RSA 下的
   AES-128-GCM-SHA256 与 AES-256-GCM-SHA384（0xC02B/0xC02C/0xC02F/0xC030/
-  0x009C/0x009D/0x009E/0x009F）。TLS 1.2 需要 key log 中的 `CLIENT_RANDOM`
-  48 字节 master secret；ChangeCipherSpec 之前的记录跳过，之后按序号解密。
-- TLS 1.2 CBC/ChaCha20 套件、0-RTT early data、握手密钥 epoch 的记录不解密；
+  0x009C/0x009D/0x009E/0x009F），以及 ECDHE_ECDSA/ECDHE_RSA/DHE_RSA 下的
+  ChaCha20-Poly1305-SHA256（0xCCA8/0xCCA9/0xCCAA）。TLS 1.2 需要 key log 中的
+  `CLIENT_RANDOM` 48 字节 master secret；ChangeCipherSpec 之前的记录跳过，
+  之后按序号解密。ChaCha20-Poly1305 的 nonce 为 12 字节 fixed IV 与序号异或，
+  没有 AES-GCM 的显式 nonce 字段。
+- TLS 1.2 CBC 套件、0-RTT early data、握手密钥 epoch 的记录不解密；
   不支持的套件明确报 "unsupported"，不是静默跳过。TLS 1.3 的握手记录按设计
   跳过（应用密钥解不开握手记录，序号不推进）。
 - 一旦解出第一条应用密钥记录，后续标签失败即报错：继续试序号会让整条流

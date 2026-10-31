@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-31.5",
+  "revision": "2026-10-31.6",
   "note": "DPI 模块目录：键与 traffic-engine 的 AppId 一一对应。implemented=已有专用检测器并纳入本地测试；context=仅接收调用方已解密/已解码输入，不直接从线缆识别；candidate=仅有有界结构候选，不计入协议适配完成。",
   "intensities": [
     {
@@ -36,7 +36,7 @@
       "availability": "implemented",
       "catalog_ids": ["T001", "T002", "T022"],
       "default_enabled": true,
-      "note": "TLS 1.2/1.3 共用 ClientHello 解析器；按检测器整体开关，不把同一份实现拆成三个假开关。TLS 1.3 应用记录可由 cythsec-tls-inspect 用 NSS key log 解密（支持 TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384 / TLS_CHACHA20_POLY1305_SHA256）；TLS 1.2 支持 AES-128-GCM/AES-256-GCM 套件（需 CLIENT_RANDOM）。"
+      "note": "TLS 1.2/1.3 共用 ClientHello 解析器；按检测器整体开关，不把同一份实现拆成三个假开关。TLS 1.3 应用记录可由 cythsec-tls-inspect 用 NSS key log 解密（支持 TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384 / TLS_CHACHA20_POLY1305_SHA256）；TLS 1.2 支持 AES-128-GCM/AES-256-GCM/ChaCha20-Poly1305 套件（需 CLIENT_RANDOM）。"
     },
     {
       "key": "http",

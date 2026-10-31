@@ -284,27 +284,46 @@ fn tls12_ccs() -> Vec<u8> {
 
 fn tls12_record(keys: &Tls12Keys, seq: u64, content_type: u8, data: &[u8]) -> Vec<u8> {
     let explicit = seq.to_be_bytes();
-    let mut nonce = [0u8; 12];
-    nonce[..4].copy_from_slice(&keys.fixed_iv);
-    nonce[4..].copy_from_slice(&explicit);
     let mut aad = [0u8; 13];
     aad[..8].copy_from_slice(&explicit);
     aad[8] = content_type;
     aad[9..11].copy_from_slice(&0x0303u16.to_be_bytes());
     aad[11..13].copy_from_slice(&(data.len() as u16).to_be_bytes());
-    let sealed = aes_gcm_seal(&keys.key, &nonce, &aad, data).unwrap();
-    let mut payload = explicit.to_vec();
-    payload.extend_from_slice(&sealed);
+    let payload = match keys.aead {
+        Aead::Aes128Gcm | Aead::Aes256Gcm => {
+            let mut nonce = [0u8; 12];
+            nonce[..4].copy_from_slice(&keys.fixed_iv[..4]);
+            nonce[4..].copy_from_slice(&explicit);
+            let sealed = aes_gcm_seal(&keys.key, &nonce, &aad, data).unwrap();
+            let mut payload = explicit.to_vec();
+            payload.extend_from_slice(&sealed);
+            payload
+        }
+        Aead::ChaCha20Poly1305 => {
+            let mut nonce: [u8; 12] = keys.fixed_iv.as_slice().try_into().unwrap();
+            for (slot, seq_byte) in nonce[4..].iter_mut().zip(explicit) {
+                *slot ^= seq_byte;
+            }
+            chacha20_poly1305_seal(&keys.key, &nonce, &aad, data).unwrap()
+        }
+    };
     let len = payload.len() as u16;
     record([content_type, 3, 3, (len >> 8) as u8, len as u8], &payload)
 }
 
 fn run_tls12_case() -> String {
-    let dir = temp_dir("tls12");
+    run_tls12_case_with(0xc02f, "tls12")
+}
+
+fn run_tls12_chacha_case() -> String {
+    run_tls12_case_with(0xcca8, "tls12-chacha")
+}
+
+fn run_tls12_case_with(suite: u16, tag: &str) -> String {
+    let dir = temp_dir(tag);
     let random = [0x11u8; 32];
     let server_random = [0x22u8; 32];
     let master: Vec<u8> = (1u8..=48).collect();
-    let suite = 0xc02fu16;
     let (c_keys, s_keys) = Tls12Keys::derive(&master, &random, &server_random, suite).unwrap();
     let request = b"GET /legacy?x=1 HTTP/1.1\r\nHost: legacy.test\r\n\r\n";
     let response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
@@ -474,6 +493,22 @@ fn cli_decrypts_tls12_aes128_gcm_and_reports_dpi() {
     assert!(text.contains("\"tls_version\":\"1.2\""), "{text}");
     assert!(
         text.contains("\"cipher_suite\":\"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256\""),
+        "{text}"
+    );
+    assert!(text.contains("\"app\":\"http\""), "{text}");
+    assert!(text.contains("\"method\":\"GET\""), "{text}");
+    assert!(text.contains("\"host\":\"legacy.test\""), "{text}");
+    assert!(text.contains("\"status\":200"), "{text}");
+    assert!(text.contains("\"opened\":2"), "{text}");
+}
+
+#[test]
+fn cli_decrypts_tls12_chacha20_and_reports_dpi() {
+    let text = run_tls12_chacha_case();
+    assert!(text.contains("\"event\":\"tls_flow\""), "{text}");
+    assert!(text.contains("\"tls_version\":\"1.2\""), "{text}");
+    assert!(
+        text.contains("\"cipher_suite\":\"TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256\""),
         "{text}"
     );
     assert!(text.contains("\"app\":\"http\""), "{text}");

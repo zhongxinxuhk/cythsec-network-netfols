@@ -5,7 +5,8 @@
 //! * 支持 TLS 1.3 的三个标准 AEAD 套件：TLS_AES_128_GCM_SHA256（0x1301）、
 //!   TLS_AES_256_GCM_SHA384（0x1302）、TLS_CHACHA20_POLY1305_SHA256（0x1303）；
 //! * 支持 TLS 1.2 的 AES-128-GCM/AES-256-GCM 套件（0xC02B/0xC02C/0xC02F/
-//!   0xC030/0x009C/0x009D/0x009E/0x009F）；其它套件明确报错。
+//!   0xC030/0x009C/0x009D/0x009E/0x009F）与 ChaCha20-Poly1305 套件
+//!   （0xCCA8/0xCCA9/0xCCAA）；其它套件明确报错。
 //! * 解密结果只用于本地 DPI 结论与审计元数据，默认不落明文。
 
 pub mod crypto;
