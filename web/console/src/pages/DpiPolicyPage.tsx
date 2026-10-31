@@ -10,7 +10,7 @@ const intensityText: Record<DpiIntensity, string> = {
   off: '关闭：不运行任何检测器，记录写 not_inspected（不冒充 unknown）。',
   basic: '基础：只运行 TLS ClientHello、HTTP 首部、DNS，检查窗口 128 字节。',
   standard: '标准：全部已启用模块按首包判定，窗口沿用采集上限（默认 512 字节）。',
-  deep: '深度：窗口至少 4096 字节；配置密钥日志后可解密 TLS 1.2/1.3 应用数据（TLS 1.3 支持 AES-128-GCM、AES-256-GCM、ChaCha20-Poly1305；TLS 1.2 支持 AES-128-GCM、AES-256-GCM）。',
+  deep: '深度：窗口至少 4096 字节；配置密钥日志后可解密 TLS 1.2/1.3 应用数据（TLS 1.3 支持 AES-128-GCM、AES-256-GCM、ChaCha20-Poly1305；TLS 1.2 支持 AES-128-GCM、AES-256-GCM、ChaCha20-Poly1305）。',
 };
 const availabilityText: Record<DpiModule['availability'], { color: string; label: string }> = {
   implemented: { color: 'green', label: '已实现' },
@@ -190,7 +190,7 @@ export function DpiPolicyPage() {
               onChange={(event) => update({ tls_decrypt: { ...draft.tls_decrypt, keylog_file: event.target.value } })}
             />
             <Typography.Text type="secondary">
-              只读取密钥日志解密已有流量，不做主动探测、不导出或猜测密钥；没有密钥时保持仅识别可见 ClientHello。TLS 1.3 支持 AES-128-GCM、AES-256-GCM 与 ChaCha20-Poly1305；TLS 1.2 支持 AES-128-GCM 与 AES-256-GCM，其它套件会明确报告不支持。
+              只读取密钥日志解密已有流量，不做主动探测、不导出或猜测密钥；没有密钥时保持仅识别可见 ClientHello。TLS 1.3 支持 AES-128-GCM、AES-256-GCM 与 ChaCha20-Poly1305；TLS 1.2 支持 AES-128-GCM、AES-256-GCM 与 ChaCha20-Poly1305，其它套件会明确报告不支持。
             </Typography.Text>
           </Space>
 
