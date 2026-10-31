@@ -1,0 +1,316 @@
+// 端到端：pcap → TCP 重组 → TLS 1.3 记录解密 → DPI → JSONL。
+//
+// 这里刻意不用 RFC 8448 的固定记录做“唯一”验证：那条向量已经验证了密码学与
+// 序号处理（见 tlsdecrypt::record 单元测试）。本测试要验证的是**另一件事**：
+// 解密后的明文确实被送进了 DPI，而不是只把字节数写进报告。因此用同一个
+// AES-GCM 实现构造一条带 HTTP 明文的 TLS 1.3 记录；AES-GCM 本身由 NIST 向量
+// 独立校验，不会变成“自己加密自己解密”的循环论证。
+
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use traffic_engine::tlsdecrypt::crypto::aes_gcm_seal;
+use traffic_engine::tlsdecrypt::record::{TrafficKeys, TLS_AES_128_GCM_SHA256};
+
+fn u16be(v: u16) -> [u8; 2] {
+    v.to_be_bytes()
+}
+
+fn record(header: [u8; 5], payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5 + payload.len());
+    out.extend_from_slice(&header);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn handshake(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + body.len());
+    out.push(kind);
+    let n = body.len() as u32;
+    out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+    out.extend_from_slice(body);
+    out
+}
+
+fn client_hello(random: [u8; 32]) -> Vec<u8> {
+    let mut body = vec![0x03, 0x03];
+    body.extend_from_slice(&random);
+    body.push(0); // session id
+    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // TLS_AES_128_GCM_SHA256
+    body.extend_from_slice(&[0x01, 0x00]); // null compression
+    body.extend_from_slice(&[0x00, 0x00]); // no extensions
+    let hs = handshake(1, &body);
+    let mut hdr = vec![0x16, 0x03, 0x01];
+    hdr.extend_from_slice(&u16be(hs.len() as u16));
+    record([hdr[0], hdr[1], hdr[2], hdr[3], hdr[4]], &hs)
+}
+
+fn server_hello(random: [u8; 32]) -> Vec<u8> {
+    let mut body = vec![0x03, 0x03];
+    body.extend_from_slice(&random);
+    body.push(0);
+    body.extend_from_slice(&[0x13, 0x01]);
+    body.push(0);
+    body.extend_from_slice(&[0x00, 0x00]);
+    let hs = handshake(2, &body);
+    let mut hdr = vec![0x16, 0x03, 0x03];
+    hdr.extend_from_slice(&u16be(hs.len() as u16));
+    record([hdr[0], hdr[1], hdr[2], hdr[3], hdr[4]], &hs)
+}
+
+fn app_record(keys: &TrafficKeys, seq: u64, inner_type: u8, data: &[u8]) -> Vec<u8> {
+    let mut inner = data.to_vec();
+    inner.push(inner_type);
+    let len = inner.len() + 16;
+    let header = [23u8, 3, 3, (len >> 8) as u8, len as u8];
+    let mut nonce = keys.iv;
+    for (i, b) in seq.to_be_bytes().iter().enumerate() {
+        nonce[4 + i] ^= b;
+    }
+    let sealed = aes_gcm_seal(&keys.key, &nonce, &header, &inner).unwrap();
+    record(header, &sealed)
+}
+
+fn checksum(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut chunks = data.chunks_exact(2);
+    for c in &mut chunks {
+        sum += u32::from(u16::from_be_bytes([c[0], c[1]]));
+    }
+    if let Some(&b) = chunks.remainder().first() {
+        sum += u32::from(b) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn frame(
+    src: [u8; 4],
+    dst: [u8; 4],
+    sport: u16,
+    dport: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut tcp = Vec::new();
+    tcp.extend_from_slice(&u16be(sport));
+    tcp.extend_from_slice(&u16be(dport));
+    tcp.extend_from_slice(&seq.to_be_bytes());
+    tcp.extend_from_slice(&ack.to_be_bytes());
+    tcp.extend_from_slice(&u16be((5 << 12) | u16::from(flags)));
+    tcp.extend_from_slice(&u16be(65535));
+    tcp.extend_from_slice(&[0, 0]);
+    tcp.extend_from_slice(&[0, 0]);
+    tcp.extend_from_slice(payload);
+    let mut ip = vec![0x45, 0];
+    ip.extend_from_slice(&u16be((20 + tcp.len()) as u16));
+    ip.extend_from_slice(&[0, 1, 0, 0, 64, 6, 0, 0]);
+    ip.extend_from_slice(&src);
+    ip.extend_from_slice(&dst);
+    let c = checksum(&ip);
+    ip[10..12].copy_from_slice(&u16be(c));
+    ip.extend_from_slice(&tcp);
+    let mut eth = vec![0x02, 0, 0, 0, 0, 2, 0x02, 0, 0, 0, 0, 1];
+    eth.extend_from_slice(&[0x08, 0x00]);
+    eth.extend_from_slice(&ip);
+    eth
+}
+
+fn pcap(packets: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0xa1b2c3d4u32.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&4u16.to_le_bytes());
+    out.extend_from_slice(&[0; 8]);
+    out.extend_from_slice(&u32::from(u16::MAX).to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    for (i, p) in packets.iter().enumerate() {
+        out.extend_from_slice(&(1_700_000_000u32 + i as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(p.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(p.len() as u32).to_le_bytes());
+        out.extend_from_slice(p);
+    }
+    out
+}
+
+fn temp_dir(tag: &str) -> PathBuf {
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let d = std::env::temp_dir().join(format!("cythsec-tls-{tag}-{}-{n}", std::process::id()));
+    fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn cli_decrypts_tls13_http_and_reports_dpi() {
+    let dir = temp_dir("http");
+    let random = [0x11u8; 32];
+    let c_traffic = [0x22u8; 32];
+    let s_traffic = [0x33u8; 32];
+    let c_keys = TrafficKeys::derive(&c_traffic, TLS_AES_128_GCM_SHA256).unwrap();
+    let s_keys = TrafficKeys::derive(&s_traffic, TLS_AES_128_GCM_SHA256).unwrap();
+    let request = b"GET /probe?x=1 HTTP/1.1\r\nHost: example.test\r\n\r\n";
+    let response = b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+    let client_payload = [client_hello(random), app_record(&c_keys, 0, 23, request)].concat();
+    let server_payload = [server_hello(random), app_record(&s_keys, 0, 23, response)].concat();
+    let cport = 12345u16;
+    let sport = 443u16;
+    let cseq = 1000u32;
+    let sseq = 5000u32;
+    let packets = vec![
+        frame(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            cport,
+            sport,
+            cseq,
+            0,
+            0x02,
+            &[],
+        ),
+        frame(
+            [10, 0, 0, 2],
+            [10, 0, 0, 1],
+            sport,
+            cport,
+            sseq,
+            cseq + 1,
+            0x12,
+            &[],
+        ),
+        frame(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            cport,
+            sport,
+            cseq + 1,
+            sseq + 1,
+            0x10,
+            &[],
+        ),
+        frame(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            cport,
+            sport,
+            cseq + 1,
+            sseq + 1,
+            0x18,
+            &client_payload,
+        ),
+        frame(
+            [10, 0, 0, 2],
+            [10, 0, 0, 1],
+            sport,
+            cport,
+            sseq + 1,
+            cseq + 1 + client_payload.len() as u32,
+            0x18,
+            &server_payload,
+        ),
+    ];
+    let pcap_path = dir.join("in.pcap");
+    fs::write(&pcap_path, pcap(&packets)).unwrap();
+    let log_path = dir.join("tls.keys");
+    fs::write(
+        &log_path,
+        format!(
+            "CLIENT_TRAFFIC_SECRET_0 {} {}\nSERVER_TRAFFIC_SECRET_0 {} {}\n",
+            hex(&random),
+            hex(&c_traffic),
+            hex(&random),
+            hex(&s_traffic)
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out_path = dir.join("out.jsonl");
+    let out = Command::new(env!("CARGO_BIN_EXE_cythsec-tls-inspect"))
+        .args([
+            "-r",
+            pcap_path.to_str().unwrap(),
+            "--keylog",
+            log_path.to_str().unwrap(),
+            "--dpi",
+            "deep",
+            "--decrypt",
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert!(text.contains("\"event\":\"tls_flow\""), "{text}");
+    assert!(text.contains("\"app\":\"http\""), "{text}");
+    assert!(text.contains("\"method\":\"GET\""), "{text}");
+    assert!(text.contains("\"host\":\"example.test\""), "{text}");
+    assert!(text.contains("\"status\":204"), "{text}");
+    assert!(text.contains("\"opened\":1"), "{text}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_refuses_decryption_without_explicit_opt_in() {
+    let dir = temp_dir("no-opt-in");
+    let pcap_path = dir.join("in.pcap");
+    fs::write(&pcap_path, pcap(&[])).unwrap();
+    let log_path = dir.join("tls.keys");
+    fs::write(
+        &log_path,
+        format!(
+            "CLIENT_TRAFFIC_SECRET_0 {} {}\nSERVER_TRAFFIC_SECRET_0 {} {}\n",
+            hex(&[0x11u8; 32]),
+            hex(&[0x22u8; 32]),
+            hex(&[0x11u8; 32]),
+            hex(&[0x33u8; 32])
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_cythsec-tls-inspect"))
+        .args([
+            "-r",
+            pcap_path.to_str().unwrap(),
+            "--keylog",
+            log_path.to_str().unwrap(),
+            "--dpi",
+            "deep",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("TLS 解密未启用"), "{stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}

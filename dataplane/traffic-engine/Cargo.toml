@@ -47,6 +47,11 @@ path = "src/bin/ring_consume.rs"
 name = "cythsec-analyze"
 path = "src/bin/analyze.rs"
 
+# TLS 1.3 keylog 解密 + 明文 DPI（独立 JSONL 事件流；不改 FlowRecord 落盘契约）。
+[[bin]]
+name = "cythsec-tls-inspect"
+path = "src/bin/tls_inspect.rs"
+
 # 自研微型基准（CYS-TRF-037）：流表插入/查询、超时扫描、特征更新、重组吞吐、
 # 会话归属，以及「每轮填满→全部到期」的 RSS 平台期（无内存增长）验证。
 # 刻意不引 Criterion：本工程零第三方依赖，基准工具不该成为例外。
