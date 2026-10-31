@@ -12,7 +12,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use traffic_engine::tlsdecrypt::crypto::aes_gcm_seal;
-use traffic_engine::tlsdecrypt::record::{TrafficKeys, TLS_AES_128_GCM_SHA256};
+use traffic_engine::tlsdecrypt::record::{
+    TrafficKeys, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+};
 
 fn u16be(v: u16) -> [u8; 2] {
     v.to_be_bytes()
@@ -34,11 +36,12 @@ fn handshake(kind: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-fn client_hello(random: [u8; 32]) -> Vec<u8> {
+fn client_hello(random: [u8; 32], suite: u16) -> Vec<u8> {
     let mut body = vec![0x03, 0x03];
     body.extend_from_slice(&random);
     body.push(0); // session id
-    body.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // TLS_AES_128_GCM_SHA256
+    body.extend_from_slice(&[0x00, 0x02]);
+    body.extend_from_slice(&suite.to_be_bytes());
     body.extend_from_slice(&[0x01, 0x00]); // null compression
     body.extend_from_slice(&[0x00, 0x00]); // no extensions
     let hs = handshake(1, &body);
@@ -47,11 +50,11 @@ fn client_hello(random: [u8; 32]) -> Vec<u8> {
     record([hdr[0], hdr[1], hdr[2], hdr[3], hdr[4]], &hs)
 }
 
-fn server_hello(random: [u8; 32]) -> Vec<u8> {
+fn server_hello(random: [u8; 32], suite: u16) -> Vec<u8> {
     let mut body = vec![0x03, 0x03];
     body.extend_from_slice(&random);
     body.push(0);
-    body.extend_from_slice(&[0x13, 0x01]);
+    body.extend_from_slice(&suite.to_be_bytes());
     body.push(0);
     body.extend_from_slice(&[0x00, 0x00]);
     let hs = handshake(2, &body);
@@ -150,18 +153,23 @@ fn temp_dir(tag: &str) -> PathBuf {
     d
 }
 
-#[test]
-fn cli_decrypts_tls13_http_and_reports_dpi() {
-    let dir = temp_dir("http");
+fn run_decrypt_case(tag: &str, suite: u16, c_traffic: &[u8], s_traffic: &[u8]) -> String {
+    let dir = temp_dir(tag);
     let random = [0x11u8; 32];
-    let c_traffic = [0x22u8; 32];
-    let s_traffic = [0x33u8; 32];
-    let c_keys = TrafficKeys::derive(&c_traffic, TLS_AES_128_GCM_SHA256).unwrap();
-    let s_keys = TrafficKeys::derive(&s_traffic, TLS_AES_128_GCM_SHA256).unwrap();
+    let c_keys = TrafficKeys::derive(c_traffic, suite).unwrap();
+    let s_keys = TrafficKeys::derive(s_traffic, suite).unwrap();
     let request = b"GET /probe?x=1 HTTP/1.1\r\nHost: example.test\r\n\r\n";
     let response = b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
-    let client_payload = [client_hello(random), app_record(&c_keys, 0, 23, request)].concat();
-    let server_payload = [server_hello(random), app_record(&s_keys, 0, 23, response)].concat();
+    let client_payload = [
+        client_hello(random, suite),
+        app_record(&c_keys, 0, 23, request),
+    ]
+    .concat();
+    let server_payload = [
+        server_hello(random, suite),
+        app_record(&s_keys, 0, 23, response),
+    ]
+    .concat();
     let cport = 12345u16;
     let sport = 443u16;
     let cseq = 1000u32;
@@ -258,13 +266,47 @@ fn cli_decrypts_tls13_http_and_reports_dpi() {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = fs::read_to_string(&out_path).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    text
+}
+
+fn assert_http_dpi(text: &str) {
     assert!(text.contains("\"event\":\"tls_flow\""), "{text}");
     assert!(text.contains("\"app\":\"http\""), "{text}");
     assert!(text.contains("\"method\":\"GET\""), "{text}");
     assert!(text.contains("\"host\":\"example.test\""), "{text}");
     assert!(text.contains("\"status\":204"), "{text}");
     assert!(text.contains("\"opened\":1"), "{text}");
-    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_decrypts_tls13_aes128_http_and_reports_dpi() {
+    let text = run_decrypt_case(
+        "aes128",
+        TLS_AES_128_GCM_SHA256,
+        &[0x22u8; 32],
+        &[0x33u8; 32],
+    );
+    assert_http_dpi(&text);
+    assert!(
+        text.contains("\"cipher_suite\":\"TLS_AES_128_GCM_SHA256\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn cli_decrypts_tls13_aes256_http_and_reports_dpi() {
+    let text = run_decrypt_case(
+        "aes256",
+        TLS_AES_256_GCM_SHA384,
+        &[0x22u8; 48],
+        &[0x33u8; 48],
+    );
+    assert_http_dpi(&text);
+    assert!(
+        text.contains("\"cipher_suite\":\"TLS_AES_256_GCM_SHA384\""),
+        "{text}"
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@
 //! 内层 content type 在解密后剥离。TLS 1.2 及其 AEAD 记录不在此模块范围内，
 //! 遇到 TLS 1.2 的 key log 行会被忽略，最终以"没有可用应用流量密钥"报错。
 
-use crate::tlsdecrypt::crypto::{aes_gcm_open, expand_label};
+use crate::tlsdecrypt::crypto::{aes_gcm_open, expand_label, expand_label_sha384};
 use crate::tlsdecrypt::keylog::KeyLog;
 
 pub const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
@@ -178,24 +178,43 @@ pub struct TrafficKeys {
 impl TrafficKeys {
     /// 从 key log 的 traffic secret 派生 key/iv。
     ///
-    /// 只实现 0x1301：AES-256-GCM 需要 SHA-384 的 HKDF，ChaCha20-Poly1305
-    /// 需要另一套 AEAD；两者都未实现，必须显式报错而不是"解密失败"。
+    /// 已实现 0x1301（AES-128-GCM + SHA-256）与 0x1302
+    /// （AES-256-GCM + SHA-384）。ChaCha20-Poly1305 需要另一套 AEAD，
+    /// 必须显式报错而不是"解密失败"。
     pub fn derive(traffic_material: &[u8], suite: u16) -> Result<Self, String> {
-        if suite != TLS_AES_128_GCM_SHA256 {
-            return Err(format!(
-                "unsupported TLS 1.3 cipher suite {} ({}); only TLS_AES_128_GCM_SHA256 is implemented",
-                suite,
-                suite_name(suite)
-            ));
-        }
-        if traffic_material.len() != 32 {
-            return Err(format!(
-                "traffic secret length {} does not match SHA-256 suite",
-                traffic_material.len()
-            ));
-        }
-        let key = expand_label(traffic_material, "key", &[], 16);
-        let iv_vec = expand_label(traffic_material, "iv", &[], 12);
+        let (key, iv_vec) = match suite {
+            TLS_AES_128_GCM_SHA256 => {
+                if traffic_material.len() != 32 {
+                    return Err(format!(
+                        "traffic secret length {} does not match SHA-256 suite",
+                        traffic_material.len()
+                    ));
+                }
+                (
+                    expand_label(traffic_material, "key", &[], 16),
+                    expand_label(traffic_material, "iv", &[], 12),
+                )
+            }
+            TLS_AES_256_GCM_SHA384 => {
+                if traffic_material.len() != 48 {
+                    return Err(format!(
+                        "traffic secret length {} does not match SHA-384 suite",
+                        traffic_material.len()
+                    ));
+                }
+                (
+                    expand_label_sha384(traffic_material, "key", &[], 32),
+                    expand_label_sha384(traffic_material, "iv", &[], 12),
+                )
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported TLS 1.3 cipher suite {} ({}); only AES-128-GCM and AES-256-GCM are implemented",
+                    suite,
+                    suite_name(suite)
+                ));
+            }
+        };
         let mut iv = [0u8; 12];
         iv.copy_from_slice(&iv_vec);
         Ok(Self { key, iv })
@@ -369,6 +388,7 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tlsdecrypt::crypto::aes_gcm_seal;
     use crate::tlsdecrypt::keylog::{decode_hex, KeyLog};
 
     const RANDOM: &str = "cb34ecb1e78163ba1c38c6dacb196a6dffa21a8d9912ec18a2ef6283024dece7";
@@ -504,9 +524,40 @@ fe 51 37 12 1c 74 bc 26 97 68 7e 24 87 46 d6 df 35 30 05 f3 bc e1 86 96 12 9c 81
     #[test]
     fn unsupported_suite_is_reported_explicitly() {
         let e = TrafficKeys::derive(&[0u8; 32], TLS_AES_256_GCM_SHA384).unwrap_err();
-        assert!(e.contains("unsupported"), "{e}");
+        assert!(e.contains("length 32"), "{e}");
         let e = TrafficKeys::derive(&[0u8; 48], TLS_AES_128_GCM_SHA256).unwrap_err();
         assert!(e.contains("length 48"), "{e}");
+        let e = TrafficKeys::derive(&[0u8; 32], TLS_CHACHA20_POLY1305_SHA256).unwrap_err();
+        assert!(e.contains("unsupported"), "{e}");
+        let keys = TrafficKeys::derive(&[0u8; 48], TLS_AES_256_GCM_SHA384).unwrap();
+        assert_eq!(keys.key.len(), 32);
+    }
+
+    #[test]
+    fn aes256_gcm_record_roundtrip() {
+        let keys = TrafficKeys::derive(&[0x42u8; 48], TLS_AES_256_GCM_SHA384).unwrap();
+        let mut nonce = keys.iv;
+        // 第一条应用记录 seq=0；nonce = iv XOR seq。
+        for (i, b) in 0u64.to_be_bytes().iter().enumerate() {
+            nonce[4 + i] ^= b;
+        }
+        let mut inner = b"hello".to_vec();
+        inner.push(23); // TLSInnerPlaintext.content_type
+        let ct_len = inner.len() + 16;
+        let header = [23, 3, 3, (ct_len >> 8) as u8, ct_len as u8];
+        let sealed = aes_gcm_seal(&keys.key, &nonce, &header, &inner).unwrap();
+        let rec = Record {
+            content_type: 23,
+            version: 0x0303,
+            payload: sealed,
+            header,
+        };
+        let mut dir = Direction::new(keys);
+        let pt = dir.open(&rec).unwrap().unwrap();
+        assert_eq!(pt.content_type, 23);
+        assert_eq!(pt.data, b"hello");
+        assert_eq!(dir.opened(), 1);
+        assert_eq!(dir.skipped(), 0);
     }
 
     #[test]
