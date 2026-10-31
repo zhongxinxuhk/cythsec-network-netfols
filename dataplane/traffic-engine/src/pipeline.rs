@@ -28,8 +28,9 @@ use std::io::Read;
 use std::sync::mpsc;
 use std::thread;
 
+use crate::arp::{self, ArpStats};
 use crate::channel::{decode_frame, l4_payload, tcp_flags, tcp_seq_ack, DecodedFrame};
-use crate::dpi::{self, Outcome};
+use crate::dpi::{self, DpiPolicy, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
 use crate::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
@@ -42,8 +43,10 @@ use crate::tcp::{Side, TcpConfig, TcpObservation};
 pub struct AnalyzeOptions {
     /// 会话管理器配置（含 TCP 严格/容忍模式与容量）。
     pub session: SessionConfig,
-    /// 喂给 DPI 的首包字节数上限。
+    /// 喂给 DPI 的首包字节数上限（调用方上限；最终值还受 `dpi` 强度约束）。
     pub inspect_bytes: usize,
+    /// DPI 模块开关、检测强度与 TLS 解密配置。
+    pub dpi: DpiPolicy,
     /// 流级采样（`CYS-TRF-053`）。`None` 或 `interval == 1` ⇒ **一个包都不丢**。
     ///
     /// 采样器只在这里配置一次，导出侧的 IE 34 也从这份配置取（单一来源）：
@@ -58,6 +61,7 @@ impl Default for AnalyzeOptions {
         Self {
             session,
             inspect_bytes: dpi::DEFAULT_INSPECT_BYTES,
+            dpi: DpiPolicy::default(),
             sampling: None,
         }
     }
@@ -105,10 +109,18 @@ pub struct AnalyzeStats {
     /// 采样统计（未启用时为 `None`）。**"声明与执行一致"唯一可被外部检查的地方**：
     /// `observed`/`kept` 由采样器自己记，导出侧的 IE 34 由同一份配置给。
     pub sampling: Option<crate::sampling::SamplingStats>,
+    /// ARP/RARP 帧级统计（B004）。ARP 没有 IP 五元组，不产生 `FlowRecord`；
+    /// 这里只记录“看到并解析了什么”，不从 reply 推断主机在线或地址归属。
+    pub arp: ArpStats,
     /// 会话级 TCP 统计（`CYS-TRF-015`）。走**统计行**这个已有出口而不是记录字段：
     /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
     /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
     pub tcp: TcpAnomalyStats,
+    /// DPI 策略快照。**报告"关了多少"和"开了什么强度"必须来自同一份对象**，
+    /// 否则统计行会与记录里的 `not_inspected` 互相矛盾。
+    pub dpi_enabled: bool,
+    pub dpi_intensity: &'static str,
+    pub dpi_modules_disabled: usize,
 }
 
 /// 会话级 TCP 统计的合计（跨 worker 相加；RTT 取 min/max/sum 而不是均值，
@@ -301,6 +313,11 @@ impl PipelineState {
         };
         let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false)
             || native_tunnel && inspect_payload.len() < d.ip_payload_len as usize;
+        // 全局/强度为 off 时连 DNS/TCP 重组器都不喂：关闭必须真的不解析，
+        // 而不是"解析完再把结论丢掉"。
+        if opts.dpi.is_off() {
+            return;
+        }
         if d.key.proto.number() == dpi::IPPROTO_TCP
             && (d.key.src_port == 53 || d.key.dst_port == 53)
         {
@@ -328,21 +345,27 @@ impl PipelineState {
             return;
         }
         let probe = self.probes.entry(key).or_default();
-        if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
-            let mut n = inspect_payload.len().min(opts.inspect_bytes);
-            let preliminary = dpi::identify_with_ports(
+        let udp = d.key.proto.number() == dpi::IPPROTO_UDP;
+        let inspect_limit = opts.dpi.effective_inspect_bytes(opts.inspect_bytes);
+        if !probe.is_done(obs.side) && !inspect_payload.is_empty() && inspect_limit > 0 {
+            let mut n = inspect_payload.len().min(inspect_limit);
+            let preliminary = dpi::identify_with_policy(
                 &inspect_payload[..n],
                 d.key.proto.number(),
                 d.key.src_port,
                 d.key.dst_port,
+                &opts.dpi,
             );
-            let dhcpv6 = d.key.proto.number() == dpi::IPPROTO_UDP
+            let dhcpv6 = udp
+                && opts.dpi.module_enabled("dhcpv6")
                 && (matches!(&preliminary, Outcome::Identified(info) if info.app == dpi::AppId::Dhcpv6)
                     || matches!(d.key.dst_port, 546 | 547)
                         && dpi::dhcpv6::is_message_type(inspect_payload));
-            let dhcp = d.key.proto.number() == dpi::IPPROTO_UDP
+            let dhcp = udp
+                && opts.dpi.module_enabled("dhcpv4")
                 && (dpi::dhcp::has_cookie(inspect_payload) || dhcpv6);
-            let mdns = d.key.proto.number() == dpi::IPPROTO_UDP
+            let mdns = udp
+                && opts.dpi.module_enabled("mdns")
                 && dpi::mdns::transport(inspect_payload, d.key.src_port, d.key.dst_port);
             let outcome = if (dhcp || mdns) && (d.is_fragmented || truncated) {
                 Outcome::NeedMore
@@ -358,11 +381,12 @@ impl PipelineState {
                         if (dhcpv6 || mdns) && n < len - 8 {
                             Outcome::NeedMore // The complete datagram has not been inspected.
                         } else {
-                            dpi::identify_with_ports(
+                            dpi::identify_with_policy(
                                 &inspect_payload[..n],
                                 d.key.proto.number(),
                                 d.key.src_port,
                                 d.key.dst_port,
+                                &opts.dpi,
                             )
                         }
                     }
@@ -485,11 +509,18 @@ fn merge_worker_stats(dst: &mut AnalyzeStats, src: &AnalyzeStats) {
     dst.tcp.merge(&src.tcp);
 }
 
-fn new_stats<R: Read>(reader: &PcapReader<R>, workers: usize) -> AnalyzeStats {
+fn new_stats<R: Read>(
+    reader: &PcapReader<R>,
+    workers: usize,
+    opts: &AnalyzeOptions,
+) -> AnalyzeStats {
     AnalyzeStats {
         linktype: reader.linktype(),
         linktype_name: reader.header().linktype_name(),
         workers,
+        dpi_enabled: !opts.dpi.is_off(),
+        dpi_intensity: opts.dpi.intensity.as_str(),
+        dpi_modules_disabled: opts.dpi.disabled_module_count(),
         ..Default::default()
     }
 }
@@ -525,12 +556,47 @@ fn finalize(
     Ok((records, stats))
 }
 
+/// 当解码失败的原因是“非 IP 帧”时，再尝试一次 ARP 解析。
+///
+/// 为什么不把 ARP 塞进 `decode_frame`：那条路返回的是 `DecodedFrame`，必须有
+/// IP 五元组；ARP 没有端口，硬造一个键会污染流表。这里只在**已确定不是 IP**
+/// 的分支上旁路解析，ARP 统计与流统计因此不会互相冒充。
+///
+/// 只对 EtherType=ARP/RARP 尝试：普通 IPv4 解码失败（如坏 IHL）不应被记成
+/// “坏 ARP”，否则 `non_arp` 会变成一个没有意义的垃圾桶。
+fn note_arp_frame(
+    stats: &mut ArpStats,
+    e: crate::channel::DecodeError,
+    frame: &[u8],
+    capture_truncated: bool,
+) {
+    let looks_like_arp = match e {
+        crate::channel::DecodeError::NonIpEtherType { ether_type } => {
+            ether_type == arp::ETHERTYPE_ARP || ether_type == arp::ETHERTYPE_RARP
+        }
+        // VLAN 层数超限时 decode 只报“超限”，不给出内层 EtherType；这里再扫一遍
+        // 标签链确认里面是不是 ARP，避免把超嵌套的 IPv4 误记成坏 ARP。
+        crate::channel::DecodeError::TooManyVlanTags { .. } => arp::is_arp_ethertype(frame),
+        _ => false,
+    };
+    if !looks_like_arp {
+        return;
+    }
+    match arp::parse_ethernet(frame) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated;
+            stats.observe(&f);
+        }
+        Err(ae) => stats.record_error(ae),
+    }
+}
+
 /// 就地（单线程）驱动：与历史行为**逐字一致** —— 顺序、会话 id、统计口径都不变。
 fn drive_inline<R: Read>(
     mut reader: PcapReader<R>,
     opts: &AnalyzeOptions,
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
-    let mut stats = new_stats(&reader, 1);
+    let mut stats = new_stats(&reader, 1, opts);
     let mut state = PipelineState::new(opts);
     // 采样器在**每包路径之前**、且只有这一个实例：放进 worker 会让 N 个 worker 各采一遍。
     let mut sampler = match opts.sampling {
@@ -552,6 +618,7 @@ fn drive_inline<R: Read>(
             Err(e) => {
                 // 解码失败**不中断**：省网抓包里畸形帧与非首片分片是常态。
                 *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated());
                 continue;
             }
         };
@@ -584,7 +651,7 @@ fn drive_sharded<R: Read>(
     opts: &AnalyzeOptions,
     workers: usize,
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
-    let mut stats = new_stats(&reader, workers);
+    let mut stats = new_stats(&reader, workers, opts);
     let mut senders = Vec::with_capacity(workers);
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
@@ -630,6 +697,7 @@ fn drive_sharded<R: Read>(
             Ok(d) => d,
             Err(e) => {
                 *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated());
                 continue;
             }
         };
@@ -854,6 +922,22 @@ mod tests {
         l3_frame(src, dst, 17, &udp)
     }
 
+    /// 一条 Ethernet ARP 请求/应答（无 VLAN）。
+    fn arp_frame(op: u16, sha: [u8; 6], spa: [u8; 4], tha: [u8; 6], tpa: [u8; 4]) -> Vec<u8> {
+        let mut f = vec![0xffu8; 12]; // broadcast dst + arbitrary src
+        f.extend_from_slice(&0x0806u16.to_be_bytes());
+        f.extend_from_slice(&1u16.to_be_bytes()); // HTYPE Ethernet
+        f.extend_from_slice(&0x0800u16.to_be_bytes()); // PTYPE IPv4
+        f.push(6);
+        f.push(4);
+        f.extend_from_slice(&op.to_be_bytes());
+        f.extend_from_slice(&sha);
+        f.extend_from_slice(&spa);
+        f.extend_from_slice(&tha);
+        f.extend_from_slice(&tpa);
+        f
+    }
+
     fn l3_frame(src: [u8; 4], dst: [u8; 4], proto: u8, l4: &[u8]) -> Vec<u8> {
         let total = 20 + l4.len();
         let mut ip = vec![0x45, 0x00];
@@ -986,6 +1070,101 @@ mod tests {
             analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 2).expect("分片");
         assert_eq!(sharded, records);
         assert_eq!(jsonl(&sharded), jsonl(&records));
+    }
+
+    /// 全局关闭必须产出 `not_inspected`，而不是把"没看"混进 `unknown`。
+    /// 这条同时验证关闭后仍能正常出记录（DPI 是增强项，不是流水线的前置条件）。
+    #[test]
+    fn dpi_off_writes_not_inspected_instead_of_unknown() {
+        let bytes = multi_flow_pcap(3);
+        let mut opts = AnalyzeOptions::default();
+        opts.dpi.intensity = crate::dpi::Intensity::Off;
+        let (records, stats) = analyze_pcap_with(&bytes[..], &opts, 1).expect("off 模式应能分析");
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|r| r.app.outcome == "not_inspected"));
+        assert_eq!(stats.dpi_enabled, false);
+        assert_eq!(stats.dpi_intensity, "off");
+        assert_eq!(
+            stats.app_outcomes.get("not_inspected").copied(),
+            Some(records.len() as u64)
+        );
+        assert!(stats.app_outcomes.get("unknown").is_none());
+    }
+
+    /// 逐协议开关必须真的拦住对应检测器，而不是"识别完再过滤"。
+    #[test]
+    fn dpi_module_switch_suppresses_that_protocol() {
+        let bytes = multi_flow_pcap(1);
+        let mut opts = AnalyzeOptions::default();
+        opts.dpi.modules.insert("http".to_string(), false);
+        let (records, _) = analyze_pcap_with(&bytes[..], &opts, 1).expect("策略分析");
+        assert!(
+            records
+                .iter()
+                .all(|r| r.app.app != Some(crate::dpi::AppId::Http)),
+            "HTTP 模块关闭后仍产出了 HTTP 结论: {:?}",
+            records.iter().map(|r| &r.app).collect::<Vec<_>>()
+        );
+        let mut opts = AnalyzeOptions::default();
+        opts.dpi.modules.insert("dns".to_string(), false);
+        let (records, _) = analyze_pcap_with(&bytes[..], &opts, 1).expect("策略分析");
+        assert!(records
+            .iter()
+            .all(|r| r.app.app != Some(crate::dpi::AppId::Dns)));
+    }
+
+    /// 强度必须改变真实拷贝窗口：basic 128 / standard 512 / deep ≥4096。
+    #[test]
+    fn dpi_intensity_changes_inspect_window() {
+        let mut payload = b"GET / HTTP/1.1\r\nHost: x\r\nX-Pad: ".to_vec();
+        payload.extend(std::iter::repeat(b'a').take(600 - payload.len()));
+        payload.extend_from_slice(b"\r\n\r\n");
+        let frames = vec![
+            tcp_frame_seq(
+                [10, 9, 0, 1],
+                [10, 9, 0, 2],
+                40_000,
+                80,
+                1_000,
+                0,
+                0x02,
+                &[],
+            ),
+            tcp_frame_seq(
+                [10, 9, 0, 2],
+                [10, 9, 0, 1],
+                80,
+                40_000,
+                2_000,
+                1_001,
+                0x12,
+                &[],
+            ),
+            tcp_frame_seq(
+                [10, 9, 0, 1],
+                [10, 9, 0, 2],
+                40_000,
+                80,
+                3_000,
+                1_001,
+                0x18,
+                &payload,
+            ),
+        ];
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &frames);
+        let mut basic = AnalyzeOptions::default();
+        basic.dpi.intensity = crate::dpi::Intensity::Basic;
+        let (records, stats) = analyze_pcap_with(&bytes[..], &basic, 1).expect("basic");
+        assert_eq!(stats.dpi_intensity, "basic");
+        assert_eq!(records[0].app.bytes_inspected, 128);
+        let (records, _) =
+            analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).expect("standard");
+        assert_eq!(records[0].app.bytes_inspected, 512);
+        let mut deep = AnalyzeOptions::default();
+        deep.dpi.intensity = crate::dpi::Intensity::Deep;
+        let (records, _) = analyze_pcap_with(&bytes[..], &deep, 1).expect("deep");
+        assert_eq!(records[0].app.bytes_inspected, payload.len());
+        assert_eq!(records[0].app.outcome, "identified");
     }
 
     fn jsonl(records: &[FlowRecord]) -> String {
@@ -1196,6 +1375,63 @@ mod tests {
         assert_eq!(stats.packets_decoded, 0);
         assert_eq!(stats.decode_error_count(), 1);
         assert!(stats.decode_errors.contains_key("decode.truncated"));
+    }
+
+    #[test]
+    fn arp_frames_are_counted_but_do_not_enter_the_flow_table() {
+        let req = arp_frame(
+            1,
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+            [0; 6],
+            [192, 0, 2, 1],
+        );
+        let rep = arp_frame(
+            2,
+            [0x02, 0, 0, 0, 0, 2],
+            [192, 0, 2, 1],
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+        );
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[req, rep]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert!(records.is_empty(), "ARP 没有五元组，不得伪造 FlowRecord");
+        assert_eq!(stats.packets_read, 2);
+        assert_eq!(stats.packets_decoded, 0);
+        assert_eq!(stats.decode_error_count(), 2);
+        assert_eq!(stats.arp.arp_frames, 2);
+        assert_eq!(stats.arp.requests, 1);
+        assert_eq!(stats.arp.replies, 1);
+        assert_eq!(stats.arp.non_arp, 0, "ARP 帧不能被记成非 ARP");
+        assert_eq!(stats.arp.malformed, 0);
+        assert_eq!(stats.arp.truncated, 0);
+    }
+
+    #[test]
+    fn arp_stats_are_identical_with_multiple_workers() {
+        let req = arp_frame(
+            1,
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+            [0; 6],
+            [192, 0, 2, 1],
+        );
+        let tcp = tcp_frame([10, 0, 0, 1], [10, 0, 0, 2], 40000, 80, 0x02, &[]);
+        let rep = arp_frame(
+            2,
+            [0x02, 0, 0, 0, 0, 2],
+            [192, 0, 2, 1],
+            [0x02, 0, 0, 0, 0, 1],
+            [192, 0, 2, 10],
+        );
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[req, tcp, rep]);
+        let (one, s1) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).unwrap();
+        let (three, s3) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 3).unwrap();
+        assert_eq!(one, three, "worker 数不得改变 FlowRecord");
+        assert_eq!(s1.arp, s3.arp, "ARP 统计必须与 worker 数无关");
+        assert_eq!(s3.arp.arp_frames, 2);
+        assert_eq!(s3.arp.requests, 1);
+        assert_eq!(s3.arp.replies, 1);
     }
 
     #[test]

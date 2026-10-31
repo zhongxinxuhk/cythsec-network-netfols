@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "revision": "2026-10-31.1",
+  "note": "DPI 模块目录：键与 traffic-engine 的 AppId 一一对应。implemented=已有专用检测器并纳入本地测试；context=仅接收调用方已解密/已解码输入，不直接从线缆识别；candidate=仅有有界结构候选，不计入协议适配完成。",
+  "intensities": [
+    {
+      "key": "off",
+      "name": "关闭",
+      "inspect_bytes": 0,
+      "description": "不执行任何 DPI；记录中的 app.outcome 为 not_inspected，不把未检查写成 unknown。"
+    },
+    {
+      "key": "basic",
+      "name": "基础",
+      "inspect_bytes": 128,
+      "description": "只运行 TLS ClientHello、HTTP 首部、DNS 三个轻量检测器，减少每包拷贝与解析开销。"
+    },
+    {
+      "key": "standard",
+      "name": "标准",
+      "inspect_bytes": 512,
+      "description": "运行全部已启用模块，按首包判定，不做应用层重组或解密。"
+    },
+    {
+      "key": "deep",
+      "name": "深度",
+      "inspect_bytes": 4096,
+      "description": "扩大首包检查窗口，并在配置了 TLS 密钥日志时尝试解密 TLS 1.3 应用数据；开销最高，只建议用于取证点位。"
+    }
+  ],
+  "modules": [
+    {
+      "key": "tls",
+      "name": "TLS ClientHello",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["T001", "T002", "T022"],
+      "default_enabled": true,
+      "note": "TLS 1.2/1.3 共用 ClientHello 解析器；按检测器整体开关，不把同一份实现拆成三个假开关。"
+    },
+    {
+      "key": "http",
+      "name": "HTTP/1.x 首部",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["T009"],
+      "default_enabled": true
+    },
+    {
+      "key": "dns",
+      "name": "DNS over UDP/TCP",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["B013", "B014"],
+      "default_enabled": true
+    },
+    {
+      "key": "dhcpv4",
+      "name": "DHCPv4",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["B015"],
+      "default_enabled": true
+    },
+    {
+      "key": "dhcpv6",
+      "name": "DHCPv6",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["B016"],
+      "default_enabled": true
+    },
+    {
+      "key": "mdns",
+      "name": "mDNS",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["B017"],
+      "default_enabled": true
+    },
+    {
+      "key": "smtp",
+      "name": "SMTP",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["B020"],
+      "default_enabled": true
+    },
+    {
+      "key": "ftp",
+      "name": "FTP 控制通道",
+      "group": "应用与名称解析",
+      "availability": "implemented",
+      "catalog_ids": ["B021"],
+      "default_enabled": true
+    },
+    {
+      "key": "dot",
+      "name": "DNS over TLS（明文入口）",
+      "group": "加密/明文入口",
+      "availability": "context",
+      "catalog_ids": ["B018"],
+      "default_enabled": true,
+      "note": "只处理调用方声明的 TLS 终止明文；普通 pcap 不会凭 853 端口升级判定。"
+    },
+    {
+      "key": "doh",
+      "name": "DNS over HTTPS（解码入口）",
+      "group": "加密/明文入口",
+      "availability": "context",
+      "catalog_ids": ["B019"],
+      "default_enabled": true,
+      "note": "只处理调用方提供的完整已解码 HTTPS 消息；不解析 HTTP/2/3 帧或 TLS。"
+    },
+    {
+      "key": "quic",
+      "name": "QUIC v1/v2",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["T007", "T008"],
+      "default_enabled": true
+    },
+    {
+      "key": "ssh",
+      "name": "SSH",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["T016"],
+      "default_enabled": true
+    },
+    {
+      "key": "wireguard",
+      "name": "WireGuard",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V021"],
+      "default_enabled": true
+    },
+    {
+      "key": "ikev1",
+      "name": "IKEv1",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V003"],
+      "default_enabled": true
+    },
+    {
+      "key": "ikev2",
+      "name": "IKEv2",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V004"],
+      "default_enabled": true
+    },
+    {
+      "key": "esp",
+      "name": "IPsec ESP",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V001"],
+      "default_enabled": true
+    },
+    {
+      "key": "ah",
+      "name": "IPsec AH",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V002"],
+      "default_enabled": true
+    },
+    {
+      "key": "gre",
+      "name": "GRE / mGRE",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V009"],
+      "default_enabled": true
+    },
+    {
+      "key": "ipip",
+      "name": "IP-in-IP",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V010"],
+      "default_enabled": true
+    },
+    {
+      "key": "ipv6-in-ip",
+      "name": "IPv6-in-IPv4",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V011"],
+      "default_enabled": true
+    },
+    {
+      "key": "etherip",
+      "name": "EtherIP",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V013"],
+      "default_enabled": true
+    },
+    {
+      "key": "l2tp",
+      "name": "L2TP",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V006"],
+      "default_enabled": true
+    },
+    {
+      "key": "pptp",
+      "name": "PPTP",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V008"],
+      "default_enabled": true
+    },
+    {
+      "key": "vxlan",
+      "name": "VXLAN",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V014"],
+      "default_enabled": true
+    },
+    {
+      "key": "geneve",
+      "name": "Geneve",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V015"],
+      "default_enabled": true
+    },
+    {
+      "key": "openvpn",
+      "name": "OpenVPN UDP/TCP",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["V017", "V018"],
+      "default_enabled": true
+    },
+    {
+      "key": "socks4",
+      "name": "SOCKS4/4a",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["P001"],
+      "default_enabled": true
+    },
+    {
+      "key": "socks5",
+      "name": "SOCKS5",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["P002"],
+      "default_enabled": true
+    },
+    {
+      "key": "dtls",
+      "name": "DTLS",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["T005"],
+      "default_enabled": true
+    },
+    {
+      "key": "tlcp",
+      "name": "TLCP",
+      "group": "隧道与代理（结构候选）",
+      "availability": "candidate",
+      "catalog_ids": ["T014"],
+      "default_enabled": true
+    }
+  ]
+}

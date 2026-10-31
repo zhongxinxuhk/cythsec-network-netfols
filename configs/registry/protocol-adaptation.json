@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-31.1",
+  "revision": "2026-10-31.2",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -3559,15 +3559,43 @@
     {
       "id": "B004",
       "name": "ARP",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
       "accepted": false,
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "当前非IP帧路径将ARP记为不支持，尚无ARP字段解析"
+      "scope": "以太网链路（最多2层802.1Q/QinQ）ARP/RARP有界解析：HTYPE/PTYPE/HLEN/PLEN/OPER、发送/目标硬件与协议地址；主流水线帧级计数；独立cythsec-arp JSONL事件；不主动探测、不推断邻居缓存或在线状态",
+      "code": [
+        "dataplane/traffic-engine/src/arp.rs",
+        "dataplane/traffic-engine/src/bin/arp_collect.rs",
+        "dataplane/traffic-engine/src/lib.rs",
+        "dataplane/traffic-engine/Cargo.toml",
+        "dataplane/traffic-engine/src/pipeline.rs",
+        "dataplane/traffic-engine/src/bin/analyze.rs"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/arp.rs#parses_request_with_fields",
+        "dataplane/traffic-engine/src/arp.rs#parses_reply_and_vlan_stack",
+        "dataplane/traffic-engine/src/arp.rs#detects_gratuitous_and_probe_only_for_ipv4",
+        "dataplane/traffic-engine/src/arp.rs#rarp_and_unknown_operations_keep_their_numbers",
+        "dataplane/traffic-engine/src/arp.rs#parses_ipv6_protocol_addresses",
+        "dataplane/traffic-engine/src/arp.rs#unknown_hardware_and_protocol_are_preserved_not_guessed",
+        "dataplane/traffic-engine/src/arp.rs#rejects_non_arp_and_truncated_frames",
+        "dataplane/traffic-engine/src/arp.rs#rejects_too_many_vlan_tags_but_accepts_two",
+        "dataplane/traffic-engine/src/arp.rs#ignores_ethernet_padding_after_the_arp_body",
+        "dataplane/traffic-engine/src/arp.rs#stats_count_operations_anomalies_and_errors",
+        "dataplane/traffic-engine/src/arp.rs#json_line_is_stable_and_typed",
+        "dataplane/traffic-engine/src/arp.rs#zero_length_addresses_are_bounded_and_not_invented",
+        "dataplane/traffic-engine/src/pipeline.rs#arp_frames_are_counted_but_do_not_enter_the_flow_table",
+        "dataplane/traffic-engine/src/pipeline.rs#arp_stats_are_identical_with_multiple_workers",
+        "scripts/verify/check-arp.sh",
+        "scripts/verify/check-arp.py",
+        "docs/planning/protocol-b004-arp-verification.md"
+      ],
+      "reference": [
+        "scripts/verify/check-arp.sh",
+        "docs/planning/protocol-b004-arp-verification.md"
+      ],
+      "gap": "主流水线只做帧级统计，不落ARP事件或FlowRecord；不解析NDP；不做ARP缓存、冲突/欺骗推断或主动探测；只支持经典pcap的Ethernet链路；真实设备/厂商语料、Linux运行矩阵、PCAPNG/SLL未验收"
     },
     {
       "id": "B005",

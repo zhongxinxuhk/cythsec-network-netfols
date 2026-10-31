@@ -20,6 +20,7 @@ import (
 	"cythsec/services/pkg/apiresp"
 	"cythsec/services/pkg/controlplane"
 	"cythsec/services/pkg/metrics"
+	"cythsec/services/routerd/internal/dpipolicy"
 	"cythsec/services/routerd/internal/netinfo"
 	"cythsec/services/routerd/internal/networkcfg"
 )
@@ -33,6 +34,7 @@ const ServiceName = "routerd"
 type ServerOptions struct {
 	Access          *controlplane.Access
 	NetworkConfig   *networkcfg.Store
+	DPIPolicy       *dpipolicy.Store
 	NetworkObserve  func(context.Context) (networkcfg.Observation, error)
 	NetworkValidate func(context.Context, networkcfg.Config) (networkcfg.NativeValidation, error)
 	NetworkInspect  func(context.Context, string) (networkcfg.PersistentInspection, error)
@@ -63,6 +65,11 @@ func RegisterRoutesWithNetworkConfig(mux *http.ServeMux, store *networkcfg.Store
 	registerRouterRoutes(mux, ServerOptions{NetworkConfig: store})
 }
 
+// RegisterRoutesWithStores 同时挂载网络配置与 DPI 策略存储。
+func RegisterRoutesWithStores(mux *http.ServeMux, network *networkcfg.Store, dpi *dpipolicy.Store) {
+	registerRouterRoutes(mux, ServerOptions{NetworkConfig: network, DPIPolicy: dpi})
+}
+
 func registerRouterRoutes(mux *http.ServeMux, opts ServerOptions) {
 	store, observe, validate, inspect := opts.NetworkConfig, opts.NetworkObserve, opts.NetworkValidate, opts.NetworkInspect
 	if observe == nil {
@@ -78,6 +85,7 @@ func registerRouterRoutes(mux *http.ServeMux, opts ServerOptions) {
 	}
 	registerNetworkInspection(mux, inspect)
 	registerNetworkConfig(mux, store)
+	registerDPIPolicy(mux, opts.DPIPolicy)
 	// v1 控制面 API（供 Web Console 对接）
 	controlplane.Handle(mux, "GET /api/v1/system", handleSystem)
 	controlplane.Handle(mux, "GET /api/v1/interfaces", handleInterfaces)

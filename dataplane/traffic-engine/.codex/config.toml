@@ -1,6 +1,2 @@
   [mcp_servers.rustrover]
-    command = "/Applications/RustRover.app/Contents/MacOS/rustrover"
-    args = ["stdioMcpServer"]
-
-    [mcp_servers.rustrover.env]
-      IJ_MCP_SERVER_PORT = "64522"
+    url = "http://127.0.0.1:64522/stream"

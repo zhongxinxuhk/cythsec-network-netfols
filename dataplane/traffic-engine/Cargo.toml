@@ -66,6 +66,11 @@ path = "src/bin/netflow9_collect.rs"
 name = "cythsec-sflow-collect"
 path = "src/bin/sflow_collect.rs"
 
+# ARP/RARP 事件采集器（RFC 826 / RFC 903）：没有 IP 五元组，输出帧级 JSONL。
+[[bin]]
+name = "cythsec-arp"
+path = "src/bin/arp_collect.rs"
+
 [[bin]]
 name = "cythsec-bench"
 path = "src/bin/bench.rs"

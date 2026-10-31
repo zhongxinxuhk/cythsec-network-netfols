@@ -29,6 +29,7 @@ const businessRoutes: ConsoleRoute[] = [
   { consoleProduct: network, consoleSection: '网络配置', path: '/network/configuration', name: '网络配置', icon: 'SettingOutlined', component: './NetworkConfigurationPage' },
   { consoleProduct: analytics, consoleSection: '聚合数据', path: '/analytics', name: '聚合分析', icon: 'BarChartOutlined', component: './AnalyticsPage' },
   { consoleProduct: analytics, consoleSection: '指标口径', path: '/analytics/metrics', name: '指标字典', icon: 'BookOutlined', component: './MetricDictionaryPage' },
+  { consoleProduct: analytics, consoleSection: '检测策略', path: '/analytics/dpi', name: 'DPI 策略', icon: 'SafetyCertificateOutlined', component: './DpiPolicyPage' },
   { consoleProduct: data, consoleSection: '写入管道', path: '/data/queue', name: '写入队列', icon: 'DatabaseOutlined', component: './IngestQueuePage' },
   { consoleProduct: platform, consoleSection: '系统管理', path: '/system', name: '系统信息', icon: 'SettingOutlined', component: './SystemPage' },
 ];

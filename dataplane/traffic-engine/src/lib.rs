@@ -13,6 +13,7 @@
 // feature / record 是数据链的出口：会话聚合完成后压成定长特征（feature），
 // 再序列化成 FlowRecord（record）落盘。两者都不依赖 channel —— 离线 CLI 先用
 // channel 解帧，再把解出的 FlowKey/Packet 喂进来。
+pub mod arp;
 pub mod attributes_gen;
 pub mod channel;
 pub mod dpi;
