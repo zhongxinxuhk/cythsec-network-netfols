@@ -35,7 +35,9 @@ internal/*           # 业务实现
 ### routerd
 
 - `internal/netinfo/`：网卡、路由（Linux 解析 `/proc/net/route`）、系统、流量采集
-- API：`/api/v1/system|interfaces|routes|traffic`
+- API：`/api/v1/system|interfaces|routes|traffic`；启用 `-dpi-policy-dir` 后另有
+  `GET/PUT /api/v1/dpi/policy` 与 `GET /api/v1/dpi/modules`（策略契约见
+  [DPI 策略](../docs/development/dpi-policy.md)）
 
 ### policyd
 

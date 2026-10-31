@@ -27,6 +27,7 @@ pub mod dot;
 pub mod ftp;
 pub mod http;
 pub mod mdns;
+pub mod policy;
 pub mod smtp;
 pub mod tls;
 pub mod wire;
@@ -38,6 +39,7 @@ mod types;
 mod tests;
 
 pub use attributes::{emit, tls_version_name, Attr, AttrError};
+pub use policy::{DpiPolicy, Intensity};
 pub use types::{AppId, Confidence, Detect, Detection, Outcome};
 
 /// 采集层建议交付给 DPI 的字节数（默认 512）。
@@ -64,20 +66,22 @@ const PORT_DOT: u16 = 853;
 /// 顺序决定"谁先有机会命中"，是性能问题也是正确性问题：
 /// 443 上优先试 TLS 而不是 DNS，不仅更快（DNS 头校验要读 12 字节），
 /// 也避免了把某个恰好前两字节非零的 TLS 报文误判成 DNS。
-fn order(proto: u8, dst_port: u16) -> [fn(&[u8]) -> Detect; 3] {
+fn order(proto: u8, dst_port: u16) -> [(&'static str, fn(&[u8]) -> Detect); 3] {
     let dns: fn(&[u8]) -> Detect = if proto == IPPROTO_TCP {
         dns::detect_tcp
     } else {
         dns::detect
     };
     match (proto, dst_port) {
-        (IPPROTO_UDP, PORT_DNS) | (IPPROTO_TCP, PORT_DNS) => [dns, tls::detect, http::detect],
-        (IPPROTO_TCP, PORT_DOT) => [tls::detect, dns, http::detect],
-        (IPPROTO_TCP, PORT_HTTPS) => [tls::detect, http::detect, dns],
-        (IPPROTO_TCP, PORT_HTTP) => [http::detect, tls::detect, dns],
+        (IPPROTO_UDP, PORT_DNS) | (IPPROTO_TCP, PORT_DNS) => {
+            [("dns", dns), ("tls", tls::detect), ("http", http::detect)]
+        }
+        (IPPROTO_TCP, PORT_DOT) => [("tls", tls::detect), ("dns", dns), ("http", http::detect)],
+        (IPPROTO_TCP, PORT_HTTPS) => [("tls", tls::detect), ("http", http::detect), ("dns", dns)],
+        (IPPROTO_TCP, PORT_HTTP) => [("http", http::detect), ("tls", tls::detect), ("dns", dns)],
         // 端口给不出线索（或端口漂移）：按"特征最强"的顺序试，TLS 的 `\x16\x03` 记录头
         // 几乎不可能与其他协议撞，放在最前面最省。
-        _ => [tls::detect, http::detect, dns],
+        _ => [("tls", tls::detect), ("http", http::detect), ("dns", dns)],
     }
 }
 
@@ -95,7 +99,33 @@ pub fn identify(payload: &[u8], proto: u8, dst_port: u16) -> Outcome {
 /// Full observed UDP port context, needed for mDNS legacy unicast responses.
 /// The legacy identify API remains compatible with callers that only know dport.
 pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u16) -> Outcome {
-    if proto == IPPROTO_UDP && mdns::transport(payload, src_port, dst_port) {
+    identify_inner(payload, proto, src_port, dst_port, &|_| true)
+}
+
+/// 按策略识别：先做全局/强度过滤，再逐协议放行检测器。
+///
+/// 未启用的模块**根本不运行**（不是跑完再丢结果），因此关闭 DPI 能真实省下开销。
+/// 调用方仍负责在 `off` 时直接跳过调用，并把记录写成 `not_inspected`。
+pub fn identify_with_policy(
+    payload: &[u8],
+    proto: u8,
+    src_port: u16,
+    dst_port: u16,
+    policy: &DpiPolicy,
+) -> Outcome {
+    identify_inner(payload, proto, src_port, dst_port, &|key| {
+        policy.module_enabled(key)
+    })
+}
+
+fn identify_inner(
+    payload: &[u8],
+    proto: u8,
+    src_port: u16,
+    dst_port: u16,
+    gate: &dyn Fn(&str) -> bool,
+) -> Outcome {
+    if proto == IPPROTO_UDP && gate("mdns") && mdns::transport(payload, src_port, dst_port) {
         return match mdns::detect(payload) {
             Detect::Hit(d) => Outcome::Identified(d),
             Detect::NeedMore => Outcome::NeedMore,
@@ -103,7 +133,7 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
             Detect::Rejected => Outcome::Unknown,
         };
     }
-    if proto == IPPROTO_UDP && dhcp::has_cookie(payload) {
+    if proto == IPPROTO_UDP && gate("dhcpv4") && dhcp::has_cookie(payload) {
         return match dhcp::detect(payload) {
             Detect::Hit(d) => Outcome::Identified(d),
             Detect::NeedMore => Outcome::NeedMore,
@@ -111,7 +141,7 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
             Detect::Rejected => Outcome::Unknown,
         };
     }
-    if proto == IPPROTO_UDP && dhcpv6::is_message_type(payload) {
+    if proto == IPPROTO_UDP && gate("dhcpv6") && dhcpv6::is_message_type(payload) {
         let result = dhcpv6::detect(payload);
         if matches!(result, Detect::Hit(_)) || matches!(dst_port, 546 | 547) {
             return match result {
@@ -124,7 +154,7 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
     }
     // FTP 只在 21/2121 的明文控制通道判定；990 隐式 FTPS 不在 ftp::transport 里。
     // Rejected 继续走后面的候选（21 上 AUTH TLS 之后是 TLS 记录）。
-    if proto == IPPROTO_TCP && ftp::transport(src_port, dst_port) {
+    if proto == IPPROTO_TCP && gate("ftp") && ftp::transport(src_port, dst_port) {
         match ftp::detect(payload) {
             Detect::Hit(d) => return Outcome::Identified(d),
             Detect::NeedMore => return Outcome::NeedMore,
@@ -135,7 +165,7 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
     // SMTP 只在服务端口上下文里判定；465 是隐式 TLS，不在 smtp::transport 里。
     // Rejected 必须继续走后面的候选（587 上的 STARTTLS 之后就是 TLS 记录），
     // 不能像 mDNS/DHCP 那样无条件返回。
-    if proto == IPPROTO_TCP && smtp::transport(src_port, dst_port) {
+    if proto == IPPROTO_TCP && gate("smtp") && smtp::transport(src_port, dst_port) {
         match smtp::detect(payload) {
             Detect::Hit(d) => return Outcome::Identified(d),
             Detect::NeedMore => return Outcome::NeedMore,
@@ -145,33 +175,14 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
     }
     let structural = wire::inspect_standard(payload, proto, 0, dst_port);
     let mut saw_need_more = matches!(structural, wire::Verdict::NeedMore)
-        || proto == IPPROTO_UDP && matches!(dhcp::detect(payload), Detect::NeedMore);
+        || proto == IPPROTO_UDP
+            && gate("dhcpv4")
+            && matches!(dhcp::detect(payload), Detect::NeedMore);
     let mut saw_malformed = matches!(structural, wire::Verdict::Malformed);
     if let wire::Verdict::Match(f) = structural {
-        let app = match f.id {
-            "V001" => AppId::Esp,
-            "V002" => AppId::Ah,
-            "V003" => AppId::Ikev1,
-            "V004" => AppId::Ikev2,
-            "V006" => AppId::L2tp,
-            "V008" => AppId::Pptp,
-            "V009" => AppId::Gre,
-            "V010" => AppId::Ipip,
-            "V011" => AppId::Ipv6ip,
-            "V013" => AppId::Etherip,
-            "V014" => AppId::Vxlan,
-            "V015" => AppId::Geneve,
-            "V017" | "V018" => AppId::OpenVpn,
-            "V021" => AppId::WireGuard,
-            "P001" => AppId::Socks4,
-            "P002" => AppId::Socks5,
-            "T005" => AppId::Dtls,
-            "T007" | "T008" => AppId::Quic,
-            "T014" => AppId::Tlcp,
-            "T016" => AppId::Ssh,
-            _ => AppId::Unknown,
-        };
-        if app != AppId::Unknown {
+        let app = wire_app(f.id);
+        let key = policy::module_key(app);
+        if app != AppId::Unknown && gate(key) {
             return Outcome::Identified(Detection::new(
                 app,
                 Confidence::Medium,
@@ -180,7 +191,10 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
         }
     }
 
-    for detect in order(proto, dst_port) {
+    for (key, detect) in order(proto, dst_port) {
+        if !gate(key) {
+            continue;
+        }
         match detect(payload) {
             Detect::Hit(d) => return Outcome::Identified(d),
             Detect::NeedMore => saw_need_more = true,
@@ -198,6 +212,33 @@ pub fn identify_with_ports(payload: &[u8], proto: u8, src_port: u16, dst_port: u
         Outcome::NeedMore
     } else {
         Outcome::Unknown
+    }
+}
+
+/// 结构候选 ID → AppId。与 `wire.rs` 的 `Fact.id` 一一对应；未知 ID 不猜测。
+fn wire_app(id: &str) -> AppId {
+    match id {
+        "V001" => AppId::Esp,
+        "V002" => AppId::Ah,
+        "V003" => AppId::Ikev1,
+        "V004" => AppId::Ikev2,
+        "V006" => AppId::L2tp,
+        "V008" => AppId::Pptp,
+        "V009" => AppId::Gre,
+        "V010" => AppId::Ipip,
+        "V011" => AppId::Ipv6ip,
+        "V013" => AppId::Etherip,
+        "V014" => AppId::Vxlan,
+        "V015" => AppId::Geneve,
+        "V017" | "V018" => AppId::OpenVpn,
+        "V021" => AppId::WireGuard,
+        "P001" => AppId::Socks4,
+        "P002" => AppId::Socks5,
+        "T005" => AppId::Dtls,
+        "T007" | "T008" => AppId::Quic,
+        "T014" => AppId::Tlcp,
+        "T016" => AppId::Ssh,
+        _ => AppId::Unknown,
     }
 }
 

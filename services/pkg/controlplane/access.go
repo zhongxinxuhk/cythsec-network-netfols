@@ -135,7 +135,8 @@ func (a *Access) middleware(service string) func(http.Handler) http.Handler {
 			ingest := r.Method == "POST" && (r.URL.Path == "/api/v1/analytics/imports" || r.URL.Path == "/api/v1/analytics/ingest") && identity.CanIngest
 			networkPreview := service == "routerd" && r.Method == "POST" && (r.URL.Path == "/api/v1/network/configuration/preview" || r.URL.Path == "/api/v1/network/configuration/preflight" || r.URL.Path == "/api/v1/network/configuration/native-validation" || r.URL.Path == "/api/v1/network/configuration/persistent-inspection")
 			networkSave := service == "routerd" && identity.Role == "admin" && r.Method == "PUT" && r.URL.Path == "/api/v1/network/configuration"
-			if !read && !ingest && !networkPreview && !networkSave {
+			dpiSave := service == "routerd" && identity.Role == "admin" && r.Method == "PUT" && r.URL.Path == "/api/v1/dpi/policy"
+			if !read && !ingest && !networkPreview && !networkSave && !dpiSave {
 				if holder := httpx.RouteHolderFromContext(r.Context()); holder != nil {
 					holder.Set("/forbidden")
 				}

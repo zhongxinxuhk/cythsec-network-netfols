@@ -30,7 +30,7 @@ use std::thread;
 
 use crate::arp::{self, ArpStats};
 use crate::channel::{decode_frame, l4_payload, tcp_flags, tcp_seq_ack, DecodedFrame};
-use crate::dpi::{self, Outcome};
+use crate::dpi::{self, DpiPolicy, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
 use crate::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
@@ -43,8 +43,10 @@ use crate::tcp::{Side, TcpConfig, TcpObservation};
 pub struct AnalyzeOptions {
     /// 会话管理器配置（含 TCP 严格/容忍模式与容量）。
     pub session: SessionConfig,
-    /// 喂给 DPI 的首包字节数上限。
+    /// 喂给 DPI 的首包字节数上限（调用方上限；最终值还受 `dpi` 强度约束）。
     pub inspect_bytes: usize,
+    /// DPI 模块开关、检测强度与 TLS 解密配置。
+    pub dpi: DpiPolicy,
     /// 流级采样（`CYS-TRF-053`）。`None` 或 `interval == 1` ⇒ **一个包都不丢**。
     ///
     /// 采样器只在这里配置一次，导出侧的 IE 34 也从这份配置取（单一来源）：
@@ -59,6 +61,7 @@ impl Default for AnalyzeOptions {
         Self {
             session,
             inspect_bytes: dpi::DEFAULT_INSPECT_BYTES,
+            dpi: DpiPolicy::default(),
             sampling: None,
         }
     }
@@ -113,6 +116,11 @@ pub struct AnalyzeStats {
     /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
     /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
     pub tcp: TcpAnomalyStats,
+    /// DPI 策略快照。**报告"关了多少"和"开了什么强度"必须来自同一份对象**，
+    /// 否则统计行会与记录里的 `not_inspected` 互相矛盾。
+    pub dpi_enabled: bool,
+    pub dpi_intensity: &'static str,
+    pub dpi_modules_disabled: usize,
 }
 
 /// 会话级 TCP 统计的合计（跨 worker 相加；RTT 取 min/max/sum 而不是均值，
@@ -305,6 +313,11 @@ impl PipelineState {
         };
         let truncated = payload_view.map(|p| p.is_truncated()).unwrap_or(false)
             || native_tunnel && inspect_payload.len() < d.ip_payload_len as usize;
+        // 全局/强度为 off 时连 DNS/TCP 重组器都不喂：关闭必须真的不解析，
+        // 而不是"解析完再把结论丢掉"。
+        if opts.dpi.is_off() {
+            return;
+        }
         if d.key.proto.number() == dpi::IPPROTO_TCP
             && (d.key.src_port == 53 || d.key.dst_port == 53)
         {
@@ -332,21 +345,27 @@ impl PipelineState {
             return;
         }
         let probe = self.probes.entry(key).or_default();
-        if !probe.is_done(obs.side) && !inspect_payload.is_empty() {
-            let mut n = inspect_payload.len().min(opts.inspect_bytes);
-            let preliminary = dpi::identify_with_ports(
+        let udp = d.key.proto.number() == dpi::IPPROTO_UDP;
+        let inspect_limit = opts.dpi.effective_inspect_bytes(opts.inspect_bytes);
+        if !probe.is_done(obs.side) && !inspect_payload.is_empty() && inspect_limit > 0 {
+            let mut n = inspect_payload.len().min(inspect_limit);
+            let preliminary = dpi::identify_with_policy(
                 &inspect_payload[..n],
                 d.key.proto.number(),
                 d.key.src_port,
                 d.key.dst_port,
+                &opts.dpi,
             );
-            let dhcpv6 = d.key.proto.number() == dpi::IPPROTO_UDP
+            let dhcpv6 = udp
+                && opts.dpi.module_enabled("dhcpv6")
                 && (matches!(&preliminary, Outcome::Identified(info) if info.app == dpi::AppId::Dhcpv6)
                     || matches!(d.key.dst_port, 546 | 547)
                         && dpi::dhcpv6::is_message_type(inspect_payload));
-            let dhcp = d.key.proto.number() == dpi::IPPROTO_UDP
+            let dhcp = udp
+                && opts.dpi.module_enabled("dhcpv4")
                 && (dpi::dhcp::has_cookie(inspect_payload) || dhcpv6);
-            let mdns = d.key.proto.number() == dpi::IPPROTO_UDP
+            let mdns = udp
+                && opts.dpi.module_enabled("mdns")
                 && dpi::mdns::transport(inspect_payload, d.key.src_port, d.key.dst_port);
             let outcome = if (dhcp || mdns) && (d.is_fragmented || truncated) {
                 Outcome::NeedMore
@@ -362,11 +381,12 @@ impl PipelineState {
                         if (dhcpv6 || mdns) && n < len - 8 {
                             Outcome::NeedMore // The complete datagram has not been inspected.
                         } else {
-                            dpi::identify_with_ports(
+                            dpi::identify_with_policy(
                                 &inspect_payload[..n],
                                 d.key.proto.number(),
                                 d.key.src_port,
                                 d.key.dst_port,
+                                &opts.dpi,
                             )
                         }
                     }
@@ -489,11 +509,18 @@ fn merge_worker_stats(dst: &mut AnalyzeStats, src: &AnalyzeStats) {
     dst.tcp.merge(&src.tcp);
 }
 
-fn new_stats<R: Read>(reader: &PcapReader<R>, workers: usize) -> AnalyzeStats {
+fn new_stats<R: Read>(
+    reader: &PcapReader<R>,
+    workers: usize,
+    opts: &AnalyzeOptions,
+) -> AnalyzeStats {
     AnalyzeStats {
         linktype: reader.linktype(),
         linktype_name: reader.header().linktype_name(),
         workers,
+        dpi_enabled: !opts.dpi.is_off(),
+        dpi_intensity: opts.dpi.intensity.as_str(),
+        dpi_modules_disabled: opts.dpi.disabled_module_count(),
         ..Default::default()
     }
 }
@@ -569,7 +596,7 @@ fn drive_inline<R: Read>(
     mut reader: PcapReader<R>,
     opts: &AnalyzeOptions,
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
-    let mut stats = new_stats(&reader, 1);
+    let mut stats = new_stats(&reader, 1, opts);
     let mut state = PipelineState::new(opts);
     // 采样器在**每包路径之前**、且只有这一个实例：放进 worker 会让 N 个 worker 各采一遍。
     let mut sampler = match opts.sampling {
@@ -624,7 +651,7 @@ fn drive_sharded<R: Read>(
     opts: &AnalyzeOptions,
     workers: usize,
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
-    let mut stats = new_stats(&reader, workers);
+    let mut stats = new_stats(&reader, workers, opts);
     let mut senders = Vec::with_capacity(workers);
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
@@ -1043,6 +1070,101 @@ mod tests {
             analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 2).expect("分片");
         assert_eq!(sharded, records);
         assert_eq!(jsonl(&sharded), jsonl(&records));
+    }
+
+    /// 全局关闭必须产出 `not_inspected`，而不是把"没看"混进 `unknown`。
+    /// 这条同时验证关闭后仍能正常出记录（DPI 是增强项，不是流水线的前置条件）。
+    #[test]
+    fn dpi_off_writes_not_inspected_instead_of_unknown() {
+        let bytes = multi_flow_pcap(3);
+        let mut opts = AnalyzeOptions::default();
+        opts.dpi.intensity = crate::dpi::Intensity::Off;
+        let (records, stats) = analyze_pcap_with(&bytes[..], &opts, 1).expect("off 模式应能分析");
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|r| r.app.outcome == "not_inspected"));
+        assert_eq!(stats.dpi_enabled, false);
+        assert_eq!(stats.dpi_intensity, "off");
+        assert_eq!(
+            stats.app_outcomes.get("not_inspected").copied(),
+            Some(records.len() as u64)
+        );
+        assert!(stats.app_outcomes.get("unknown").is_none());
+    }
+
+    /// 逐协议开关必须真的拦住对应检测器，而不是"识别完再过滤"。
+    #[test]
+    fn dpi_module_switch_suppresses_that_protocol() {
+        let bytes = multi_flow_pcap(1);
+        let mut opts = AnalyzeOptions::default();
+        opts.dpi.modules.insert("http".to_string(), false);
+        let (records, _) = analyze_pcap_with(&bytes[..], &opts, 1).expect("策略分析");
+        assert!(
+            records
+                .iter()
+                .all(|r| r.app.app != Some(crate::dpi::AppId::Http)),
+            "HTTP 模块关闭后仍产出了 HTTP 结论: {:?}",
+            records.iter().map(|r| &r.app).collect::<Vec<_>>()
+        );
+        let mut opts = AnalyzeOptions::default();
+        opts.dpi.modules.insert("dns".to_string(), false);
+        let (records, _) = analyze_pcap_with(&bytes[..], &opts, 1).expect("策略分析");
+        assert!(records
+            .iter()
+            .all(|r| r.app.app != Some(crate::dpi::AppId::Dns)));
+    }
+
+    /// 强度必须改变真实拷贝窗口：basic 128 / standard 512 / deep ≥4096。
+    #[test]
+    fn dpi_intensity_changes_inspect_window() {
+        let mut payload = b"GET / HTTP/1.1\r\nHost: x\r\nX-Pad: ".to_vec();
+        payload.extend(std::iter::repeat(b'a').take(600 - payload.len()));
+        payload.extend_from_slice(b"\r\n\r\n");
+        let frames = vec![
+            tcp_frame_seq(
+                [10, 9, 0, 1],
+                [10, 9, 0, 2],
+                40_000,
+                80,
+                1_000,
+                0,
+                0x02,
+                &[],
+            ),
+            tcp_frame_seq(
+                [10, 9, 0, 2],
+                [10, 9, 0, 1],
+                80,
+                40_000,
+                2_000,
+                1_001,
+                0x12,
+                &[],
+            ),
+            tcp_frame_seq(
+                [10, 9, 0, 1],
+                [10, 9, 0, 2],
+                40_000,
+                80,
+                3_000,
+                1_001,
+                0x18,
+                &payload,
+            ),
+        ];
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &frames);
+        let mut basic = AnalyzeOptions::default();
+        basic.dpi.intensity = crate::dpi::Intensity::Basic;
+        let (records, stats) = analyze_pcap_with(&bytes[..], &basic, 1).expect("basic");
+        assert_eq!(stats.dpi_intensity, "basic");
+        assert_eq!(records[0].app.bytes_inspected, 128);
+        let (records, _) =
+            analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).expect("standard");
+        assert_eq!(records[0].app.bytes_inspected, 512);
+        let mut deep = AnalyzeOptions::default();
+        deep.dpi.intensity = crate::dpi::Intensity::Deep;
+        let (records, _) = analyze_pcap_with(&bytes[..], &deep, 1).expect("deep");
+        assert_eq!(records[0].app.bytes_inspected, payload.len());
+        assert_eq!(records[0].app.outcome, "identified");
     }
 
     fn jsonl(records: &[FlowRecord]) -> String {

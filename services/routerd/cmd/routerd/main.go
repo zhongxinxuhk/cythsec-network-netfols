@@ -17,6 +17,7 @@
 package main
 
 import (
+	"cythsec/services/routerd/internal/dpipolicy"
 	"cythsec/services/routerd/internal/networkcfg"
 	"flag"
 	"log"
@@ -36,6 +37,7 @@ func loadConfig() (config.Config, bool) {
 	c := config.Default()
 
 	networkDir := flag.String("network-config-dir", "", "private network desired-state directory; does not apply OS settings")
+	dpiDir := flag.String("dpi-policy-dir", "", "private DPI policy directory; traffic-engine reads policy.json via --dpi-policy")
 	accessFile := flag.String("access-file", "", "private JSON access policy with credential digests")
 	addr := flag.String("addr", c.ListenAddr, "HTTP 监听地址，如 :8080 或 127.0.0.1:8080")
 	cors := flag.String("cors-origins", "", "逗号分隔的允许跨域源，默认 http://localhost:5173")
@@ -77,6 +79,9 @@ func loadConfig() (config.Config, bool) {
 	// 显式 flag 覆盖环境变量。
 	if set["network-config-dir"] {
 		c.NetworkConfigDir = *networkDir
+	}
+	if set["dpi-policy-dir"] {
+		c.DPIPolicyDir = *dpiDir
 	}
 	if set["access-file"] {
 		c.AccessFile = *accessFile
@@ -123,6 +128,16 @@ func main() {
 	if store != nil {
 		defer store.Close()
 	}
+	var dpiStore *dpipolicy.Store
+	if c.DPIPolicyDir != "" {
+		var err error
+		dpiStore, err = dpipolicy.Open(c.DPIPolicyDir)
+		if err != nil {
+			log.Printf("DPI policy initialization failed: %v", err)
+			os.Exit(1)
+		}
+		defer dpiStore.Close()
+	}
 	err := controlplane.Run(controlplane.ServerConfig{
 		AccessFile:             c.AccessFile,
 		RequireAccessForRemote: true,
@@ -133,7 +148,7 @@ func main() {
 		LogFormat:              c.LogFormat,
 		MetricsEnabled:         c.MetricsEnabled,
 		CORSAllowedOrigins:     c.CORSAllowedOrigins,
-	}, func(mux *http.ServeMux) { api.RegisterRoutesWithNetworkConfig(mux, store) })
+	}, func(mux *http.ServeMux) { api.RegisterRoutesWithStores(mux, store, dpiStore) })
 	if err != nil {
 		log.Printf("routerd 退出: %v", err)
 		os.Exit(1)

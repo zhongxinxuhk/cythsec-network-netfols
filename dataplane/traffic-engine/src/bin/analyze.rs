@@ -10,8 +10,10 @@
 
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
+use traffic_engine::dpi::{DpiPolicy, Intensity};
 use traffic_engine::pipeline::{analyze_pcap_with, AnalyzeOptions, AnalyzeStats};
 use traffic_engine::record::write_jsonl;
 use traffic_engine::{build_info, crate_version};
@@ -33,7 +35,12 @@ cythsec-analyze —— 离线 pcap 分析，产出 FlowRecord（JSONL）
   -r, --read <FILE>        输入经典 pcap 文件（必填）
   -o, --output <FILE>      输出 JSONL 文件；缺省或 `-` 表示写 stdout
       --limit <N>          最多输出 N 条记录（按会话键排序后截取前 N 条）
-      --inspect-bytes <N>  喂给 DPI 的首包字节数上限（默认 512）
+      --inspect-bytes <N>  喂给 DPI 的首包字节数上限（默认 512；最终值还受 --dpi 强度约束）
+      --dpi <LEVEL>        DPI 强度：off / basic / standard / deep（默认 standard）
+      --no-dpi             等价于 --dpi off；记录写 not_inspected，不写 unknown
+      --dpi-policy <FILE>  JSON 策略文件（全局开关、逐协议开关、TLS 解密配置）
+      --dpi-keylog <FILE>  NSS key log；配合 --dpi deep 尝试解密 TLS 1.3 应用数据
+      --dpi-decrypt        显式允许 TLS 解密（也可由策略文件的 tls_decrypt.enabled 打开）
       --max-sessions <N>   会话表容量上限（默认 65536）
       --workers <N>        消费侧并行 worker 数（默认 1 = 就地单线程，见下）
       --strict             严格 TCP 模式：未见到握手的会话不采纳（默认容忍，见下）
@@ -94,6 +101,7 @@ struct Args {
     output: Option<String>,
     limit: Option<usize>,
     inspect_bytes: usize,
+    dpi: DpiPolicy,
     max_sessions: usize,
     workers: usize,
     strict: bool,
@@ -132,6 +140,10 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
     let mut output: Option<String> = None;
     let mut limit: Option<usize> = None;
     let mut inspect_bytes = traffic_engine::dpi::DEFAULT_INSPECT_BYTES;
+    let mut dpi_policy_path: Option<String> = None;
+    let mut dpi_intensity: Option<Intensity> = None;
+    let mut dpi_keylog: Option<String> = None;
+    let mut dpi_decrypt = false;
     let mut max_sessions = 1usize << 16;
     let mut workers = 1usize;
     let mut strict = false;
@@ -183,6 +195,14 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
                     .parse::<usize>()
                     .map_err(|_| format!("--inspect-bytes 需要一个非负整数，得到 `{v}`"))?;
             }
+            "--dpi" => {
+                let v = take_value("--dpi")?;
+                dpi_intensity = Some(Intensity::parse(&v)?);
+            }
+            "--no-dpi" => dpi_intensity = Some(Intensity::Off),
+            "--dpi-policy" => dpi_policy_path = Some(take_value("--dpi-policy")?),
+            "--dpi-keylog" => dpi_keylog = Some(take_value("--dpi-keylog")?),
+            "--dpi-decrypt" => dpi_decrypt = true,
             "--max-sessions" => {
                 let v = take_value("--max-sessions")?;
                 let n = v
@@ -278,6 +298,21 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
     }
 
     let input = input.ok_or_else(|| "缺少必填参数 -r/--read（输入 pcap）".to_string())?;
+    let mut dpi = match dpi_policy_path {
+        Some(path) => DpiPolicy::from_file(Path::new(&path))?,
+        None => DpiPolicy::default(),
+    };
+    if let Some(intensity) = dpi_intensity {
+        dpi.intensity = intensity;
+        dpi.enabled = intensity != Intensity::Off;
+    }
+    if let Some(path) = dpi_keylog {
+        dpi.tls_decrypt.keylog_file = Some(path);
+        dpi.tls_decrypt.enabled = true;
+    }
+    if dpi_decrypt {
+        dpi.tls_decrypt.enabled = true;
+    }
     // 两个都缺时 `ipfix` 为 None（纯离线分析，不导出）。
     let ipfix = if ipfix_udp.is_some() || ipfix_pcap.is_some() {
         Some(IpfixArgs {
@@ -295,6 +330,7 @@ fn parse_args(argv: &[String]) -> Result<Parsed, String> {
         output,
         limit,
         inspect_bytes,
+        dpi,
         max_sessions,
         workers,
         strict,
@@ -332,6 +368,11 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
     for (code, n) in &stats.decode_errors {
         let _ = writeln!(err, "[cythsec-analyze] decode_error code={code} count={n}");
     }
+    let _ = writeln!(
+        err,
+        "[cythsec-analyze] dpi enabled={} intensity={} modules_disabled={}",
+        stats.dpi_enabled, stats.dpi_intensity, stats.dpi_modules_disabled
+    );
     let _ = writeln!(
         err,
         "[cythsec-analyze] sessions={} emitted={} created={} expired={} evicted={} illegal_tcp_events={}",
@@ -417,6 +458,7 @@ fn run(args: &Args) -> Result<usize, String> {
     };
     let opts = AnalyzeOptions {
         inspect_bytes: args.inspect_bytes,
+        dpi: args.dpi.clone(),
         sampling,
         session: traffic_engine::session::SessionConfig {
             max_sessions: args.max_sessions,
@@ -650,6 +692,19 @@ mod tests {
             parse_args(&v(&["--limit", "3", "-h"])),
             Ok(Parsed::Help)
         ));
+    }
+
+    #[test]
+    fn dpi_flags_override_policy_defaults() {
+        let a = run_args(&["-r", "x.pcap", "--dpi", "basic"]);
+        assert_eq!(a.dpi.intensity, Intensity::Basic);
+        let a = run_args(&["-r", "x.pcap", "--no-dpi"]);
+        assert!(a.dpi.is_off());
+        assert_eq!(a.dpi.intensity, Intensity::Off);
+        let a = run_args(&["-r", "x.pcap", "--dpi", "deep", "--dpi-keylog", "/tmp/k"]);
+        assert_eq!(a.dpi.effective_inspect_bytes(512), 4096);
+        assert!(a.dpi.decrypt_tls());
+        assert!(parse_args(&v(&["-r", "x", "--dpi", "turbo"])).is_err());
     }
 
     #[test]

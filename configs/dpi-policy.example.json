@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "intensity": "standard",
+  "inspect_bytes": null,
+  "modules": {
+    "tls": true,
+    "http": true,
+    "dns": true,
+    "dhcpv4": true,
+    "dhcpv6": true,
+    "mdns": true,
+    "smtp": true,
+    "ftp": true,
+    "dot": true,
+    "doh": true,
+    "quic": true,
+    "ssh": true,
+    "wireguard": true,
+    "ikev1": true,
+    "ikev2": true,
+    "esp": true,
+    "ah": true,
+    "gre": true,
+    "ipip": true,
+    "ipv6-in-ip": true,
+    "etherip": true,
+    "l2tp": true,
+    "pptp": true,
+    "vxlan": true,
+    "geneve": true,
+    "openvpn": true,
+    "socks4": true,
+    "socks5": true,
+    "dtls": true,
+    "tlcp": true
+  },
+  "tls_decrypt": {
+    "enabled": false,
+    "keylog_file": ""
+  }
+}
