@@ -2,8 +2,9 @@
 //!
 //! 边界：
 //! * 只接受运维方提供的 key log；不主动探测、不导出/猜测密钥。
-//! * 支持 TLS 1.3 + TLS_AES_128_GCM_SHA256（0x1301）与
-//!   TLS_AES_256_GCM_SHA384（0x1302），其它套件明确报错。
+//! * 支持 TLS 1.3 的三个标准 AEAD 套件：TLS_AES_128_GCM_SHA256（0x1301）、
+//!   TLS_AES_256_GCM_SHA384（0x1302）、TLS_CHACHA20_POLY1305_SHA256（0x1303）；
+//!   其它套件明确报错。
 //! * 解密结果只用于本地 DPI 结论与审计元数据，默认不落明文。
 
 pub mod crypto;

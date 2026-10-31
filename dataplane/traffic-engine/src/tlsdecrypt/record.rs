@@ -4,7 +4,9 @@
 //! 内层 content type 在解密后剥离。TLS 1.2 及其 AEAD 记录不在此模块范围内，
 //! 遇到 TLS 1.2 的 key log 行会被忽略，最终以"没有可用应用流量密钥"报错。
 
-use crate::tlsdecrypt::crypto::{aes_gcm_open, expand_label, expand_label_sha384};
+use crate::tlsdecrypt::crypto::{
+    aes_gcm_open, chacha20_poly1305_open, expand_label, expand_label_sha384,
+};
 use crate::tlsdecrypt::keylog::KeyLog;
 
 pub const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
@@ -169,20 +171,27 @@ pub fn suite_name(suite: u16) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aead {
+    Aes128Gcm,
+    Aes256Gcm,
+    ChaCha20Poly1305,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrafficKeys {
     pub key: Vec<u8>,
     pub iv: [u8; 12],
+    pub aead: Aead,
 }
 
 impl TrafficKeys {
     /// 从 key log 的 traffic secret 派生 key/iv。
     ///
-    /// 已实现 0x1301（AES-128-GCM + SHA-256）与 0x1302
-    /// （AES-256-GCM + SHA-384）。ChaCha20-Poly1305 需要另一套 AEAD，
-    /// 必须显式报错而不是"解密失败"。
+    /// 已实现 0x1301（AES-128-GCM + SHA-256）、0x1302（AES-256-GCM + SHA-384）
+    /// 与 0x1303（ChaCha20-Poly1305 + SHA-256）。
     pub fn derive(traffic_material: &[u8], suite: u16) -> Result<Self, String> {
-        let (key, iv_vec) = match suite {
+        let (key, iv_vec, aead) = match suite {
             TLS_AES_128_GCM_SHA256 => {
                 if traffic_material.len() != 32 {
                     return Err(format!(
@@ -193,6 +202,7 @@ impl TrafficKeys {
                 (
                     expand_label(traffic_material, "key", &[], 16),
                     expand_label(traffic_material, "iv", &[], 12),
+                    Aead::Aes128Gcm,
                 )
             }
             TLS_AES_256_GCM_SHA384 => {
@@ -205,11 +215,25 @@ impl TrafficKeys {
                 (
                     expand_label_sha384(traffic_material, "key", &[], 32),
                     expand_label_sha384(traffic_material, "iv", &[], 12),
+                    Aead::Aes256Gcm,
+                )
+            }
+            TLS_CHACHA20_POLY1305_SHA256 => {
+                if traffic_material.len() != 32 {
+                    return Err(format!(
+                        "traffic secret length {} does not match SHA-256 suite",
+                        traffic_material.len()
+                    ));
+                }
+                (
+                    expand_label(traffic_material, "key", &[], 32),
+                    expand_label(traffic_material, "iv", &[], 12),
+                    Aead::ChaCha20Poly1305,
                 )
             }
             _ => {
                 return Err(format!(
-                    "unsupported TLS 1.3 cipher suite {} ({}); only AES-128-GCM and AES-256-GCM are implemented",
+                    "unsupported TLS 1.3 cipher suite {} ({})",
                     suite,
                     suite_name(suite)
                 ));
@@ -217,7 +241,7 @@ impl TrafficKeys {
         };
         let mut iv = [0u8; 12];
         iv.copy_from_slice(&iv_vec);
-        Ok(Self { key, iv })
+        Ok(Self { key, iv, aead })
     }
 }
 
@@ -276,7 +300,15 @@ impl Direction {
         for i in 0..8 {
             nonce[4 + i] ^= seq_bytes[i];
         }
-        match aes_gcm_open(&self.keys.key, &nonce, &aad, &rec.payload) {
+        let opened = match self.keys.aead {
+            Aead::Aes128Gcm | Aead::Aes256Gcm => {
+                aes_gcm_open(&self.keys.key, &nonce, &aad, &rec.payload)
+            }
+            Aead::ChaCha20Poly1305 => {
+                chacha20_poly1305_open(&self.keys.key, &nonce, &aad, &rec.payload)
+            }
+        };
+        match opened {
             Ok(mut pt) => {
                 while pt.last() == Some(&0) {
                     pt.pop();
@@ -388,7 +420,7 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tlsdecrypt::crypto::aes_gcm_seal;
+    use crate::tlsdecrypt::crypto::{aes_gcm_seal, chacha20_poly1305_seal};
     use crate::tlsdecrypt::keylog::{decode_hex, KeyLog};
 
     const RANDOM: &str = "cb34ecb1e78163ba1c38c6dacb196a6dffa21a8d9912ec18a2ef6283024dece7";
@@ -527,10 +559,16 @@ fe 51 37 12 1c 74 bc 26 97 68 7e 24 87 46 d6 df 35 30 05 f3 bc e1 86 96 12 9c 81
         assert!(e.contains("length 32"), "{e}");
         let e = TrafficKeys::derive(&[0u8; 48], TLS_AES_128_GCM_SHA256).unwrap_err();
         assert!(e.contains("length 48"), "{e}");
-        let e = TrafficKeys::derive(&[0u8; 32], TLS_CHACHA20_POLY1305_SHA256).unwrap_err();
+        let e = TrafficKeys::derive(&[0u8; 48], TLS_CHACHA20_POLY1305_SHA256).unwrap_err();
+        assert!(e.contains("length 48"), "{e}");
+        let e = TrafficKeys::derive(&[0u8; 32], 0xc02b).unwrap_err();
         assert!(e.contains("unsupported"), "{e}");
         let keys = TrafficKeys::derive(&[0u8; 48], TLS_AES_256_GCM_SHA384).unwrap();
         assert_eq!(keys.key.len(), 32);
+        assert_eq!(keys.aead, Aead::Aes256Gcm);
+        let keys = TrafficKeys::derive(&[0u8; 32], TLS_CHACHA20_POLY1305_SHA256).unwrap();
+        assert_eq!(keys.key.len(), 32);
+        assert_eq!(keys.aead, Aead::ChaCha20Poly1305);
     }
 
     #[test]
@@ -556,6 +594,29 @@ fe 51 37 12 1c 74 bc 26 97 68 7e 24 87 46 d6 df 35 30 05 f3 bc e1 86 96 12 9c 81
         let pt = dir.open(&rec).unwrap().unwrap();
         assert_eq!(pt.content_type, 23);
         assert_eq!(pt.data, b"hello");
+        assert_eq!(dir.opened(), 1);
+        assert_eq!(dir.skipped(), 0);
+    }
+
+    #[test]
+    fn chacha20_poly1305_record_roundtrip() {
+        let keys = TrafficKeys::derive(&[0x42u8; 32], TLS_CHACHA20_POLY1305_SHA256).unwrap();
+        let nonce = keys.iv;
+        let mut inner = b"chacha".to_vec();
+        inner.push(23);
+        let ct_len = inner.len() + 16;
+        let header = [23, 3, 3, (ct_len >> 8) as u8, ct_len as u8];
+        let sealed = chacha20_poly1305_seal(&keys.key, &nonce, &header, &inner).unwrap();
+        let rec = Record {
+            content_type: 23,
+            version: 0x0303,
+            payload: sealed,
+            header,
+        };
+        let mut dir = Direction::new(keys);
+        let pt = dir.open(&rec).unwrap().unwrap();
+        assert_eq!(pt.content_type, 23);
+        assert_eq!(pt.data, b"chacha");
         assert_eq!(dir.opened(), 1);
         assert_eq!(dir.skipped(), 0);
     }
