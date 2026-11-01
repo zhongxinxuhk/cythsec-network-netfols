@@ -60,3 +60,52 @@ package exports，避免仅通过单元测试、却在真实 webpack 构建中�
 
 DPI14、TCP重组2、FlowRecord8项第三方裁判跳过/未核验仍保留，不能因npm审计清零而写成全部核验。
 本轮不推送、不合入main。
+
+## 2026-11-02 第二轮：构建链审计清零
+
+GitHub Actions 的 `npm audit --package-lock-only --audit-level=low` 报告 41 项
+（2 low / 39 moderate）。报告不是 41 个独立漏洞：`@hono/node-server` 通过
+`@utoo/pack` 传播，`deepmerge` 通过 `@svgr/plugin-svgo` 与
+`fork-ts-checker-webpack-plugin` 传播，`glob` / `minimatch` 通过旧版
+`rimraf`、`test-exclude` 和 ESLint 8 依赖链传播。所有受影响包都位于
+`devDependencies` 的构建/测试链，生产 `dependencies` 未变化。
+
+本轮没有关闭 audit、没有改成只审计生产依赖，也没有用 `--force` /
+`--legacy-peer-deps` 绕过约束。处理如下：
+
+| 根依赖 | 本轮处理 | 上游依据 |
+| --- | --- | --- |
+| `@hono/node-server` 1.19.17 | 根 override 固定到 2.1.5；仅被 `@utoo/pack` / `@hono/node-ws` 的开发服务器使用 | [GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f) 的修复版本从 2.1.3 起 |
+| `deepmerge` 4.3.1 | `compat/deepmerge-safe` 保留 4.3.1 合并算法，拒绝 `__proto__` / `constructor` / `prototype` 键；上游无修复版 | [GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) |
+| `glob` 7.2.3 / 10.5.0 | 升级 `rimraf` 到 6.1.3、`test-exclude` 到 8.0.0，并 override `glob` 到 14.0.3 | [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) 的修复版本从 14.0.2 起 |
+| `minimatch` 3.1.5 / 10.2.6 | `compat/minimatch-safe` 包装真实 11.0.3：保留旧 ESLint 插件需要的可调用 CommonJS 导出，同时提供 glob 14 使用的 v11 命名导出 | [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249) 的修复版本从 11.0.1 起 |
+
+`@hono/node-ws` 的 peer 范围仍写着 `^1.19.11`，这是上游尚未跟进 2.x 的声明；
+根 override 只用于开发服务器依赖，webpack 生产构建、现有测试和类型检查均通过。
+如果后续启用 Utoo 开发服务器或升级 Umi 构建器，必须重新验证该组合。
+
+### 可重复安装与回归
+
+`package.json` 的 file 依赖和 `$name` override 与 `package-lock.json` 同批提交。
+普通 `npm ci` 会安装 `deepmerge-safe`、`minimatch-safe` 及固定的构建链版本；
+不依赖安装后手工改文件。新增回归在 `tests/dependency-security.test.tsx`：
+锁文件版本断言、`deepmerge` 原型键拒绝、`minimatch` 可调用与 v11 命名 API 双兼容。
+
+### 实际验证结果
+
+| 检查 | 实际结果 |
+| --- | --- |
+| `npm ci` | 退出 0；1483 packages；安装后审计 0 项 |
+| `npm audit --package-lock-only --audit-level=low` | 退出 0；0 vulnerabilities |
+| `npm audit --audit-level=low` | 退出 0；0 vulnerabilities |
+| `npm run lint` | 退出 0 |
+| `npm test` | 退出 0；27 个测试文件、102 项通过 |
+| `npm run build` | 退出 0；typecheck + webpack 生产构建通过 |
+| `bash scripts/lint/lint-all.sh` | 退出 0；汇总“全部通过” |
+| `bash scripts/test/test-all.sh` | 退出 0；汇总“全部通过” |
+
+`test-all.sh` 的 tshark 交叉核验仍显式跳过 8 项 DNS 向量（脚本标注“跳过 = 未核验，
+不计入通过”），本轮未把它们写成已核验。该跳过与前端依赖修复无关，保持原状。
+
+验证范围仅限当前 webpack SPA 与上述构建链。Mako / Utoo / Vite 构建器、完整 SSR /
+水合、`@hono/node-server` 2.x 的开发服务器行为和未启用插件的业务行为未因此宣称通过。
