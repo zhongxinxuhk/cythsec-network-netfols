@@ -88,6 +88,12 @@ path = "src/bin/icmp_collect.rs"
 name = "cythsec-gre"
 path = "src/bin/gre_collect.rs"
 
+# IPv4/IPv6 分片事件采集器（B008 / CYS-TRF-018）：逐片输出 offset/M/identification，
+# 完整数据报单独输出完成事件；缺片、重叠、截断只记 dropped，不伪造完整载荷。
+[[bin]]
+name = "cythsec-ipfrag"
+path = "src/bin/ipfrag_collect.rs"
+
 [[bin]]
 name = "cythsec-bench"
 path = "src/bin/bench.rs"

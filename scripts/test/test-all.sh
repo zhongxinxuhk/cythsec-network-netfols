@@ -212,6 +212,10 @@ test_rust() {
     echo "✗ [B011/B012/V009] ICMP/GRE基础协议回归失败" >&2
     return 1
   fi
+  if ! bash scripts/verify/check-ipfrag.sh; then
+    echo "✗ [B008] IPv4/IPv6 分片重组回归失败" >&2
+    return 1
+  fi
   echo "✓ [rust] 测试通过（含特征 parity、识别 CLI 与独立聚合观测）"
 }
 
@@ -937,6 +941,7 @@ if [[ ${ALL} -eq 1 ]]; then
   bash scripts/verify/check-dns-tcp.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-arp.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-icmp-gre.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-ipfrag.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-vpn-identification.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-aggregate-observability.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-aggregate-storage.sh || failed=$((failed+1))

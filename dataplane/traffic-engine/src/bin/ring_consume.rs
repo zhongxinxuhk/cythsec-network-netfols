@@ -38,8 +38,9 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use traffic_engine::channel::{decode_frame, Channel, Consumer, PacketMeta, RegionPerm};
+use traffic_engine::channel::{decode_frame, Channel, Consumer, LinkLayer, PacketMeta, RegionPerm};
 use traffic_engine::flow::{Flow, FlowKey};
+use traffic_engine::reassembly::ip::{IpReassembler, PushOutcome};
 
 const DEFAULT_SLOT_COUNT: u32 = 1024;
 const DEFAULT_SLOT_SIZE: u32 = 2048;
@@ -223,11 +224,15 @@ fn main() -> ExitCode {
     let mut flows: BTreeMap<FlowKey, Flow> = BTreeMap::new();
     let mut packets = 0u64;
     let mut decoded = 0u64;
+    // 完整重组数据报数。它与 `decoded` 不同：重组成功但首片四层头不可解时，
+    // 前者加一、后者不加。抓包帧数与逻辑包数也不能相减当失败数。
+    let mut reassembled = 0u64;
     let mut bytes = 0u64;
     let mut truncated = 0u64;
     let mut vlan_tagged = 0u64;
     let mut ipv6 = 0u64;
     let mut decode_fail: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut ipfrag = IpReassembler::default();
 
     let drain_result = consumer.drain(|meta: PacketMeta, data: &[u8]| {
         packets += 1;
@@ -242,28 +247,63 @@ fn main() -> ExitCode {
             ipv6 += 1;
         }
 
-        match decode_frame(data) {
-            Ok(f) => {
-                decoded += 1;
-                // 负载长度用 ip_payload_len（从 IP 头长度字段算出），而不是 wirelen：
-                // 后者含链路层与网络层头，且截断捕获下偏小。两者混用会让流的字节统计
-                // 在两份输出间不可比。
-                let pkt = traffic_engine::flow::Packet {
-                    key: f.key,
-                    payload_len: f.ip_payload_len,
-                    timestamp_us: meta.timestamp_us(),
-                };
-                flows
-                    .entry(f.key)
-                    .or_insert_with(|| Flow::new(f.key))
-                    .observe(&pkt);
+        // 先过 IP 分片表：非首片没有四层头，直接解码只能报错；完整数据报
+        // 必须回到与普通帧相同的解码/流表路径，不能另造一个“分片专用”流。
+        match ipfrag.push(
+            data,
+            LinkLayer::Ethernet,
+            meta.timestamp_us(),
+            meta.is_truncated(),
+        ) {
+            PushOutcome::Pending(_) => {}
+            PushOutcome::Dropped { error, .. } => {
+                *decode_fail.entry(error.code()).or_insert(0) += 1;
             }
-            Err(e) => {
-                // 计数而非中断：非 IP 帧（ARP/STP/LLDP）在真实抓包里必然出现，
-                // 它们不构成五元组，是预期现象而不是错误。按错误码分类上报，
-                // 让脚本能对「失败了几条、为什么」给出可核对的事实。
-                *decode_fail.entry(e.code()).or_insert(0) += 1;
+            PushOutcome::Complete(d) => {
+                reassembled += 1;
+                match decode_frame(&d.frame) {
+                    Ok(f) => {
+                        decoded += 1;
+                        let pkt = traffic_engine::flow::Packet {
+                            key: f.key,
+                            payload_len: f.ip_payload_len,
+                            timestamp_us: d.timestamp_us,
+                        };
+                        flows
+                            .entry(f.key)
+                            .or_insert_with(|| Flow::new(f.key))
+                            .observe(&pkt);
+                    }
+                    Err(e) => {
+                        // 重组完整但首片四层头本身不可解（例如首片被切在 TCP 头中间）：
+                        // 这与普通解码失败同码计数，不把半条流塞进表。
+                        *decode_fail.entry(e.code()).or_insert(0) += 1;
+                    }
+                }
             }
+            PushOutcome::NotFragment => match decode_frame(data) {
+                Ok(f) => {
+                    decoded += 1;
+                    // 负载长度用 ip_payload_len（从 IP 头长度字段算出），而不是 wirelen：
+                    // 后者含链路层与网络层头，且截断捕获下偏小。两者混用会让流的字节统计
+                    // 在两份输出间不可比。
+                    let pkt = traffic_engine::flow::Packet {
+                        key: f.key,
+                        payload_len: f.ip_payload_len,
+                        timestamp_us: meta.timestamp_us(),
+                    };
+                    flows
+                        .entry(f.key)
+                        .or_insert_with(|| Flow::new(f.key))
+                        .observe(&pkt);
+                }
+                Err(e) => {
+                    // 计数而非中断：非 IP 帧（ARP/STP/LLDP）在真实抓包里必然出现，
+                    // 它们不构成五元组，是预期现象而不是错误。按错误码分类上报，
+                    // 让脚本能对「失败了几条、为什么」给出可核对的事实。
+                    *decode_fail.entry(e.code()).or_insert(0) += 1;
+                }
+            },
         }
     });
 
@@ -271,17 +311,27 @@ fn main() -> ExitCode {
         eprintln!("消费出错: {e}");
         return ExitCode::from(4);
     }
+    let fin = ipfrag.finish();
+    if fin.non_initial_fragments > 0 {
+        *decode_fail
+            .entry("decode.non_initial_fragment")
+            .or_insert(0) += fin.non_initial_fragments;
+    }
 
     let overrun = consumer.stats().overrun_skipped;
     let chan_stats = consumer.channel_stats();
+    let fail_total: u64 = decode_fail.values().sum();
 
+    // `packets` 是消费到的抓包帧数，`decoded` 是成功解码的逻辑包数。
+    // 两者不能相减当失败数：一个完整重组数据报由多帧组成，只产生一个逻辑包。
     println!(
-        "ring-consume summary packets={} decoded={} decode_fail={} flows={} bytes={}",
+        "ring-consume summary packets={} decoded={} decode_fail={} flows={} bytes={} reassembled={}",
         packets,
         decoded,
-        packets - decoded,
+        fail_total,
         flows.len(),
-        bytes
+        bytes,
+        reassembled
     );
     println!(
         "ring-consume counts truncated={} vlan_tagged={} ipv6={} overrun_skipped={}",
@@ -300,6 +350,7 @@ fn main() -> ExitCode {
     for (code, count) in &decode_fail {
         println!("ring-consume decode_fail code={code} count={count}");
     }
+    println!("ring-consume {}", ipfrag.stats().render_line());
 
     // 逐流输出。IP:port 的写法对 IPv6 用方括号括起地址，使 `host:port` 的分隔无歧义。
     for flow in flows.values() {
@@ -321,8 +372,9 @@ fn main() -> ExitCode {
     if !opt.quiet {
         println!("\n===== 消费摘要 =====");
         println!("消费报文      : {packets}");
-        println!("解码成功      : {decoded}");
-        println!("解码失败      : {}", packets - decoded);
+        println!("逻辑包        : {decoded}");
+        println!("重组数据报    : {reassembled}");
+        println!("解码失败      : {fail_total}");
         for (code, count) in &decode_fail {
             println!("    {code:<34} {count}");
         }

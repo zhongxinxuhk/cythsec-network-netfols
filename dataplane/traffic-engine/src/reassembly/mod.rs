@@ -15,11 +15,13 @@
 // 目录：
 //   seq.rs       32 位序号的回绕算术（循环空间上的比较/区间/交并）
 //   intervals.rs 已收数据的有序区间集（重叠仲裁、空洞追踪、窗口裁剪）
+//   ip.rs        IPv4/IPv6 分片重组（完整数据报才交付，重叠/缺片显式拒绝）
 //   tcp.rs       TCP 头与选项解析（MSS / 窗口缩放 / SACK / 时间戳）
 //   stream.rs    单向流（锚定、交付、内存上限、FIN 语义）
 //   mod.rs       双向 Reassembler：把上面几块拼成"一条连接"
 
 pub mod intervals;
+pub mod ip;
 pub mod seq;
 pub mod stream;
 pub mod tcp;

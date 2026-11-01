@@ -27,6 +27,7 @@ mod region;
 mod tests;
 
 pub use consumer::{ConsumeError, Consumer, ConsumerStats, PacketMeta};
+pub(crate) use decode::link_payload;
 pub use decode::{
     decode_flow_key, decode_frame, decode_frame_with_link, l4_payload, tcp_flags, tcp_seq_ack,
     DecodeError, DecodeStage, DecodedFrame, L3Proto, L4Payload, LinkLayer,

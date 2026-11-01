@@ -348,11 +348,12 @@ pub fn decode_frame(frame: &[u8]) -> Result<DecodedFrame, DecodeError> {
     decode_frame_with_link(frame, LinkLayer::Ethernet)
 }
 
-/// 按链路层封装解码一帧。
+/// 跳过链路头与 VLAN 标签，返回 `(EtherType, L3 起始偏移, VLAN 标签层数)`。
 ///
-/// SLL/SLL2 只跳过 cooked 头；它们不是“另一种以太网”，所以 VLAN 处理也按
-/// cooked 头的协议字段单独走，不能把 SLL 负载当成从 MAC 头开始的字节。
-pub fn decode_frame_with_link(frame: &[u8], link: LinkLayer) -> Result<DecodedFrame, DecodeError> {
+/// 单列这个函数是给 IP 分片重组复用：非首片没有四层头，`decode_frame_with_link`
+/// 必然拒绝它，但重组器仍需要知道 IP 头从哪里开始。链路头与 VLAN 的解析只能有一份，
+/// 否则一处支持两层标签、另一处只支持一层，分片样本就会在两条路径上得到不同结论。
+pub(crate) fn link_payload(frame: &[u8], link: LinkLayer) -> Result<(u16, usize, u8), DecodeError> {
     // ---- 链路头 ----
     let (mut ether_type, mut offset, mut vlan_tags) = match link {
         LinkLayer::Ethernet => {
@@ -425,7 +426,15 @@ pub fn decode_frame_with_link(frame: &[u8], link: LinkLayer) -> Result<DecodedFr
         offset += VLAN_TAG_LEN;
         vlan_tags = 1;
     }
+    Ok((ether_type, offset, vlan_tags))
+}
 
+/// 按链路层封装解码一帧。
+///
+/// SLL/SLL2 只跳过 cooked 头；它们不是“另一种以太网”，所以 VLAN 处理也按
+/// cooked 头的协议字段单独走，不能把 SLL 负载当成从 MAC 头开始的字节。
+pub fn decode_frame_with_link(frame: &[u8], link: LinkLayer) -> Result<DecodedFrame, DecodeError> {
+    let (ether_type, offset, vlan_tags) = link_payload(frame, link)?;
     // ---- 三层 ----
     match ether_type {
         ETHERTYPE_IPV4 => decode_ipv4(frame, offset, vlan_tags),
