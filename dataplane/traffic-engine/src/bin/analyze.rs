@@ -393,6 +393,9 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
     // 不伪造额外 FlowRecord。字段名是关口契约，改名必须同时改 check-icmp-gre.py。
     let _ = writeln!(err, "[cythsec-analyze] {}", stats.icmp.render_line());
     let _ = writeln!(err, "[cythsec-analyze] {}", stats.gre.render_line());
+    // IP 分片重组统计（B008）。完整数据报才进流表；缺片/重叠/截断只在这里计数，
+    // 字段名是 scripts/verify/check-ipfrag.py 的契约。
+    let _ = writeln!(err, "[cythsec-analyze] {}", stats.ipfrag.render_line());
     let apps: Vec<String> = stats
         .app_outcomes
         .iter()

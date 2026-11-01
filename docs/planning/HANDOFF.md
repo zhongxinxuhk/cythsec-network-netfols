@@ -1,5 +1,7 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-11-01 B008 分片重组验收**：分支 `feat/b008-fragmentation-reassembly`（基线 `main@0d57b6d`）完成 IPv4/IPv6 重组、22 项分片单测、4 项流水线测试、tshark 独立重组对照、Linux netns 真实 12 帧分片抓包与共享环补充验证；注册表 B008 已置 `accepted=true`，完整记录见 [protocol-b008-ip-fragmentation-verification.md](protocol-b008-ip-fragmentation-verification.md)。
+
 > **2026-10-26 聚合持续写入增量**：可选磁盘队列、常驻消费者、批次恢复和退避、控制台积压状态；不是 ClickHouse 写入器。最终 lint/build/test 实际退出均 0，前端 48 项、四服务 59 项通过；另修 live 回读计数守恒，普通用户 BPF 5037 帧/15 项通过但无 ICMP 注入；既有裁判例外仍未核验。最新范围和验收见 [INGEST-20261026.md](INGEST-20261026.md)。
 
 > **2026-10-26 聚合持久化纵向切片**：新增 telemetryd 本地聚合历史、严格导入/去重/重启校验和查询，第六页控制台 `/analytics`；不是 ClickHouse 常驻后端。lint/build/test 实际退出均 0；存储重启 E2E、前端 41 项、四服务 59 项通过；BPF 14 项通过但无 ICMP 注入目标，历史裁判例外仍未核验。阶段与本轮验收见 [CORE-STATUS-20261026.md](CORE-STATUS-20261026.md)。
@@ -1947,7 +1949,6 @@ tshark 是唯一能发现「一致地错」的手段。
 - `CYS-TRF-026` `cargo-fuzz` 对 HTTP/TLS/DNS 解析器做模糊测试 ——
   解析器已在处理**敌意输入**（省网必然遇到畸形包），这是当前最值得补的一道防守
 - `CYS-TRF-024` QUIC（需密钥派生，XL）
-- `CYS-TRF-018` IP 分片重组（与 TCP 重组同源，可复用 `intervals.rs`）
 
 ---
 

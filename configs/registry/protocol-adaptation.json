@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "revision": "2026-11-01.3",
+  "revision": "2026-11-01.4",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -6305,10 +6305,10 @@
     {
       "id": "B008",
       "name": "IPv4/IPv6分片重组",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
-      "accepted": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
+      "accepted": true,
       "osi_layer": "L3",
       "osi_sublayer": "L3",
       "osi_role": "base",
@@ -6317,11 +6317,54 @@
         "L3:Fragments"
       ],
       "uses_layers": [],
-      "scope": "通用解析/统计；具体支持范围待实现或审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "仅识别分片并阻止伪造完整传输统计；IP分片重组未实现"
+      "scope": "IPv4（RFC 791）/IPv6（RFC 8200）分片重组：按源/目的地址、Identification 聚合（IPv4 协议属于键；IPv6 同键分片的 Next Header 必须一致，不一致显式拒绝）；支持乱序、精确重复分片、IPv6 分片前扩展头（hop-by-hop/routing/destination/AH）及 atomic fragment；仅在覆盖 0..总长连续且无空洞时交付完整数据报，并只解码一次进入既有流表/会话/DPI；IPv4 重建 total length、清除 MF/DF/offset 并重算头校验和，IPv6 重建 payload length 并清除 offset/M；保留 Ethernet/VLAN/SLL/SLL2 链路头；主流水线报文级统计、独立 cythsec-ipfrag JSONL 事件、cythsec-analyze 与 cythsec-ring-consume 接线；默认 256 个并发数据报、每数据报 1024 个唯一分片、30s 空闲超时、最大载荷 65535；重叠、冲突重复、长度/头不一致（含 IPv6 Next Header）、截断、超限与超时均为显式拒绝或丢弃并计数，不采用 BSD/Linux first-wins/last-wins；不支持 IPv6 jumbogram、raw-IP linktype、主动探测、主机在线/拓扑/隧道对端推断与内层递归拆流",
+      "code": [
+        "dataplane/traffic-engine/src/reassembly/ip.rs",
+        "dataplane/traffic-engine/src/reassembly/mod.rs",
+        "dataplane/traffic-engine/src/bin/ipfrag_collect.rs",
+        "dataplane/traffic-engine/src/pipeline.rs",
+        "dataplane/traffic-engine/src/bin/analyze.rs",
+        "dataplane/traffic-engine/src/bin/ring_consume.rs",
+        "dataplane/traffic-engine/src/channel/decode.rs",
+        "dataplane/traffic-engine/src/channel/mod.rs",
+        "dataplane/traffic-engine/Cargo.toml"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#ipv4_out_of_order_reassembles_into_one_decodable_datagram",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#ipv4_overlap_is_rejected_instead_of_choosing_first_or_last",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#identical_duplicate_fragment_is_not_double_counted",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#missing_first_fragment_stays_pending_and_finish_reports_non_initial",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#missing_tail_stays_incomplete_and_never_creates_a_frame",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#truncated_capture_is_rejected_without_zero_filling",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#configured_payload_limit_rejects_oversized_fragment",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#fragment_count_limit_is_explicit",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#queue_cap_evicts_oldest_and_counts_it",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#idle_timeout_evicts_and_is_not_counted_as_complete",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#ipv6_with_extension_header_reassembles_and_patches_payload_length",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#ipv6_overlap_is_rejected",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#atomic_ipv6_fragment_and_ordinary_packets_pass_through",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#linux_sll_link_header_is_preserved_through_reassembly",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#misaligned_non_final_fragment_is_rejected",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#empty_fragment_is_rejected",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#conflicting_duplicate_is_rejected_not_last_wins",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#inconsistent_last_fragment_length_is_rejected",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#duplicate_first_fragment_with_different_header_is_rejected",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#ipv6_next_header_mismatch_is_rejected",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#ipv6_jumbogram_fragment_is_explicitly_unsupported",
+        "dataplane/traffic-engine/src/reassembly/ip/tests.rs#stats_line_names_are_stable",
+        "dataplane/traffic-engine/src/pipeline.rs#fragmented_udp_is_reassembled_into_one_dns_flow",
+        "dataplane/traffic-engine/src/pipeline.rs#orphan_non_initial_fragment_does_not_create_a_fake_flow",
+        "dataplane/traffic-engine/src/pipeline.rs#overlapping_fragments_are_rejected_and_never_enter_the_flow_table",
+        "dataplane/traffic-engine/src/pipeline.rs#ipfrag_stats_and_records_are_identical_with_multiple_workers",
+        "scripts/verify/check-ipfrag.sh",
+        "scripts/verify/check-ipfrag.py",
+        "docs/planning/protocol-b008-ip-fragmentation-verification.md"
+      ],
+      "reference": [
+        "scripts/verify/check-ipfrag.sh",
+        "docs/planning/protocol-b008-ip-fragmentation-verification.md"
+      ],
+      "gap": ""
     },
     {
       "id": "B009",

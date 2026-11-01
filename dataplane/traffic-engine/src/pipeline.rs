@@ -37,7 +37,8 @@ use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
 use crate::gre::{self, GreStats};
 use crate::icmp::{self, IcmpFamily, IcmpStats};
-use crate::pcapfile::PcapReader;
+use crate::pcapfile::{PcapReader, PcapRecord};
+use crate::reassembly::ip::{IpFragConfig, IpFragStats, IpReassembler, PushOutcome};
 use crate::record::{AppInfo, FlowRecord, TcpSessionStats, RECORD_SCHEMA_VERSION};
 use crate::session::{ManagerStats, SessionConfig, SessionManager};
 use crate::tcp::{Side, TcpConfig, TcpObservation};
@@ -122,6 +123,9 @@ pub struct AnalyzeStats {
     /// GRE/PPTP GRE 报文级统计（V009）。内层 IP 不会被当成第二条流：
     /// 单包可见的只是一个封装头，拆开内层会凭空制造会话。
     pub gre: GreStats,
+    /// IPv4/IPv6 分片重组统计（B008）。完整数据报才进入流表；缺片/重叠/
+    /// 截断/超预算只在这里计数，不会伪造内层流。
+    pub ipfrag: IpFragStats,
     /// 会话级 TCP 统计（`CYS-TRF-015`）。走**统计行**这个已有出口而不是记录字段：
     /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
     /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
@@ -659,6 +663,78 @@ fn note_gre_frame(stats: &mut GreStats, d: &DecodedFrame, frame: &[u8], capture_
     }
 }
 
+/// 解码一条 pcap 记录，必要时先做 IP 分片重组。
+///
+/// 返回 `None` 表示这条记录已被分片表吸收/拒绝，不能进入流表。这里把
+/// “先重组、再解帧”的顺序写在一个地方：单线程与多 worker 的派发端必须完全一致，
+/// 否则同一条分片在两条路径上会得到不同的记录。
+fn decode_record(
+    ipfrag: &mut IpReassembler,
+    stats: &mut AnalyzeStats,
+    rec: PcapRecord,
+    link: LinkLayer,
+) -> Option<DecodedPacket> {
+    let truncated = rec.is_truncated();
+    match ipfrag.push(&rec.data, link, rec.timestamp_us, truncated) {
+        PushOutcome::Pending(_) => None,
+        PushOutcome::Dropped { error, .. } => {
+            *stats.decode_errors.entry(error.code()).or_insert(0) += 1;
+            None
+        }
+        PushOutcome::Complete(d) => {
+            let decoded = match decode_frame_with_link(&d.frame, link) {
+                Ok(v) => v,
+                Err(e) => {
+                    *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                    note_arp_frame(&mut stats.arp, e, &d.frame, false, link);
+                    return None;
+                }
+            };
+            stats.packets_decoded += 1;
+            note_icmp_frame(&mut stats.icmp, &decoded, &d.frame, false);
+            note_gre_frame(&mut stats.gre, &decoded, &d.frame, false);
+            Some(DecodedPacket {
+                data: d.frame,
+                decoded,
+                timestamp_us: d.timestamp_us,
+            })
+        }
+        PushOutcome::NotFragment => {
+            let decoded = match decode_frame_with_link(&rec.data, link) {
+                Ok(v) => v,
+                Err(e) => {
+                    // 解码失败**不中断**：省网抓包里畸形帧是常态。
+                    *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
+                    note_arp_frame(&mut stats.arp, e, &rec.data, truncated, link);
+                    return None;
+                }
+            };
+            stats.packets_decoded += 1;
+            note_icmp_frame(&mut stats.icmp, &decoded, &rec.data, truncated);
+            note_gre_frame(&mut stats.gre, &decoded, &rec.data, truncated);
+            Some(DecodedPacket {
+                data: rec.data,
+                decoded,
+                timestamp_us: rec.timestamp_us,
+            })
+        }
+    }
+}
+
+/// 把收尾时的未完成分片计入统计。非首片仍然单独记到既有的
+/// `decode.non_initial_fragment`：它单独看确实没有四层头，不能因为“曾经尝试
+/// 重组”就假装它被解码过。完整数据报不会产生这个错误。
+fn finish_ipfrag(stats: &mut AnalyzeStats, ipfrag: &mut IpReassembler) {
+    let fin = ipfrag.finish();
+    stats.ipfrag = ipfrag.stats().clone();
+    if fin.non_initial_fragments > 0 {
+        *stats
+            .decode_errors
+            .entry("decode.non_initial_fragment")
+            .or_insert(0) += fin.non_initial_fragments;
+    }
+}
+
 /// 就地（单线程）驱动：与历史行为**逐字一致** —— 顺序、会话 id、统计口径都不变。
 fn drive_inline<R: Read>(
     mut reader: PcapReader<R>,
@@ -667,6 +743,7 @@ fn drive_inline<R: Read>(
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
     let mut stats = new_stats(&reader, 1, opts);
     let mut state = PipelineState::new(opts);
+    let mut ipfrag = IpReassembler::new(IpFragConfig::default());
     // 采样器在**每包路径之前**、且只有这一个实例：放进 worker 会让 N 个 worker 各采一遍。
     let mut sampler = match opts.sampling {
         Some(cfg) => Some(crate::sampling::Sampler::new(cfg)?),
@@ -682,33 +759,18 @@ fn drive_inline<R: Read>(
         if rec.is_truncated() {
             stats.truncated_captures += 1;
         }
-        let decoded = match decode_frame_with_link(&rec.data, link) {
-            Ok(d) => d,
-            Err(e) => {
-                // 解码失败**不中断**：省网抓包里畸形帧与非首片分片是常态。
-                *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
-                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated(), link);
-                continue;
-            }
+        let Some(pkt) = decode_record(&mut ipfrag, &mut stats, rec, link) else {
+            continue;
         };
-        stats.packets_decoded += 1;
-        note_icmp_frame(&mut stats.icmp, &decoded, &rec.data, rec.is_truncated());
-        note_gre_frame(&mut stats.gre, &decoded, &rec.data, rec.is_truncated());
         if let Some(sp) = sampler.as_mut() {
             // 传 `canonical()` 键：TCP 两个方向必须得到同一个决定，否则进表的是半条会话。
-            if !sp.keep(&decoded.key.canonical()) {
+            if !sp.keep(&pkt.decoded.key.canonical()) {
                 continue;
             }
         }
-        state.observe(
-            &DecodedPacket {
-                data: rec.data,
-                decoded,
-                timestamp_us: rec.timestamp_us,
-            },
-            opts,
-        );
+        state.observe(&pkt, opts);
     }
+    finish_ipfrag(&mut stats, &mut ipfrag);
     let records = state.finish(&mut stats);
     stats.sampling = sampler.map(|s| s.stats());
     stats.worker_flows = vec![records.len()];
@@ -747,6 +809,7 @@ fn drive_sharded<R: Read>(
     // 同一个包流，所以它分出来的 id 与 worker 数无关。
     let mut ids: HashMap<FlowKey, u64> = HashMap::new();
     let mut next_id: u64 = 1;
+    let mut ipfrag = IpReassembler::new(IpFragConfig::default());
     // 采样决定**必须在派发端做**：放进 worker 就是每个 worker 各采一遍（实际采样率
     // 被放大 N×），而且各 worker 只看到自己那部分包序，`PerPacket` 模式还会不一致。
     // 又因为 `FlowConsistent` 的决定只依赖流键（与包序无关），所以"多线程采到的流集合"
@@ -765,18 +828,10 @@ fn drive_sharded<R: Read>(
         if rec.is_truncated() {
             stats.truncated_captures += 1;
         }
-        let decoded = match decode_frame_with_link(&rec.data, link) {
-            Ok(d) => d,
-            Err(e) => {
-                *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
-                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated(), link);
-                continue;
-            }
+        let Some(pkt) = decode_record(&mut ipfrag, &mut stats, rec, link) else {
+            continue;
         };
-        stats.packets_decoded += 1;
-        note_icmp_frame(&mut stats.icmp, &decoded, &rec.data, rec.is_truncated());
-        note_gre_frame(&mut stats.gre, &decoded, &rec.data, rec.is_truncated());
-        let key = decoded.key.canonical();
+        let key = pkt.decoded.key.canonical();
         if let Some(sp) = sampler.as_mut() {
             if !sp.keep(&key) {
                 continue; // 未采到的包**不登记会话 id、不入分片**：id 顺序只看采样后的流集合
@@ -788,13 +843,10 @@ fn drive_sharded<R: Read>(
         }
         let shard = shard_of(&key, workers);
         senders[shard]
-            .send(DecodedPacket {
-                data: rec.data,
-                decoded,
-                timestamp_us: rec.timestamp_us,
-            })
+            .send(pkt)
             .map_err(|_| "内部错误：分片 worker 在派发完成前退出".to_string())?;
     }
+    finish_ipfrag(&mut stats, &mut ipfrag);
     drop(senders);
 
     // ---- 收拢 ----
@@ -1618,6 +1670,129 @@ mod tests {
         assert_eq!(s1.gre, s3.gre, "GRE 统计必须与 worker 数无关");
         assert_eq!(s3.icmp.icmp_frames, 1);
         assert_eq!(s3.gre.gre_frames, 1);
+    }
+
+    /// 一条 IPv4 分片帧。`offset` 单位是 8 字节；`more=true` 表示后面还有片。
+    fn ipv4_frag_frame(
+        src: [u8; 4],
+        dst: [u8; 4],
+        id: u16,
+        proto: u8,
+        offset: u16,
+        more: bool,
+        l4: &[u8],
+    ) -> Vec<u8> {
+        let total = 20 + l4.len();
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&(total as u16).to_be_bytes());
+        ip.extend_from_slice(&id.to_be_bytes());
+        let mut frag = offset & 0x1fff;
+        if more {
+            frag |= 0x2000;
+        }
+        ip.extend_from_slice(&frag.to_be_bytes());
+        ip.extend_from_slice(&[64, proto, 0, 0]);
+        ip.extend_from_slice(&src);
+        ip.extend_from_slice(&dst);
+        ip.extend_from_slice(l4);
+        let mut frame = vec![0u8; 12];
+        frame.extend_from_slice(&0x0800u16.to_be_bytes());
+        frame.extend_from_slice(&ip);
+        frame
+    }
+
+    fn udp_l4(sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&sport.to_be_bytes());
+        out.extend_from_slice(&dport.to_be_bytes());
+        out.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// 一条最小 DNS 查询（QDCOUNT=1），足以让 DPI 走 DNS 解析器。
+    fn dns_query_l4(name: &str) -> Vec<u8> {
+        let mut q = vec![0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+        for label in name.split('.') {
+            q.push(label.len() as u8);
+            q.extend_from_slice(label.as_bytes());
+        }
+        q.push(0);
+        q.extend_from_slice(&[0, 1, 0, 1]);
+        q
+    }
+
+    #[test]
+    fn fragmented_udp_is_reassembled_into_one_dns_flow() {
+        let query = dns_query_l4("example.com");
+        let l4 = udp_l4(53000, 53, &query);
+        // 故意逆序：尾片先到，首片后到；完成时必须只产生一条逻辑包。
+        let last = ipv4_frag_frame([10, 0, 0, 1], [10, 0, 0, 2], 77, 17, 1, false, &l4[8..]);
+        let first = ipv4_frag_frame([10, 0, 0, 1], [10, 0, 0, 2], 77, 17, 0, true, &l4[..8]);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[last, first]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert_eq!(records.len(), 1, "两片合起来才是 1 条 DNS 流");
+        let r = &records[0];
+        assert_eq!(r.key.src_port, 53000);
+        assert_eq!(r.key.dst_port, 53);
+        assert_eq!(r.packets, 1, "两个分片只算一个逻辑包");
+        assert_eq!(r.bytes as usize, l4.len(), "字节口径是完整 IP 载荷");
+        assert_eq!(r.app.app.map(|a| a.as_str()), Some("dns"));
+        assert_eq!(stats.packets_read, 2);
+        assert_eq!(stats.packets_decoded, 1, "只有完整数据报进入解码");
+        assert_eq!(stats.ipfrag.fragments_seen, 2);
+        assert_eq!(stats.ipfrag.ipv4_fragments, 2);
+        assert_eq!(stats.ipfrag.datagrams_completed, 1);
+        assert_eq!(stats.ipfrag.datagrams_incomplete, 0);
+        assert_eq!(stats.ipfrag.bytes_reassembled as usize, l4.len());
+        assert!(stats.decode_errors.is_empty(), "完整重组不应报解码错误");
+    }
+
+    #[test]
+    fn orphan_non_initial_fragment_does_not_create_a_fake_flow() {
+        let orphan = ipv4_frag_frame([10, 0, 0, 1], [10, 0, 0, 2], 78, 17, 1, false, &[0xaa; 16]);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[orphan]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert!(records.is_empty(), "缺首片不能合成一条端口为 0 的流");
+        assert_eq!(stats.packets_decoded, 0);
+        assert_eq!(stats.ipfrag.datagrams_incomplete, 1);
+        assert_eq!(stats.ipfrag.pending_fragments_at_eof, 1);
+        assert_eq!(
+            stats.decode_errors.get("decode.non_initial_fragment"),
+            Some(&1),
+            "非首片单独看仍然解不出四层头，必须保留显式计数"
+        );
+    }
+
+    #[test]
+    fn overlapping_fragments_are_rejected_and_never_enter_the_flow_table() {
+        let a = ipv4_frag_frame([10, 0, 0, 1], [10, 0, 0, 2], 79, 17, 0, true, &[1u8; 16]);
+        let b = ipv4_frag_frame([10, 0, 0, 1], [10, 0, 0, 2], 79, 17, 1, false, &[2u8; 16]);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[a, b]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert!(records.is_empty(), "重叠分片不得选择先到/后到语义");
+        assert_eq!(stats.ipfrag.overlap_fragments, 1);
+        assert_eq!(stats.ipfrag.datagrams_malformed, 1);
+        assert_eq!(stats.decode_errors.get("ipfrag.overlap"), Some(&1));
+    }
+
+    #[test]
+    fn ipfrag_stats_and_records_are_identical_with_multiple_workers() {
+        let query = dns_query_l4("example.com");
+        let l4 = udp_l4(53001, 53, &query);
+        let last = ipv4_frag_frame([10, 0, 0, 1], [10, 0, 0, 2], 80, 17, 1, false, &l4[8..]);
+        let first = ipv4_frag_frame([10, 0, 0, 1], [10, 0, 0, 2], 80, 17, 0, true, &l4[..8]);
+        let normal = udp_frame([10, 0, 0, 3], [10, 0, 0, 4], 53002, 53, &query);
+        let orphan = ipv4_frag_frame([10, 0, 0, 5], [10, 0, 0, 6], 81, 17, 1, false, &[0xbb; 8]);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[last, first, normal, orphan]);
+        let (one, s1) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).unwrap();
+        let (three, s3) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 3).unwrap();
+        assert_eq!(one, three, "worker 数不得改变分片重组后的 FlowRecord");
+        assert_eq!(s1.ipfrag, s3.ipfrag, "分片统计必须与 worker 数无关");
+        assert_eq!(s3.ipfrag.datagrams_completed, 1);
+        assert_eq!(s3.ipfrag.datagrams_incomplete, 1);
+        assert_eq!(s3.records, 2);
     }
 
     #[test]
