@@ -2,12 +2,41 @@
 
 状态真源：configs/registry/protocol-adaptation.json；对象名称与既有实现声明沿用vpn-protocols.json。
 流程要求以[AGENTS.md](../../AGENTS.md)的协议适配状态记录为准。
-生成表：[ADAPTATION-STATUS](../protocols/ADAPTATION-STATUS.md)。268项目录对象与24项基础/补充核验共292行，
-其中存在同协议不同能力范围，不能称作292种独立协议或全部全球协议。
+生成表：[ADAPTATION-STATUS](../protocols/ADAPTATION-STATUS.md)；
+按层视图：[ADAPTATION-STATUS-BY-LAYER](../protocols/ADAPTATION-STATUS-BY-LAYER.md)；
+OSI 规划：[protocol-osi-classification](../planning/protocol-osi-classification.md)。
+268项目录对象与24项基础/补充核验共292行，其中存在同协议不同能力范围，
+不能称作292种独立协议或全部全球协议。清单自 schema_version 2 起增加 OSI 分类字段。
 
 每行单独维护implemented、local_tested、reference_tested、accepted。前三列为范围内的分步记录，最后一列才表示完整适配。
 accepted要求前三项为true、范围明确、证据存在且缺口为空；当前不把有界首帧、候选承载、可信上下文或产品资料当完整线路识别。
 端口、加密外层、目录父子关系或共同解析器都不能自动完成其他条目。
+
+## OSI 分层字段
+
+现有 `vpn-protocols.json` 的 `layer` 是目录轴（tunnel/overlay/product/transport/identity），不是 OSI 层。
+适配清单保留该轴，另设以下字段，避免把产品、隧道和单一协议强行压成一层：
+
+| 字段 | 取值 | 含义 |
+| --- | --- | --- |
+| `osi_layer` | `L1`…`L7`、`cross-layer`、`non-osi` | 唯一主层，不重复计数 |
+| `osi_sublayer` | 字符串 | 子层或承载关系，如 `L2.5`、`L3-encap`、`L5-L6`、`L2-over-L3/L4` |
+| `osi_role` | `base`、`encapsulation`、`control`、`security`、`session`、`application`、`identity`、`proxy`、`transform`、`product`、`crypto` | 协议在层内的角色 |
+| `encap_chain` | `Lx:名称` 数组 | 可见封装路径；不表示已解析内层或已建立内层流 |
+| `uses_layers` | `L1`…`L7` 数组 | 仅 `non-osi` 产品/变换/密码使用，表示受影响层 |
+
+分类规则：
+
+- ARP 记 `L2`、子层 `L2.5`；ICMPv4/ICMPv6 记 `L3` 控制；GRE、IP-in-IP、IPsec AH/ESP 记 `L3` 封装/安全。
+- VXLAN/Geneve 主层 `L2`，`encap_chain` 明确经过 L3/L4；WireGuard/AmneziaWG 主层 `L3`、UDP 承载。
+- TLS/DTLS/TLCP 主层 `L5`，L6 只记 record、证书、密码套件属性；QUIC 主层 `L4`，HTTP/3 主层 `L7`。
+- SOCKS 记 `L5` 代理；HTTP CONNECT/MASQUE 记 `L7` 代理；OpenVPN/SSTP/AnyConnect 等按跨层链记录。
+- 厂商产品 C/F、混淆/变形 O、SM2/SM3/SM4 及产品子项记 `non-osi`，只做上下文证据，不进入七层覆盖率分子。
+- L1 当前只做 linktype/介质/速率元数据，不假装从 pcap 解码 PHY；L6 当前无独立主层条目。
+
+`cross-layer` 必须有至少两段 `encap_chain`，且角色只能是封装或代理；`non-osi` 必须有
+非空 `uses_layers`、不得声明封装链，角色只能是产品、变换或密码。OSI 行不得携带
+`uses_layers`。这些约束由生成器机械检查，不靠文档约定。
 
 修改步骤：
 
@@ -21,7 +50,7 @@ python3 tools/codegen/gen-protocol-adaptation.py
 python3 tools/codegen/gen-protocol-adaptation.py --check --self-test
 ```
 
-生成器检查ID覆盖/唯一性、目录版本、布尔状态、路径/测试符号和完成条件，并有6项反向注入自证。
+生成器检查ID覆盖/唯一性、目录版本、布尔状态、路径/测试符号、完成条件及 OSI 字段约束，并有12项反向注入自证。
 它验证的是记录一致性，不会仅凭文件存在推断运行通过；运行证据必须按步骤2实际取得。
 生成检查已接完整lint和Rust测试；DNS/TCP CLI回归进入Rust组，tshark独立对照进入默认全集。
 
@@ -82,15 +111,14 @@ IPv4/IPv6/extended switch、接口与 VLAN 计数，以及**数据报级**序号
 序号单位也与 IPFIX（记录累计数）和 NetFlow v9（导出报文序号）不同；独立语料与
 tshark 对照见 [B024验收记录](../planning/protocol-b024-sflow-verification.md)。
 
-B004 ARP 已实现以太网（最多两层 802.1Q/QinQ）ARP/RARP 有界解析，见
-[B004验收记录](../planning/protocol-b004-arp-verification.md)。ARP 没有 IP 五元组，
-主流水线只做帧级统计，详细字段走独立 `cythsec-arp` JSONL；不主动探测、不推断
-邻居缓存/在线状态。NDP、PCAPNG/SLL、真实设备语料与 Linux 矩阵仍未完成，
-完整适配保持未勾选。
+B004 ARP 已在声明范围内完成验收：以太网（最多两层 802.1Q/QinQ）、Linux SLL/SLL2、
+ARP/RARP 及扩展操作码有界解析，见[B004验收记录](../planning/protocol-b004-arp-verification.md)。
+ARP 没有 IP 五元组，主流水线只做帧级统计，详细字段走独立 `cythsec-arp` JSONL；
+不主动探测、不推断邻居缓存/在线状态。
 
-B011/B012 ICMPv4/ICMPv6 与 V009 GRE/mGRE 的当前能力边界：`icmp.rs` 只解公共头、
-echo 标识、错误报文内嵌原始 IP 头与 NDP 固定字段/选项 Type-Length，不校验 checksum；
-`gre.rs` 只解 GREv0/v1 头与内层协议头，不校验 checksum、不执行 SRE 源路由、不把
-内层 IP 拆成新流；独立采集器输出报文级 JSONL，主流水线只做统计。范围、tshark
-对照与未完成项见[ICMP/GRE验收记录](../planning/protocol-b011-b012-v009-verification.md)。
-完整适配未勾选，不因“协议号能识别”或单包结构成立而升级。
+B011/B012 ICMPv4/ICMPv6 与 V009 GRE/mGRE 也已在声明范围内完成验收：ICMP 校验
+checksum（仅在调用方确认完整载荷时）、echo/错误内嵌头、NDP 选项内容、MLD v1/v2；
+GRE 校验 checksum、SRE 列表、MPLS 标签栈与 ERSPAN II/III 标注。独立采集器输出
+报文级 JSONL，主流水线只做统计；不把内层 IP 拆成新流、不执行 SRE 源路由、不推断
+mGRE 拓扑或隧道对端状态。范围与证据见
+[ICMP/GRE验收记录](../planning/protocol-b011-b012-v009-verification.md)。
