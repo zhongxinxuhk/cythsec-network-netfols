@@ -4,17 +4,18 @@
 // 这里输出的是**帧级事件**。采集器只读 Pcap，不主动发 ARP、不修改邻居表、
 // 不根据 reply 推断主机在线或地址归属。
 //
-// Pcap 只接受以太网链路（LINKTYPE_ETHERNET）。Linux cooked capture / raw IP /
-// pcapng 不做猜测：转换方式由调用方决定。
+// Pcap 接受 Ethernet（LINKTYPE_ETHERNET）与 Linux cooked capture
+// （LINKTYPE_LINUX_SLL / SLL2）。raw IP、pcapng 不做猜测：转换方式由调用方决定。
 
 use std::io::{self, BufReader, BufWriter, Write};
 use std::process::ExitCode;
 
 use traffic_engine::arp::{self, ArpStats};
-use traffic_engine::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
+use traffic_engine::channel::LinkLayer;
+use traffic_engine::pcapfile::PcapReader;
 
 const USAGE: &str = "\
-cythsec-arp —— 以太网 ARP/RARP 有界事件采集器（RFC 826 / RFC 903）
+cythsec-arp —— ARP/RARP 有界事件采集器（RFC 826 / RFC 903）
 
 用法:
   cythsec-arp --pcap <file.pcap> [选项]
@@ -97,13 +98,13 @@ fn run(args: &Args) -> Result<(), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("打开 {path}: {e}"))?;
     let mut reader =
         PcapReader::new(BufReader::new(file)).map_err(|e| format!("读 pcap 头: {e}"))?;
-    if reader.linktype() != LINKTYPE_ETHERNET {
-        return Err(format!(
-            "只支持以太网链路的 pcap（当前 linktype={} {}）",
+    let link = LinkLayer::from_linktype(reader.linktype()).ok_or_else(|| {
+        format!(
+            "只支持 Ethernet/Linux SLL/SLL2 链路（当前 linktype={} {}）",
             reader.linktype(),
             reader.header().linktype_name()
-        ));
-    }
+        )
+    })?;
 
     let mut out: Box<dyn Write> = match args.output.as_deref() {
         None | Some("-") => Box::new(BufWriter::new(io::stdout())),
@@ -119,7 +120,12 @@ fn run(args: &Args) -> Result<(), String> {
         .map_err(|e| format!("读 pcap 记录: {e}"))?
     {
         frames += 1;
-        match arp::parse_ethernet(&rec.data) {
+        let parsed = match link {
+            LinkLayer::Ethernet => arp::parse_ethernet(&rec.data),
+            LinkLayer::LinuxSll => arp::parse_linux_sll(&rec.data, false),
+            LinkLayer::LinuxSll2 => arp::parse_linux_sll(&rec.data, true),
+        };
+        match parsed {
             Ok(mut f) => {
                 f.capture_truncated = rec.is_truncated();
                 stats.observe(&f);

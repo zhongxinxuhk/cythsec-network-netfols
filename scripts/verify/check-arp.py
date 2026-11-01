@@ -63,7 +63,18 @@ def arp_body(htype=1, ptype=ETH_IPV4, hlen=6, plen=4, op=1, sha=SHA, spa=SPA, th
     return struct.pack("!HHBBH", htype, ptype, hlen, plen, op) + sha + spa + tha + tpa
 
 
-def arp_frame(op=1, sha=SHA, spa=SPA, tha=THA, tpa=TPA, vlans=(), ptype=ETH_IPV4, hlen=6, plen=4, htype=1):
+def arp_frame(
+    op=1,
+    sha=SHA,
+    spa=SPA,
+    tha=THA,
+    tpa=TPA,
+    vlans=(),
+    ptype=ETH_IPV4,
+    hlen=6,
+    plen=4,
+    htype=1,
+):
     return eth(arp_body(htype, ptype, hlen, plen, op, sha, spa, tha, tpa), vlans=vlans)
 
 
@@ -72,7 +83,17 @@ def udp_frame():
     udp = struct.pack("!HHHH", 40000, 9, 8, 0) + payload
     ip = bytearray(
         struct.pack(
-            "!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 1, 0, 64, 17, 0, bytes([10, 0, 0, 1]), bytes([10, 0, 0, 2])
+            "!BBHHHBBH4s4s",
+            0x45,
+            0,
+            20 + len(udp),
+            1,
+            0,
+            64,
+            17,
+            0,
+            bytes([10, 0, 0, 1]),
+            bytes([10, 0, 0, 2]),
         )
     )
     ip[10:12] = struct.pack("!H", checksum(bytes(ip)))
@@ -88,14 +109,30 @@ def checksum(data):
     return (~total) & 0xFFFF
 
 
-def write_pcap(path, records):
-    """records: [(frame_bytes, orig_len_or_None)]"""
-    out = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
+def write_pcap(path, records, linktype=1):
+    """records: [(frame_bytes, orig_len_or_None)]；linktype=1/113/276。"""
+    out = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, linktype)
     for i, (frame, orig_len) in enumerate(records):
         wire = len(frame) if orig_len is None else orig_len
         out += struct.pack("<IIII", 1_700_000_000 + i, i * 1000, len(frame), wire)
         out += frame
     path.write_bytes(out)
+
+
+def sll_wrap(frame, sll2):
+    """去掉 Ethernet MAC 头，套 Linux cooked capture v1/v2 头。"""
+    ether_type = struct.unpack("!H", frame[12:14])[0]
+    if sll2:
+        return (
+            struct.pack("!H", ether_type)
+            + struct.pack("!H", 0)
+            + struct.pack("!I", 1)
+            + struct.pack("!H", 1)
+            + bytes([0, 6])
+            + bytes(8)
+            + frame[14:]
+        )
+    return struct.pack("!HHH", 0, 1, 6) + bytes(8) + struct.pack("!H", ether_type) + frame[14:]
 
 
 def parse_jsonl(path):
@@ -188,7 +225,10 @@ def validate_records(records):
 def validate_pipeline(pcap_path, work):
     flows = work / "flows.jsonl"
     p = run([ANALYZE_BIN, "-r", pcap_path, "-o", flows])
-    line = next((ln for ln in p.stderr.splitlines() if ln.startswith("[cythsec-analyze] arp ")), "")
+    line = next(
+        (ln for ln in p.stderr.splitlines() if ln.startswith("[cythsec-analyze] arp ")),
+        "",
+    )
     assert line, f"cythsec-analyze 缺少 ARP 统计行：{p.stderr[-500:]}"
     stats = {}
     for part in line.split():
@@ -304,7 +344,10 @@ def main():
             (arp_frame(2, spa=TPA, tpa=SPA, tha=SHA), None),
             (arp_frame(1, vlans=(100,)), None),
             (arp_frame(2, spa=TPA, tpa=SPA, tha=SHA, vlans=(200, 300)), None),
-            (arp_frame(1, spa=bytes([192, 0, 2, 20]), tpa=bytes([192, 0, 2, 20])), None),
+            (
+                arp_frame(1, spa=bytes([192, 0, 2, 20]), tpa=bytes([192, 0, 2, 20])),
+                None,
+            ),
             (arp_frame(1, spa=b"\0\0\0\0"), None),
             (arp_frame(3, ptype=ETH_RARP), None),
             (arp_frame(99), None),
@@ -336,10 +379,29 @@ def main():
         validate_stats(stats)
         validate_pipeline(pcap, work)
         reverse_injections(parsed, stats, work)
+
+        for sll2, linktype in ((False, 113), (True, 276)):
+            tag = "sll2" if sll2 else "sll"
+            sll_pcap = work / f"arp-{tag}.pcap"
+            write_pcap(
+                sll_pcap,
+                [
+                    (sll_wrap(arp_frame(1), sll2), None),
+                    (sll_wrap(arp_frame(2), sll2), None),
+                ],
+                linktype,
+            )
+            sll_out = work / f"arp-{tag}.jsonl"
+            q = run([ARP_BIN, "--pcap", sll_pcap, "-o", sll_out])
+            sll_stats = parse_stats(q.stderr)
+            assert sll_stats["frames"] == 2, (tag, sll_stats)
+            assert sll_stats["arp_frames"] == 2, (tag, sll_stats)
+            assert sll_stats["vlan_tagged"] == 0, (tag, sll_stats)
         print("  ✓ 13 条有效 ARP/RARP 事件：请求/应答/RARP/未知 op、VLAN/QinQ、gratuitous/probe、IPv6、未知类型")
         print("  ✓ 16 帧统计：13 ARP + 1 非 ARP + 1 截断 + 1 超 VLAN 层；填充被忽略")
         print("  ✓ 主流水线只做帧级 ARP 统计，未把 ARP 塞进 FlowRecord")
         print("  ✓ 3 项反向注入（sender_ipv4 / requests / vlan_ids）均被检出")
+        print("  ✓ SLL/SLL2 cooked 头：ARP 采集器统计与 Ethernet 一致")
 
         if args.tshark:
             validate_tshark(pcap)

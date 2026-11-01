@@ -29,13 +29,15 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::arp::{self, ArpStats};
-use crate::channel::{decode_frame, l4_payload, tcp_flags, tcp_seq_ack, DecodedFrame};
+use crate::channel::{
+    decode_frame_with_link, l4_payload, tcp_flags, tcp_seq_ack, DecodedFrame, LinkLayer,
+};
 use crate::dpi::{self, DpiPolicy, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
 use crate::gre::{self, GreStats};
 use crate::icmp::{self, IcmpFamily, IcmpStats};
-use crate::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
+use crate::pcapfile::PcapReader;
 use crate::record::{AppInfo, FlowRecord, TcpSessionStats, RECORD_SCHEMA_VERSION};
 use crate::session::{ManagerStats, SessionConfig, SessionManager};
 use crate::tcp::{Side, TcpConfig, TcpObservation};
@@ -577,20 +579,31 @@ fn note_arp_frame(
     e: crate::channel::DecodeError,
     frame: &[u8],
     capture_truncated: bool,
+    link: LinkLayer,
 ) {
-    let looks_like_arp = match e {
-        crate::channel::DecodeError::NonIpEtherType { ether_type } => {
-            ether_type == arp::ETHERTYPE_ARP || ether_type == arp::ETHERTYPE_RARP
+    let is_arp =
+        |ether_type: u16| ether_type == arp::ETHERTYPE_ARP || ether_type == arp::ETHERTYPE_RARP;
+    let looks_like_arp = match link {
+        LinkLayer::Ethernet => match e {
+            crate::channel::DecodeError::NonIpEtherType { ether_type } => is_arp(ether_type),
+            // VLAN 层数超限时 decode 只报“超限”，不给出内层 EtherType；这里再扫一遍
+            // 标签链确认里面是不是 ARP，避免把超嵌套的 IPv4 误记成坏 ARP。
+            crate::channel::DecodeError::TooManyVlanTags { .. } => arp::is_arp_ethertype(frame),
+            _ => false,
+        },
+        LinkLayer::LinuxSll | LinkLayer::LinuxSll2 => {
+            arp::linux_sll_ethertype(frame, link == LinkLayer::LinuxSll2).is_some_and(is_arp)
         }
-        // VLAN 层数超限时 decode 只报“超限”，不给出内层 EtherType；这里再扫一遍
-        // 标签链确认里面是不是 ARP，避免把超嵌套的 IPv4 误记成坏 ARP。
-        crate::channel::DecodeError::TooManyVlanTags { .. } => arp::is_arp_ethertype(frame),
-        _ => false,
     };
     if !looks_like_arp {
         return;
     }
-    match arp::parse_ethernet(frame) {
+    let parsed = match link {
+        LinkLayer::Ethernet => arp::parse_ethernet(frame),
+        LinkLayer::LinuxSll => arp::parse_linux_sll(frame, false),
+        LinkLayer::LinuxSll2 => arp::parse_linux_sll(frame, true),
+    };
+    match parsed {
         Ok(mut f) => {
             f.capture_truncated = capture_truncated;
             stats.observe(&f);
@@ -613,7 +626,12 @@ fn note_icmp_frame(stats: &mut IcmpStats, d: &DecodedFrame, frame: &[u8], captur
     let want = d.ip_payload_len as usize;
     let available = frame.get(d.l4_offset..).unwrap_or(&[]);
     let payload = &available[..available.len().min(want)];
-    match icmp::parse(payload, family) {
+    let context = icmp::ChecksumContext {
+        source: d.key.src_ip,
+        destination: d.key.dst_ip,
+        complete: !capture_truncated && payload.len() == want,
+    };
+    match icmp::parse_with_context(payload, family, Some(context)) {
         Ok(mut f) => {
             f.capture_truncated = capture_truncated || payload.len() < want;
             stats.observe(&f);
@@ -631,7 +649,8 @@ fn note_gre_frame(stats: &mut GreStats, d: &DecodedFrame, frame: &[u8], capture_
     let want = d.ip_payload_len as usize;
     let available = frame.get(d.l4_offset..).unwrap_or(&[]);
     let payload = &available[..available.len().min(want)];
-    match gre::parse(payload) {
+    let complete = !capture_truncated && payload.len() == want;
+    match gre::parse_with_complete(payload, complete) {
         Ok(mut f) => {
             f.capture_truncated = capture_truncated || payload.len() < want;
             stats.observe(&f);
@@ -644,6 +663,7 @@ fn note_gre_frame(stats: &mut GreStats, d: &DecodedFrame, frame: &[u8], capture_
 fn drive_inline<R: Read>(
     mut reader: PcapReader<R>,
     opts: &AnalyzeOptions,
+    link: LinkLayer,
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
     let mut stats = new_stats(&reader, 1, opts);
     let mut state = PipelineState::new(opts);
@@ -662,12 +682,12 @@ fn drive_inline<R: Read>(
         if rec.is_truncated() {
             stats.truncated_captures += 1;
         }
-        let decoded = match decode_frame(&rec.data) {
+        let decoded = match decode_frame_with_link(&rec.data, link) {
             Ok(d) => d,
             Err(e) => {
                 // 解码失败**不中断**：省网抓包里畸形帧与非首片分片是常态。
                 *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
-                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated());
+                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated(), link);
                 continue;
             }
         };
@@ -701,6 +721,7 @@ fn drive_sharded<R: Read>(
     mut reader: PcapReader<R>,
     opts: &AnalyzeOptions,
     workers: usize,
+    link: LinkLayer,
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
     let mut stats = new_stats(&reader, workers, opts);
     let mut senders = Vec::with_capacity(workers);
@@ -744,11 +765,11 @@ fn drive_sharded<R: Read>(
         if rec.is_truncated() {
             stats.truncated_captures += 1;
         }
-        let decoded = match decode_frame(&rec.data) {
+        let decoded = match decode_frame_with_link(&rec.data, link) {
             Ok(d) => d,
             Err(e) => {
                 *stats.decode_errors.entry(e.code()).or_insert(0) += 1;
-                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated());
+                note_arp_frame(&mut stats.arp, e, &rec.data, rec.is_truncated(), link);
                 continue;
             }
         };
@@ -881,24 +902,25 @@ pub fn analyze_pcap_with<R: Read>(
 ) -> Result<(Vec<FlowRecord>, AnalyzeStats), String> {
     let workers = workers.max(1);
     let reader = PcapReader::new(reader).map_err(|e| format!("解析 pcap 头失败：{e}"))?;
-    if reader.linktype() != LINKTYPE_ETHERNET {
-        return Err(format!(
-            "链路层类型 {}（{}）暂不支持，本流水线按以太帧解码；\
+    let link = LinkLayer::from_linktype(reader.linktype()).ok_or_else(|| {
+        format!(
+            "链路层类型 {}（{}）暂不支持；本流水线只解 Ethernet/Linux SLL/SLL2。\
              可先转换：`tshark -F pcap -r in -w out.pcap`（或 editcap -T ether）",
             reader.linktype(),
             reader.header().linktype_name()
-        ));
-    }
+        )
+    })?;
     if workers == 1 {
-        drive_inline(reader, opts)
+        drive_inline(reader, opts, link)
     } else {
-        drive_sharded(reader, opts, workers)
+        drive_sharded(reader, opts, workers, link)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pcapfile::LINKTYPE_ETHERNET;
 
     /// 构造一个最小 pcap（小端、微秒），只用来测错误路径与参数传递。
     fn tiny_pcap(linktype: u32, frames: &[Vec<u8>]) -> Vec<u8> {
@@ -1423,6 +1445,24 @@ mod tests {
         assert_eq!(stats.packets_decoded, 0);
         assert_eq!(stats.decode_error_count(), 2);
         assert_eq!(stats.worker_flows, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn linux_cooked_capture_is_decoded_as_ip_not_rejected() {
+        let eth = tcp_frame([10, 0, 0, 1], [10, 0, 0, 2], 40000, 80, 0x02, &[]);
+        let mut sll = Vec::new();
+        sll.extend_from_slice(&0u16.to_be_bytes());
+        sll.extend_from_slice(&1u16.to_be_bytes());
+        sll.extend_from_slice(&6u16.to_be_bytes());
+        sll.extend_from_slice(&[0u8; 8]);
+        sll.extend_from_slice(&0x0800u16.to_be_bytes());
+        sll.extend_from_slice(&eth[14..]);
+        let bytes = tiny_pcap(crate::pcapfile::LINKTYPE_LINUX_SLL, &[sll]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key.proto.number(), 6);
+        assert_eq!(stats.packets_decoded, 1);
+        assert_eq!(stats.linktype, crate::pcapfile::LINKTYPE_LINUX_SLL);
     }
 
     #[test]

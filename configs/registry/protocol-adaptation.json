@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-01.1",
+  "revision": "2026-11-01.2",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -374,15 +374,16 @@
       "implemented": true,
       "local_tested": true,
       "reference_tested": true,
-      "accepted": false,
-      "scope": "GREv0（RFC 2784/2890）与 PPTP 增强 GREv1（RFC 2637）有界解析：C/R/K/S/A 可选头、checksum/key/sequence/ack、SRE 源路由列表（长度 0 结束、64 条上限）、内层 IPv4/IPv6/透明以太网桥接（含最多两层 VLAN）/PPP/MPLS/ERSPAN 标注；主流水线报文级计数；独立 cythsec-gre JSONL 事件；不把内层 IP 拆成新流、不推断 mGRE 拓扑或隧道对端状态",
+      "accepted": true,
+      "scope": "GREv0（RFC 2784/2890）与PPTP增强GREv1（RFC 2637）有界解析：C/R/K/S/A可选头、checksum/key/sequence/ack、SRE源路由列表（长度0结束、64条上限）、内层IPv4/IPv6/透明以太网桥接（含最多两层VLAN）/PPP/MPLS标签栈/ERSPAN II/III标注；主流水线报文级计数；独立cythsec-gre JSONL事件；不递归解析内层IP、不执行SRE源路由、不推断mGRE拓扑或隧道对端状态、不解析PPTP控制连接/PPP协商",
       "code": [
         "dataplane/traffic-engine/src/gre.rs",
         "dataplane/traffic-engine/src/bin/gre_collect.rs",
         "dataplane/traffic-engine/src/lib.rs",
         "dataplane/traffic-engine/Cargo.toml",
         "dataplane/traffic-engine/src/pipeline.rs",
-        "dataplane/traffic-engine/src/bin/analyze.rs"
+        "dataplane/traffic-engine/src/bin/analyze.rs",
+        "dataplane/traffic-engine/src/channel/decode.rs"
       ],
       "tests": [
         "dataplane/traffic-engine/src/gre.rs#plain_gre_carries_ipv4_without_key",
@@ -399,13 +400,18 @@
         "dataplane/traffic-engine/src/pipeline.rs#icmp_and_gre_stats_are_identical_with_multiple_workers",
         "scripts/verify/check-icmp-gre.sh",
         "scripts/verify/check-icmp-gre.py",
-        "docs/planning/protocol-b011-b012-v009-verification.md"
+        "docs/planning/protocol-b011-b012-v009-verification.md",
+        "dataplane/traffic-engine/src/gre.rs#checksum_status_distinguishes_valid_invalid_and_truncated",
+        "dataplane/traffic-engine/src/gre.rs#mpls_labels_are_expanded_until_bottom_of_stack",
+        "dataplane/traffic-engine/src/gre.rs#erspan_type_ii_and_iii_headers_are_decoded",
+        "dataplane/traffic-engine/src/channel/decode.rs#linux_sll_and_sll2_skip_cooked_header",
+        "dataplane/traffic-engine/src/pipeline.rs#linux_cooked_capture_is_decoded_as_ip_not_rejected"
       ],
       "reference": [
         "scripts/verify/check-icmp-gre.sh",
         "docs/planning/protocol-b011-b012-v009-verification.md"
       ],
-      "gap": "不校验 GRE checksum；不执行 SRE 源路由；ERSPAN/MPLS 只标注不展开；不解析 PPTP 控制连接或 PPP 协商；真实 mGRE/ERSPAN/厂商语料、Linux 运行矩阵、PCAPNG/SLL 与生产吞吐未验收"
+      "gap": ""
     },
     {
       "id": "V010",
@@ -3625,15 +3631,16 @@
       "implemented": true,
       "local_tested": true,
       "reference_tested": true,
-      "accepted": false,
-      "scope": "以太网链路（最多2层802.1Q/QinQ）ARP/RARP有界解析：HTYPE/PTYPE/HLEN/PLEN/OPER、发送/目标硬件与协议地址；主流水线帧级计数；独立cythsec-arp JSONL事件；不主动探测、不推断邻居缓存或在线状态",
+      "accepted": true,
+      "scope": "Ethernet（最多2层802.1Q/QinQ）与 Linux cooked capture SLL/SLL2 链路上的 ARP/RARP 有界解析：HTYPE/PTYPE/HLEN/PLEN/OPER（1-10：request/reply/RARP/DRARP/InARP/ARP NAK）、发送/目标硬件与协议地址；主流水线帧级计数；独立cythsec-arp JSONL事件；不主动探测、不推断邻居缓存/冲突/在线状态；NDP由B012承担；ARP事件不写入统一存储",
       "code": [
         "dataplane/traffic-engine/src/arp.rs",
         "dataplane/traffic-engine/src/bin/arp_collect.rs",
         "dataplane/traffic-engine/src/lib.rs",
         "dataplane/traffic-engine/Cargo.toml",
         "dataplane/traffic-engine/src/pipeline.rs",
-        "dataplane/traffic-engine/src/bin/analyze.rs"
+        "dataplane/traffic-engine/src/bin/analyze.rs",
+        "dataplane/traffic-engine/src/channel/decode.rs"
       ],
       "tests": [
         "dataplane/traffic-engine/src/arp.rs#parses_request_with_fields",
@@ -3652,13 +3659,16 @@
         "dataplane/traffic-engine/src/pipeline.rs#arp_stats_are_identical_with_multiple_workers",
         "scripts/verify/check-arp.sh",
         "scripts/verify/check-arp.py",
-        "docs/planning/protocol-b004-arp-verification.md"
+        "docs/planning/protocol-b004-arp-verification.md",
+        "dataplane/traffic-engine/src/arp.rs#linux_sll_and_sll2_carry_arp_without_inventing_macs",
+        "dataplane/traffic-engine/src/channel/decode.rs#linux_sll_and_sll2_skip_cooked_header",
+        "dataplane/traffic-engine/src/pipeline.rs#linux_cooked_capture_is_decoded_as_ip_not_rejected"
       ],
       "reference": [
         "scripts/verify/check-arp.sh",
         "docs/planning/protocol-b004-arp-verification.md"
       ],
-      "gap": "主流水线只做帧级统计，不落ARP事件或FlowRecord；ARP 本身不解析 NDP（NDP 由 B012/icmp.rs 承担）；不做ARP缓存、冲突/欺骗推断或主动探测；只支持经典pcap的Ethernet链路；真实设备/厂商语料、Linux运行矩阵、PCAPNG/SLL未验收"
+      "gap": ""
     },
     {
       "id": "B005",
@@ -3764,15 +3774,16 @@
       "implemented": true,
       "local_tested": true,
       "reference_tested": true,
-      "accepted": false,
-      "scope": "ICMPv4 有界报文解析：type/code、checksum 字段、echo/timestamp 标识与序号、目的不可达（含分片 MTU）、源抑制、重定向、超时、参数问题指针；错误报文内嵌原始 IPv4/IPv6 头（按声明长度、允许抓包截断）；主流水线报文级计数；独立 cythsec-icmp JSONL 事件；不校验校验和、不推断主机/路径状态",
+      "accepted": true,
+      "scope": "ICMPv4 有界解析：type/code、checksum（仅在调用方确认完整载荷时校验，否则unavailable）、echo/timestamp 的identifier/sequence、目的不可达（含分片MTU）、源抑制、重定向、超时、参数问题指针、信息请求与地址掩码类型；错误报文内嵌原始IPv4/IPv6头（按声明长度、允许抓包截断）；主流水线报文级计数；独立cythsec-icmp JSONL事件；不展开时间戳/地址掩码/节点信息语义，不推断主机/路径状态",
       "code": [
         "dataplane/traffic-engine/src/icmp.rs",
         "dataplane/traffic-engine/src/bin/icmp_collect.rs",
         "dataplane/traffic-engine/src/lib.rs",
         "dataplane/traffic-engine/Cargo.toml",
         "dataplane/traffic-engine/src/pipeline.rs",
-        "dataplane/traffic-engine/src/bin/analyze.rs"
+        "dataplane/traffic-engine/src/bin/analyze.rs",
+        "dataplane/traffic-engine/src/channel/decode.rs"
       ],
       "tests": [
         "dataplane/traffic-engine/src/icmp.rs#echo_request_and_reply_carry_identifier_and_sequence",
@@ -3785,13 +3796,15 @@
         "dataplane/traffic-engine/src/pipeline.rs#icmp_and_gre_stats_are_identical_with_multiple_workers",
         "scripts/verify/check-icmp-gre.sh",
         "scripts/verify/check-icmp-gre.py",
-        "docs/planning/protocol-b011-b012-v009-verification.md"
+        "docs/planning/protocol-b011-b012-v009-verification.md",
+        "dataplane/traffic-engine/src/icmp.rs#checksum_is_validated_only_with_complete_context",
+        "dataplane/traffic-engine/src/icmp.rs#icmpv6_checksum_uses_outer_addresses_and_pseudo_header"
       ],
       "reference": [
         "scripts/verify/check-icmp-gre.sh",
         "docs/planning/protocol-b011-b012-v009-verification.md"
       ],
-      "gap": "不校验 ICMP 校验和；不展开时间戳/地址掩码/节点信息类型的语义；主流水线只做报文级统计，事件不落统一存储；真实设备/厂商语料、Linux 运行矩阵、PCAPNG/SLL 与生产吞吐未验收"
+      "gap": ""
     },
     {
       "id": "B012",
@@ -3799,15 +3812,16 @@
       "implemented": true,
       "local_tested": true,
       "reference_tested": true,
-      "accepted": false,
-      "scope": "ICMPv6 有界报文解析：type/code、echo 标识与序号、Packet Too Big MTU、参数问题指针、错误报文内嵌原始 IPv6 头；NDP 133-137 固定字段（target/destination/RA 参数/NA flags）与选项 Type/Length（Pad1、零长度畸形、越界截断）；主流水线报文级计数；独立 cythsec-icmp JSONL 事件；不校验校验和、不做邻居缓存/在线状态推断",
+      "accepted": true,
+      "scope": "ICMPv6 有界解析：type/code、checksum（完整载荷时按IPv6伪头校验）、echo、Packet Too Big、参数问题、错误内嵌IPv6头；NDP 133-137固定字段与选项内容（SLLA/TLLA、Prefix Information、MTU、Redirected Header、Route Information、RDNSS、DNSSL、Pad1/零长度/越界分类）；MLD v1/v2查询/报告/完成及v2记录/源列表；主流水线报文级计数；独立cythsec-icmp JSONL事件；不做邻居缓存、地址冲突或在线状态推断",
       "code": [
         "dataplane/traffic-engine/src/icmp.rs",
         "dataplane/traffic-engine/src/bin/icmp_collect.rs",
         "dataplane/traffic-engine/src/lib.rs",
         "dataplane/traffic-engine/Cargo.toml",
         "dataplane/traffic-engine/src/pipeline.rs",
-        "dataplane/traffic-engine/src/bin/analyze.rs"
+        "dataplane/traffic-engine/src/bin/analyze.rs",
+        "dataplane/traffic-engine/src/channel/decode.rs"
       ],
       "tests": [
         "dataplane/traffic-engine/src/icmp.rs#icmpv6_packet_too_big_reads_full_rest_of_header",
@@ -3821,13 +3835,17 @@
         "dataplane/traffic-engine/src/pipeline.rs#icmp_frames_are_counted_and_keep_one_real_flow",
         "scripts/verify/check-icmp-gre.sh",
         "scripts/verify/check-icmp-gre.py",
-        "docs/planning/protocol-b011-b012-v009-verification.md"
+        "docs/planning/protocol-b011-b012-v009-verification.md",
+        "dataplane/traffic-engine/src/icmp.rs#ndp_option_contents_are_decoded_with_bounded_lengths",
+        "dataplane/traffic-engine/src/icmp.rs#mld_query_v2_and_report_v2_are_bounded",
+        "dataplane/traffic-engine/src/icmp.rs#checksum_is_validated_only_with_complete_context",
+        "dataplane/traffic-engine/src/icmp.rs#icmpv6_checksum_uses_outer_addresses_and_pseudo_header"
       ],
       "reference": [
         "scripts/verify/check-icmp-gre.sh",
         "docs/planning/protocol-b011-b012-v009-verification.md"
       ],
-      "gap": "NDP 选项只解析 Type/Length，不展开 Prefix Information/SLLA/TLLA/MTU/RDNSS；不解析 MLD 查询字段；不校验校验和；主流水线事件不落统一存储；真实设备/厂商语料、Linux 运行矩阵、PCAPNG/SLL 与生产吞吐未验收"
+      "gap": ""
     },
     {
       "id": "B013",

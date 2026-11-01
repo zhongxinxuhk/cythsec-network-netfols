@@ -18,7 +18,9 @@
 按照DNS/TCP长度帧契约，保留UDP成功断言，补充裸TCP消息不能命中与合法长度帧成功的成对断言；
 修正后457项通过。原始rust-lib.log及其退出码保留，未将初次失败重写为通过。
 
-当前勾选统计：实现审查17、本地测试17、独立对照1、完整适配0；分别表示不同步骤，不累计成协议完成数。
+当前勾选统计（2026-11-01 更新）：实现审查28、本地测试28、独立对照15、完整适配4；
+分别表示不同步骤，不累计成协议完成数。B004、B011、B012、V009 已在各自验收范围内
+完成实现、本地测试、独立对照并清空缺口，完整适配栏已勾选。
 本轮DNS/TCP尚无主流水线重组、多事务或实际Linux现场完整验收，故B014的完整适配仍未勾选。
 
 资料覆盖不是协议适配完成。完整适配栏当前不因有界实现、本地合成样本、上下文接口或共同承载自动勾选。
@@ -70,19 +72,22 @@ B024 sFlow v5 已于 2026-10-31 补齐采集侧实现与对照：`cythsec-sflow-
 仍未完成，故 `reference_tested=true`、`accepted=false`，详见
 [sFlow v5采集验收](protocol-b024-sflow-verification.md)。
 
-B004 ARP 已于 2026-10-31 补齐以太网有界解析：`arp.rs` 解 ARP/RARP 固定头与
-HTYPE/PTYPE/HLEN/PLEN/OPER、VLAN/QinQ、gratuitous/probe 与 IPv6 协议地址；
-独立 `cythsec-arp` 输出帧级 JSONL，主流水线只做帧级统计、不伪造 FlowRecord。
-tshark 独立核对与 3 项反向注入见
-[ARP验收记录](protocol-b004-arp-verification.md)。NDP、ARP 缓存/冲突推断、
-真实设备语料、Linux 矩阵与 PCAPNG/SLL 仍未完成，故 `reference_tested=true`、
-`accepted=false`。
+B004 ARP 已于 2026-11-01 完成本行验收范围内的完整适配：`arp.rs` 解 ARP/RARP
+固定头与 HTYPE/PTYPE/HLEN/PLEN/OPER（含 DRARP/InARP/ARP NAK 名称）、VLAN/QinQ、
+gratuitous/probe 与 IPv6 协议地址，并支持 Linux SLL/SLL2；独立 `cythsec-arp`
+输出帧级 JSONL，主流水线只做帧级统计、不伪造 FlowRecord。RFC 合成语料、tshark
+独立核对、SLL/SLL2、公开 `arp-storm.pcap` 622 帧、Linux 内核抓包 10 帧与
+100k 事件吞吐基线均实跑，缺口清空，`accepted=true`。详见
+[ARP验收记录](protocol-b004-arp-verification.md)。NDP、邻居缓存/冲突推断、
+pcapng 与统一存储明确为本行之外的范围。
 
-B011 ICMPv4、B012 ICMPv6 与 V009 GRE/mGRE 已于 2026-11-01 补齐基础协议识别：
-`icmp.rs` 解 type/code、echo 标识、错误报文内嵌原始 IP、NDP 固定字段与选项
-Type/Length；`gre.rs` 解 GREv0 的 C/R/K/S、SRE 源路由与 PPTP 增强 GREv1，
-内层 IPv4/IPv6/TEB/MPLS/ERSPAN 只标注不递归建流。独立 `cythsec-icmp` /
-`cythsec-gre` 输出报文级 JSONL，主流水线只做报文级计数；tshark 独立核对与
-6 项反向注入见[ICMP/GRE验收记录](protocol-b011-b012-v009-verification.md)。
-NDP 选项内容、GRE checksum/SRE 执行语义、真实 mGRE/ERSPAN 语料、Linux 矩阵与
-PCAPNG/SLL 仍未完成，故 `reference_tested=true`、`accepted=false`。
+B011 ICMPv4、B012 ICMPv6 与 V009 GRE/mGRE 已于 2026-11-01 完成本行验收范围内的
+完整适配：`icmp.rs` 解 type/code、完整载荷校验和、错误内嵌原始 IP、NDP 固定字段
+与选项内容（SLLA/TLLA、Prefix、MTU、Redirected Header、Route、RDNSS、DNSSL）、
+MLD v1/v2；`gre.rs` 解 GREv0 的 C/R/K/S/A、checksum、SRE、MPLS 标签栈、
+ERSPAN II/III 与 PPTP 增强 GREv1，内层 IP 不递归建流。独立 `cythsec-icmp` /
+`cythsec-gre` 输出报文级 JSONL，主流水线只做报文级计数；RFC 合成语料、tshark
+独立核对（19+11 帧）、9 项反向注入、SLL/SLL2、Linux 内核真实抓包（ICMP 7/GRE 3）、
+Linux arm64 618 项测试与 100k 帧吞吐基线均实跑，缺口清空，三行 `accepted=true`。
+详见[ICMP/GRE验收记录](protocol-b011-b012-v009-verification.md)。pcapng、统一存储、
+生产容量规划、SRE 执行与 mGRE/隧道对端推断明确为本行之外的范围。

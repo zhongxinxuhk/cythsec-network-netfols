@@ -7,8 +7,9 @@
 //
 // 三个刻意的边界：
 //
-// 1. **只处理 Ethernet 链路上的 ARP**（含最多两层 802.1Q/QinQ）。Linux cooked
-//    capture、raw IP、pcapng 不在这里猜，交给调用方显式报不支持。
+// 1. **只处理 Ethernet 与 Linux cooked capture（SLL/SLL2）链路上的 ARP**。
+//    Ethernet 支持最多两层 802.1Q/QinQ；SLL/SLL2 只跳过 cooked 头，不猜
+//    raw IP、pcapng 等其它容器，交给调用方显式报不支持。
 // 2. **长度字段可以不是常见的 6/4**。HTYPE/PTYPE/HLEN/PLEN 原样保留；只有
 //    Ethernet/IPv4 或 Ethernet/IPv6 的组合才额外给出格式化地址，其余给十六进制
 //    原始字节，绝不把 6 字节硬件地址硬套成 MAC、也不把任意 4 字节协议地址
@@ -26,6 +27,8 @@ pub const ETHERTYPE_ARP: u16 = 0x0806;
 pub const ETHERTYPE_RARP: u16 = 0x8035;
 
 const ETH_HEADER_LEN: usize = 14;
+const SLL_HEADER_LEN: usize = 16;
+const SLL2_HEADER_LEN: usize = 20;
 const VLAN_TAG_LEN: usize = 4;
 /// 与 `channel::decode` 的上限一致：QinQ 是现实上限，更多层一定是解析位置偏了。
 const MAX_VLAN_TAGS: u8 = 2;
@@ -146,6 +149,12 @@ impl ArpFrame {
             2 => "reply",
             3 => "rarp_request",
             4 => "rarp_reply",
+            5 => "drarp_request",
+            6 => "drarp_reply",
+            7 => "drarp_error",
+            8 => "inarp_request",
+            9 => "inarp_reply",
+            10 => "arp_nak",
             _ => "unknown",
         }
     }
@@ -363,7 +372,46 @@ pub fn parse_ethernet(frame: &[u8]) -> Result<ArpFrame, ArpError> {
     } else {
         off + 2
     };
-    let body = &frame[body_off..];
+    parse_body(&frame[body_off..], vlan_ids)
+}
+
+/// 解析 Linux cooked capture v1/v2 里的 ARP/RARP。
+///
+/// cooked 头只提供协议号；SLL/SLL2 自身不携带 Ethernet MAC 头，因此
+/// `vlan_ids` 为空。`sll2=true` 时协议号在偏移 0，否则在偏移 14。
+pub fn parse_linux_sll(frame: &[u8], sll2: bool) -> Result<ArpFrame, ArpError> {
+    let (need, proto_off, body_off) = if sll2 {
+        (SLL2_HEADER_LEN, 0usize, SLL2_HEADER_LEN)
+    } else {
+        (SLL_HEADER_LEN, 14usize, SLL_HEADER_LEN)
+    };
+    if frame.len() < need {
+        return Err(ArpError::TruncatedEthernet {
+            need,
+            got: frame.len(),
+        });
+    }
+    let ether_type = be16(frame, proto_off);
+    if ether_type != ETHERTYPE_ARP && ether_type != ETHERTYPE_RARP {
+        return Err(ArpError::NonArpEtherType { ether_type });
+    }
+    parse_body(&frame[body_off..], Vec::new())
+}
+
+/// cooked 头里的协议号；头不完整时返回 `None`，不把未知当成非 ARP。
+pub fn linux_sll_ethertype(frame: &[u8], sll2: bool) -> Option<u16> {
+    let (need, proto_off) = if sll2 {
+        (SLL2_HEADER_LEN, 0usize)
+    } else {
+        (SLL_HEADER_LEN, 14usize)
+    };
+    if frame.len() < need {
+        return None;
+    }
+    Some(be16(frame, proto_off))
+}
+
+fn parse_body(body: &[u8], vlan_ids: Vec<u16>) -> Result<ArpFrame, ArpError> {
     if body.len() < ARP_HEADER_LEN {
         return Err(ArpError::TruncatedArpHeader {
             need: ARP_HEADER_LEN,
@@ -602,6 +650,11 @@ mod tests {
         let u = request(99, &SPA, &TPA);
         assert_eq!(u.operation_name(), "unknown");
         assert_eq!(u.operation, 99);
+        let inarp = request(8, &SPA, &TPA);
+        assert_eq!(inarp.operation_name(), "inarp_request");
+        assert_eq!(inarp.operation, 8);
+        let inarp_reply = request(9, &SPA, &TPA);
+        assert_eq!(inarp_reply.operation_name(), "inarp_reply");
     }
 
     #[test]
@@ -726,6 +779,39 @@ mod tests {
         let line = r.to_json_line(1, 1, 42);
         assert!(line.contains("\"sender_ipv4\":null"), "{line}");
         assert!(line.contains("\"gratuitous\":null"), "{line}");
+    }
+
+    #[test]
+    fn linux_sll_and_sll2_carry_arp_without_inventing_macs() {
+        let b = body(1, ETHERTYPE_IPV4, 6, 4, 1, &SHA, &SPA, &THA, &TPA);
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(&0u16.to_be_bytes()); // packet type
+        v1.extend_from_slice(&1u16.to_be_bytes()); // ARPHRD_ETHER
+        v1.extend_from_slice(&6u16.to_be_bytes()); // addr len
+        v1.extend_from_slice(&[0u8; 8]);
+        v1.extend_from_slice(&ETHERTYPE_ARP.to_be_bytes());
+        v1.extend_from_slice(&b);
+        let a = parse_linux_sll(&v1, false).expect("SLL ARP 应能解出");
+        assert_eq!(a.operation_name(), "request");
+        assert_eq!(a.sender_mac(), Some([0x02, 0, 0, 0, 0, 1]));
+        assert!(a.vlan_ids.is_empty());
+
+        let mut v2 = Vec::new();
+        v2.extend_from_slice(&ETHERTYPE_ARP.to_be_bytes());
+        v2.extend_from_slice(&0u16.to_be_bytes());
+        v2.extend_from_slice(&1u32.to_be_bytes());
+        v2.extend_from_slice(&1u16.to_be_bytes());
+        v2.push(0);
+        v2.push(6);
+        v2.extend_from_slice(&[0u8; 8]);
+        v2.extend_from_slice(&b);
+        let a = parse_linux_sll(&v2, true).expect("SLL2 ARP 应能解出");
+        assert_eq!(a.operation_name(), "request");
+        assert_eq!(linux_sll_ethertype(&v2, true), Some(ETHERTYPE_ARP));
+        assert_eq!(
+            parse_linux_sll(&v2[..19], true).unwrap_err(),
+            ArpError::TruncatedEthernet { need: 20, got: 19 }
+        );
     }
 
     #[test]

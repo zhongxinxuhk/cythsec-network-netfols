@@ -24,13 +24,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 pub const IPPROTO_GRE: u8 = 47;
 /// PPTP 增强 GRE 的 protocol type（RFC 2637）。
 pub const PPTP_PROTOCOL_TYPE: u16 = 0x880B;
-/// ERSPAN 的 protocol type（Cisco 私有扩展，只做有界标注，不展开镜像头）。
+/// ERSPAN Type II 的 protocol type（Cisco 私有扩展）。
 pub const ERSPAN_PROTOCOL_TYPE: u16 = 0x88BE;
+/// ERSPAN Type III 的 protocol type（Cisco 私有扩展）。
+pub const ERSPAN3_PROTOCOL_TYPE: u16 = 0x22EB;
 
 const BASE_HEADER_LEN: usize = 4;
 const PPTP_BASE_HEADER_LEN: usize = 8;
 const PPTP_MIN_PAYLOAD_LEN: usize = 2;
 const MAX_SRE: usize = 64;
+const MAX_MPLS_LABELS: usize = 8;
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const ETHERTYPE_IPV6: u16 = 0x86DD;
 const ETHERTYPE_TEB: u16 = 0x6558;
@@ -96,6 +99,60 @@ impl fmt::Display for GreError {
 
 impl std::error::Error for GreError {}
 
+/// GRE 校验和判定。`NotPresent` 表示 C 位没有置位，不是“校验失败”。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GreChecksumStatus {
+    Valid,
+    Invalid,
+    Unavailable,
+    NotPresent,
+}
+
+impl GreChecksumStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GreChecksumStatus::Valid => "valid",
+            GreChecksumStatus::Invalid => "invalid",
+            GreChecksumStatus::Unavailable => "unavailable",
+            GreChecksumStatus::NotPresent => "not_present",
+        }
+    }
+}
+
+/// RFC 1701 SRE 的一项。`data` 是 SRE 数据原样字节（最大 255 字节）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SreRoute {
+    pub address_family: u16,
+    pub offset: u8,
+    pub data: Vec<u8>,
+}
+
+/// MPLS 标签栈的一项（RFC 3032）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MplsLabel {
+    pub label: u32,
+    pub traffic_class: u8,
+    pub bottom_of_stack: bool,
+    pub ttl: u8,
+}
+
+/// ERSPAN Type II/III 头。只描述镜像头，不推断镜像会话配置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErspanInfo {
+    pub version: u8,
+    pub vlan: u16,
+    pub cos: u8,
+    /// Type II 的 en/t 两位；Type III 的 bso/t 两位。
+    pub flags: u8,
+    pub session_id: u16,
+    pub index: Option<u32>,
+    pub timestamp: Option<u32>,
+    pub sgt: Option<u16>,
+    pub direction: Option<bool>,
+    pub timestamp_granularity: Option<u8>,
+    pub header_len: usize,
+}
+
 /// GRE 内层协议的 bounded 视图。
 ///
 /// `complete_header` 表示“按该协议自身的头长度，字节够且版本/IHL 自洽”；
@@ -114,6 +171,10 @@ pub struct InnerProtocol {
     pub inner_ether_type: Option<u16>,
     /// 透明以太网桥接时从外到内的 VLAN ID（最多两层）。
     pub inner_vlan_ids: Vec<u16>,
+    /// MPLS 标签栈（最多 8 层）；其他内层协议为空。
+    pub mpls_labels: Vec<MplsLabel>,
+    /// MPLS 栈底之后的载荷类型，仅按首 nibble 标注（`ipv4`/`ipv6`/`unknown`）。
+    pub mpls_payload: Option<&'static str>,
 }
 
 impl InnerProtocol {
@@ -129,6 +190,8 @@ impl InnerProtocol {
             complete_header: false,
             inner_ether_type: None,
             inner_vlan_ids: Vec::new(),
+            mpls_labels: Vec::new(),
+            mpls_payload: None,
         }
     }
 }
@@ -153,12 +216,17 @@ pub struct GreFrame {
     pub sequence: Option<u32>,
     pub ack: Option<u32>,
     pub sre_count: u32,
+    pub sre_routes: Vec<SreRoute>,
     /// 固定头 + 可选头 + SRE 的总长度。
     pub header_len: usize,
     /// PPTP 增强 GRE 的载荷长度字段（不含 GRE 头）。
     pub pptp_payload_len: Option<u16>,
     pub pptp_call_id: Option<u16>,
     pub inner: Option<InnerProtocol>,
+    /// ERSPAN 镜像头；其他 protocol type 为 `None`。
+    pub erspan: Option<ErspanInfo>,
+    /// GREv0 校验和判定；PPTP/无 C 位分别为 `NotPresent`。
+    pub checksum_status: GreChecksumStatus,
     /// PPTP 载荷长度声明大于实有字节；或 GRE 头之后没有可解析的内层头。
     pub truncated: bool,
     /// 采集侧 `orig_len > caplen`。
@@ -190,10 +258,22 @@ impl GreFrame {
                     .map(u16::to_string)
                     .collect::<Vec<_>>()
                     .join(",");
+                let labels = i
+                    .mpls_labels
+                    .iter()
+                    .map(|l| {
+                        format!(
+                            "{{\"label\":{},\"traffic_class\":{},\"bottom_of_stack\":{},\"ttl\":{}}}",
+                            l.label, l.traffic_class, l.bottom_of_stack, l.ttl
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
                 format!(
                     "{{\"kind\":\"{}\",\"source\":{},\"destination\":{},\"protocol\":{},\
                      \"declared_len\":{},\"header_len\":{},\"captured_len\":{},\
-                     \"complete_header\":{},\"inner_ether_type\":{},\"inner_vlan_ids\":[{}]}}",
+                     \"complete_header\":{},\"inner_ether_type\":{},\"inner_vlan_ids\":[{}],\
+                     \"mpls_labels\":[{}],\"mpls_payload\":{}}}",
                     i.kind,
                     json_string_opt(i.source.map(|v| v.to_string())),
                     json_string_opt(i.destination.map(|v| v.to_string())),
@@ -204,6 +284,8 @@ impl GreFrame {
                     i.complete_header,
                     json_opt_num(i.inner_ether_type.map(u64::from)),
                     vlans,
+                    labels,
+                    json_string_opt(i.mpls_payload.map(|v| v.to_string())),
                 )
             }
         };
@@ -215,8 +297,9 @@ impl GreFrame {
              \"recursion_control\":{},\"reserved_flags\":{},\
              \"protocol_type\":{},\"protocol_name\":\"{}\",\
              \"checksum\":{},\"routing_offset\":{},\"key\":{},\"sequence\":{},\"ack\":{},\
-             \"sre_count\":{},\"header_len\":{},\
+             \"sre_count\":{},\"sre_routes\":{},\"header_len\":{},\
              \"pptp_payload_len\":{},\"pptp_call_id\":{},\
+             \"checksum_status\":\"{}\",\"erspan\":{},\
              \"truncated\":{},\"inner\":{inner}}}",
             self.capture_truncated,
             self.version,
@@ -237,16 +320,26 @@ impl GreFrame {
             json_opt_num(self.sequence.map(u64::from)),
             json_opt_num(self.ack.map(u64::from)),
             self.sre_count,
+            sre_json(&self.sre_routes),
             self.header_len,
             json_opt_num(self.pptp_payload_len.map(u64::from)),
             json_opt_num(self.pptp_call_id.map(u64::from)),
+            self.checksum_status.as_str(),
+            erspan_json(self.erspan.as_ref()),
             self.truncated,
         )
     }
 }
 
 /// 解析一段从 GRE 固定头开始的 IP 载荷（IP protocol = 47）。
+///
+/// 默认视为完整载荷；采集器/流水线在 snaplen 截断时用 [`parse_with_complete`]
+/// 让校验和变成 `unavailable`，而不是把截断误判成坏校验和。
 pub fn parse(payload: &[u8]) -> Result<GreFrame, GreError> {
+    parse_with_complete(payload, true)
+}
+
+pub fn parse_with_complete(payload: &[u8], complete: bool) -> Result<GreFrame, GreError> {
     if payload.len() < BASE_HEADER_LEN {
         return Err(GreError::TruncatedHeader {
             need: BASE_HEADER_LEN,
@@ -256,13 +349,13 @@ pub fn parse(payload: &[u8]) -> Result<GreFrame, GreError> {
     let flags = be16(payload, 0);
     let version = (flags & 0x0007) as u8;
     match version {
-        0 => parse_v0(payload, flags),
+        0 => parse_v0(payload, flags, complete),
         1 => parse_pptp(payload, flags),
         _ => Err(GreError::UnsupportedVersion { version }),
     }
 }
 
-fn parse_v0(payload: &[u8], flags: u16) -> Result<GreFrame, GreError> {
+fn parse_v0(payload: &[u8], flags: u16, complete: bool) -> Result<GreFrame, GreError> {
     let protocol_type = be16(payload, 2);
     let checksum_present = flags & 0x8000 != 0;
     let routing_present = flags & 0x4000 != 0;
@@ -295,6 +388,7 @@ fn parse_v0(payload: &[u8], flags: u16) -> Result<GreFrame, GreError> {
         off += 4;
     }
     let mut sre_count = 0u32;
+    let mut sre_routes = Vec::new();
     if routing_present {
         // RFC 1701：SRE Length == 0 的那一项是列表结束标记（它自身仍占 4 字节头）。
         loop {
@@ -317,6 +411,11 @@ fn parse_v0(payload: &[u8], flags: u16) -> Result<GreFrame, GreError> {
                 });
             }
             sre_count += 1;
+            sre_routes.push(SreRoute {
+                address_family: be16(payload, off),
+                offset: payload[off + 2],
+                data: payload[off + 4..need].to_vec(),
+            });
             off = need;
         }
     }
@@ -337,15 +436,20 @@ fn parse_v0(payload: &[u8], flags: u16) -> Result<GreFrame, GreError> {
         sequence,
         ack: None,
         sre_count,
+        sre_routes,
         header_len: off,
         pptp_payload_len: None,
         pptp_call_id: None,
         inner: None,
+        erspan: None,
+        checksum_status: GreChecksumStatus::NotPresent,
         truncated: false,
         capture_truncated: false,
     };
     let rest = &payload[off..];
-    frame.inner = Some(parse_inner(protocol_type, rest));
+    let (inner, erspan) = parse_inner_with_erspan(protocol_type, rest);
+    frame.inner = Some(inner);
+    frame.erspan = erspan;
     // 未知 protocol type 是“不知道内层怎么解”，不是“字节被截断”。
     frame.truncated = matches!(
         protocol_type,
@@ -354,6 +458,7 @@ fn parse_v0(payload: &[u8], flags: u16) -> Result<GreFrame, GreError> {
             | ETHERTYPE_TEB
             | PPTP_PROTOCOL_TYPE
             | ERSPAN_PROTOCOL_TYPE
+            | ERSPAN3_PROTOCOL_TYPE
             | ETHERTYPE_MPLS_UNICAST
             | ETHERTYPE_MPLS_MULTICAST
     ) && frame
@@ -361,6 +466,11 @@ fn parse_v0(payload: &[u8], flags: u16) -> Result<GreFrame, GreError> {
         .as_ref()
         .map(|i| !i.complete_header)
         .unwrap_or(false);
+    frame.checksum_status = if checksum_present {
+        verify_gre_checksum(payload, complete)
+    } else {
+        GreChecksumStatus::NotPresent
+    };
     Ok(frame)
 }
 
@@ -428,10 +538,13 @@ fn parse_pptp(payload: &[u8], flags: u16) -> Result<GreFrame, GreError> {
         sequence,
         ack,
         sre_count: 0,
+        sre_routes: Vec::new(),
         header_len: off,
         pptp_payload_len: Some(pptp_payload_len),
         pptp_call_id: Some(pptp_call_id),
         inner: None,
+        erspan: None,
+        checksum_status: GreChecksumStatus::NotPresent,
         truncated: declared > available,
         capture_truncated: false,
     };
@@ -456,6 +569,16 @@ fn ensure(payload: &[u8], need: usize) -> Result<(), GreError> {
     Ok(())
 }
 
+fn parse_inner_with_erspan(
+    protocol_type: u16,
+    bytes: &[u8],
+) -> (InnerProtocol, Option<ErspanInfo>) {
+    if protocol_type == ERSPAN_PROTOCOL_TYPE || protocol_type == ERSPAN3_PROTOCOL_TYPE {
+        return parse_erspan(protocol_type, bytes);
+    }
+    (parse_inner(protocol_type, bytes), None)
+}
+
 fn parse_inner(protocol_type: u16, bytes: &[u8]) -> InnerProtocol {
     match protocol_type {
         ETHERTYPE_IPV4 => parse_inner_ipv4(bytes),
@@ -467,20 +590,97 @@ fn parse_inner(protocol_type: u16, bytes: &[u8]) -> InnerProtocol {
             i.complete_header = bytes.len() >= 2;
             i
         }
-        ERSPAN_PROTOCOL_TYPE => {
-            let mut i = InnerProtocol::new("erspan", bytes.len());
-            i.header_len = Some(8);
-            i.complete_header = bytes.len() >= 8;
-            i
-        }
-        ETHERTYPE_MPLS_UNICAST | ETHERTYPE_MPLS_MULTICAST => {
-            let mut i = InnerProtocol::new("mpls", bytes.len());
-            i.header_len = Some(4);
-            i.complete_header = bytes.len() >= 4;
-            i
-        }
+        ETHERTYPE_MPLS_UNICAST | ETHERTYPE_MPLS_MULTICAST => parse_inner_mpls(bytes),
         _ => InnerProtocol::new("unknown", bytes.len()),
     }
+}
+
+fn parse_erspan(protocol_type: u16, bytes: &[u8]) -> (InnerProtocol, Option<ErspanInfo>) {
+    let mut i = InnerProtocol::new("erspan", bytes.len());
+    if bytes.len() < 8 {
+        i.header_len = Some(if protocol_type == ERSPAN3_PROTOCOL_TYPE {
+            12
+        } else {
+            8
+        });
+        return (i, None);
+    }
+    let version = bytes[0] >> 4;
+    let is3 = protocol_type == ERSPAN3_PROTOCOL_TYPE || version == 2;
+    let base = if is3 { 12 } else { 8 };
+    i.header_len = Some(base);
+    if bytes.len() < base {
+        return (i, None);
+    }
+    let w0 = be16(bytes, 0);
+    let w1 = be16(bytes, 2);
+    let mut info = ErspanInfo {
+        version,
+        vlan: w0 & 0x0fff,
+        cos: ((w1 >> 13) & 0x07) as u8,
+        flags: ((w1 >> 10) & 0x07) as u8,
+        session_id: w1 & 0x03ff,
+        index: None,
+        timestamp: None,
+        sgt: None,
+        direction: None,
+        timestamp_granularity: None,
+        header_len: base,
+    };
+    if is3 {
+        info.timestamp = Some(be32(bytes, 4));
+        info.sgt = Some(be16(bytes, 8));
+        let w3 = be16(bytes, 10);
+        info.direction = Some(w3 & 0x0008 != 0);
+        info.timestamp_granularity = Some(((w3 >> 1) & 0x03) as u8);
+        if w3 & 0x0001 != 0 {
+            // ERSPAN III optional platform-specific header (8 bytes).
+            info.header_len = base + 8;
+            i.header_len = Some(info.header_len);
+        }
+    } else {
+        let w2 = be32(bytes, 4);
+        info.index = Some(w2 & 0x000f_ffff);
+    }
+    let payload_start = info.header_len;
+    if bytes.len() >= payload_start + 14 {
+        let eth = parse_inner_ethernet(&bytes[payload_start..]);
+        i.inner_ether_type = eth.inner_ether_type;
+        i.inner_vlan_ids = eth.inner_vlan_ids;
+        i.complete_header = eth.complete_header;
+    }
+    (i, Some(info))
+}
+
+fn parse_inner_mpls(bytes: &[u8]) -> InnerProtocol {
+    let mut i = InnerProtocol::new("mpls", bytes.len());
+    let mut off = 0usize;
+    let mut bottom = false;
+    while off + 4 <= bytes.len() && i.mpls_labels.len() < MAX_MPLS_LABELS {
+        let w = be32(bytes, off);
+        let label = MplsLabel {
+            label: w >> 12,
+            traffic_class: ((w >> 9) & 0x07) as u8,
+            bottom_of_stack: w & 0x0000_0100 != 0,
+            ttl: (w & 0xff) as u8,
+        };
+        bottom = label.bottom_of_stack;
+        i.mpls_labels.push(label);
+        off += 4;
+        if bottom {
+            break;
+        }
+    }
+    i.header_len = Some(off);
+    i.complete_header = bottom;
+    if bottom {
+        i.mpls_payload = bytes.get(off).map(|b| match b >> 4 {
+            4 => "ipv4",
+            6 => "ipv6",
+            _ => "unknown",
+        });
+    }
+    i
 }
 
 fn parse_inner_ipv4(bytes: &[u8]) -> InnerProtocol {
@@ -558,8 +758,88 @@ fn protocol_name(protocol_type: u16) -> &'static str {
         ETHERTYPE_MPLS_UNICAST => "mpls_unicast",
         ETHERTYPE_MPLS_MULTICAST => "mpls_multicast",
         ERSPAN_PROTOCOL_TYPE => "erspan",
+        ERSPAN3_PROTOCOL_TYPE => "erspan3",
         _ => "unknown",
     }
+}
+
+fn fold_checksum(mut sum: u32) -> u16 {
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    sum as u16
+}
+
+fn verify_gre_checksum(payload: &[u8], complete: bool) -> GreChecksumStatus {
+    if !complete {
+        return GreChecksumStatus::Unavailable;
+    }
+    let stored = be16(payload, 4);
+    let mut sum = 0u32;
+    let mut i = 0usize;
+    while i + 1 < payload.len() {
+        let word = if i == 4 { 0 } else { be16(payload, i) };
+        sum += u32::from(word);
+        i += 2;
+    }
+    if i < payload.len() {
+        sum += u32::from(payload[i]) << 8;
+    }
+    if (!fold_checksum(sum)) == stored {
+        GreChecksumStatus::Valid
+    } else {
+        GreChecksumStatus::Invalid
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+fn sre_json(routes: &[SreRoute]) -> String {
+    let items = routes
+        .iter()
+        .map(|r| {
+            format!(
+                "{{\"address_family\":{},\"offset\":{},\"length\":{},\"data\":\"{}\"}}",
+                r.address_family,
+                r.offset,
+                r.data.len(),
+                hex_bytes(&r.data)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{items}]")
+}
+
+fn erspan_json(e: Option<&ErspanInfo>) -> String {
+    let Some(e) = e else {
+        return "null".to_string();
+    };
+    format!(
+        "{{\"version\":{},\"vlan\":{},\"cos\":{},\"flags\":{},\"session_id\":{},\
+         \"index\":{},\"timestamp\":{},\"sgt\":{},\"direction\":{},\
+         \"timestamp_granularity\":{},\"header_len\":{}}}",
+        e.version,
+        e.vlan,
+        e.cos,
+        e.flags,
+        e.session_id,
+        json_opt_num(e.index.map(u64::from)),
+        json_opt_num(e.timestamp.map(u64::from)),
+        json_opt_num(e.sgt.map(u64::from)),
+        match e.direction {
+            Some(v) => v.to_string(),
+            None => "null".to_string(),
+        },
+        json_opt_num(e.timestamp_granularity.map(u64::from)),
+        e.header_len,
+    )
 }
 
 fn json_opt_num(v: Option<u64>) -> String {
@@ -597,6 +877,13 @@ pub struct GreStats {
     pub capture_truncated: u64,
     pub truncated: u64,
     pub malformed: u64,
+    pub checksum_valid: u64,
+    pub checksum_invalid: u64,
+    pub checksum_unavailable: u64,
+    pub checksum_not_present: u64,
+    pub sre_routes: u64,
+    pub mpls_labels: u64,
+    pub erspan_frames: u64,
 }
 
 impl GreStats {
@@ -630,7 +917,7 @@ impl GreStats {
             ETHERTYPE_TEB => self.protocol_ethernet += 1,
             PPTP_PROTOCOL_TYPE => self.protocol_ppp += 1,
             ETHERTYPE_MPLS_UNICAST | ETHERTYPE_MPLS_MULTICAST => self.protocol_mpls += 1,
-            ERSPAN_PROTOCOL_TYPE => self.protocol_erspan += 1,
+            ERSPAN_PROTOCOL_TYPE | ERSPAN3_PROTOCOL_TYPE => self.protocol_erspan += 1,
             _ => self.protocol_other += 1,
         }
         if let Some(i) = &f.inner {
@@ -646,6 +933,19 @@ impl GreStats {
         }
         if f.capture_truncated {
             self.capture_truncated += 1;
+        }
+        match f.checksum_status {
+            GreChecksumStatus::Valid => self.checksum_valid += 1,
+            GreChecksumStatus::Invalid => self.checksum_invalid += 1,
+            GreChecksumStatus::Unavailable => self.checksum_unavailable += 1,
+            GreChecksumStatus::NotPresent => self.checksum_not_present += 1,
+        }
+        self.sre_routes += f.sre_routes.len() as u64;
+        if let Some(i) = &f.inner {
+            self.mpls_labels += i.mpls_labels.len() as u64;
+        }
+        if f.erspan.is_some() {
+            self.erspan_frames += 1;
         }
     }
 
@@ -668,7 +968,9 @@ impl GreStats {
              protocol_ipv4={} protocol_ipv6={} protocol_ethernet={} protocol_ppp={} \
              protocol_mpls={} protocol_erspan={} protocol_other={} \
              inner_complete={} inner_incomplete={} capture_truncated={} \
-             truncated={} malformed={}",
+             truncated={} malformed={} checksum_valid={} checksum_invalid={} \
+             checksum_unavailable={} checksum_not_present={} sre_routes={} \
+             mpls_labels={} erspan_frames={}",
             self.gre_frames,
             self.version0,
             self.version1,
@@ -690,6 +992,13 @@ impl GreStats {
             self.capture_truncated,
             self.truncated,
             self.malformed,
+            self.checksum_valid,
+            self.checksum_invalid,
+            self.checksum_unavailable,
+            self.checksum_not_present,
+            self.sre_routes,
+            self.mpls_labels,
+            self.erspan_frames,
         )
     }
 }
@@ -809,6 +1118,10 @@ mod tests {
         p.extend_from_slice(&inner);
         let f = parse(&p).unwrap();
         assert_eq!(f.sre_count, 1);
+        assert_eq!(f.sre_routes.len(), 1);
+        assert_eq!(f.sre_routes[0].address_family, 0x0800);
+        assert_eq!(f.sre_routes[0].offset, 0);
+        assert_eq!(f.sre_routes[0].data, vec![10, 0, 0, 9]);
         assert_eq!(f.header_len, 20);
         assert_eq!(f.protocol_name(), "ipv4");
         assert!(f.inner.expect("内层").complete_header);
@@ -917,6 +1230,111 @@ mod tests {
         let i = f.inner.expect("未知协议也应有内层视图");
         assert_eq!(i.kind, "unknown");
         assert!(!i.complete_header);
+    }
+
+    #[test]
+    fn checksum_status_distinguishes_valid_invalid_and_truncated() {
+        let inner = ipv4_header([10, 0, 0, 1], [10, 0, 0, 2], 6, 40);
+        let mut p = gre_v0_with(0x8000, 0x0800, Some((0, 0)), None, None, &inner);
+        let mut sum = 0u32;
+        let mut i = 0usize;
+        while i + 1 < p.len() {
+            sum += u32::from(be16(&p, i));
+            i += 2;
+        }
+        if i < p.len() {
+            sum += u32::from(p[i]) << 8;
+        }
+        let c = !fold_checksum(sum);
+        p[4..6].copy_from_slice(&c.to_be_bytes());
+        let f = parse(&p).unwrap();
+        assert_eq!(
+            f.checksum_status,
+            GreChecksumStatus::Valid,
+            "checksum={c:#x}"
+        );
+        let mut bad = p.clone();
+        bad[8] ^= 1;
+        assert_eq!(
+            parse(&bad).unwrap().checksum_status,
+            GreChecksumStatus::Invalid
+        );
+        assert_eq!(
+            parse_with_complete(&p, false).unwrap().checksum_status,
+            GreChecksumStatus::Unavailable
+        );
+        assert_eq!(
+            parse(&gre_v0(0, 0x0800, &inner)).unwrap().checksum_status,
+            GreChecksumStatus::NotPresent
+        );
+    }
+
+    #[test]
+    fn mpls_labels_are_expanded_until_bottom_of_stack() {
+        // 栈顶 label=100, tc=5, S=0, ttl=64；栈底 label=200, tc=1, S=1, ttl=63。
+        let top = (100u32 << 12) | (5 << 9) | 64;
+        let bottom = (200u32 << 12) | (1 << 9) | 0x100 | 63;
+        let mut inner = top.to_be_bytes().to_vec();
+        inner.extend_from_slice(&bottom.to_be_bytes());
+        inner.push(0x45);
+        inner.extend_from_slice(&[0; 19]);
+        let f = parse(&gre_v0(0, 0x8847, &inner)).unwrap();
+        let i = f.inner.as_ref().expect("MPLS 内层");
+        assert_eq!(i.kind, "mpls");
+        assert_eq!(i.header_len, Some(8));
+        assert!(i.complete_header);
+        assert_eq!(i.mpls_labels.len(), 2);
+        assert_eq!(i.mpls_labels[0].label, 100);
+        assert_eq!(i.mpls_labels[0].traffic_class, 5);
+        assert!(!i.mpls_labels[0].bottom_of_stack);
+        assert_eq!(i.mpls_labels[1].label, 200);
+        assert!(i.mpls_labels[1].bottom_of_stack);
+        assert_eq!(i.mpls_payload, Some("ipv4"));
+        let line = f.to_json_line(1, 1, 1);
+        assert!(line.contains("\"mpls_labels\":[{\"label\":100"), "{line}");
+    }
+
+    #[test]
+    fn erspan_type_ii_and_iii_headers_are_decoded() {
+        let mut eth = vec![0u8; 12];
+        eth.extend_from_slice(&0x0800u16.to_be_bytes());
+        eth.extend_from_slice(&[0; 20]);
+
+        // Type II: ver=1, vlan=100, cos=5, session=0x123, index=0x12345.
+        let mut ii = ((1u16 << 12) | 100).to_be_bytes().to_vec();
+        ii.extend_from_slice(&((5u16 << 13) | 0x0123).to_be_bytes());
+        ii.extend_from_slice(&0x0001_2345u32.to_be_bytes());
+        ii.extend_from_slice(&eth);
+        let f = parse(&gre_v0(0, ERSPAN_PROTOCOL_TYPE, &ii)).unwrap();
+        let e = f.erspan.expect("ERSPAN II");
+        assert_eq!(e.version, 1);
+        assert_eq!(e.vlan, 100);
+        assert_eq!(e.cos, 5);
+        assert_eq!(e.session_id, 0x123);
+        assert_eq!(e.index, Some(0x12345));
+        assert_eq!(e.header_len, 8);
+        assert_eq!(f.inner.expect("ERSPAN 内层").inner_ether_type, Some(0x0800));
+
+        // Type III: ver=2, payload 12-byte header, direction=1, gra=1.
+        let mut iii = ((2u16 << 12) | 200).to_be_bytes().to_vec();
+        iii.extend_from_slice(&((3u16 << 13) | 0x0256).to_be_bytes());
+        iii.extend_from_slice(&0x1122_3344u32.to_be_bytes());
+        iii.extend_from_slice(&0x0064u16.to_be_bytes());
+        iii.extend_from_slice(&((1u16 << 3) | (1 << 1)).to_be_bytes());
+        iii.extend_from_slice(&eth);
+        let f = parse(&gre_v0(0, ERSPAN3_PROTOCOL_TYPE, &iii)).unwrap();
+        let e = f.erspan.expect("ERSPAN III");
+        assert_eq!(e.version, 2);
+        assert_eq!(e.vlan, 200);
+        assert_eq!(e.session_id, 0x256);
+        assert_eq!(e.timestamp, Some(0x1122_3344));
+        assert_eq!(e.sgt, Some(0x0064));
+        assert_eq!(e.direction, Some(true));
+        assert_eq!(e.timestamp_granularity, Some(1));
+        assert_eq!(e.header_len, 12);
+        let i = f.inner.expect("ERSPAN III 内层");
+        assert_eq!(i.kind, "erspan");
+        assert_eq!(i.inner_ether_type, Some(0x0800));
     }
 
     #[test]
