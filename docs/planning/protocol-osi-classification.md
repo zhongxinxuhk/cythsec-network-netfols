@@ -72,14 +72,14 @@
 
 ## 3. 当前盘点
 
-截至 `2026-11-01.4`，清单共 292 行：268 项目录对象 + 24 项基础/补充核验项。
+截至 `2026-11-01.5`，清单共 292 行：268 项目录对象 + 24 项基础/补充核验项。
 目录原有 `layer` 轴仍为 tunnel 118、product 64、overlay 46、transport 26、identity 14，
 它与 OSI 主层不是同一维度。
 
 | 主层 | 条目 | 实现审查 | 完整适配 | 当前口径 |
 | --- | ---: | ---: | ---: | --- |
 | L1 物理层 | 0 | 0 | 0 | 只做链路/介质/速率元数据，不做 PHY 解码 |
-| L2 数据链路层 | 14 | 4 | 1 | B001-B004、A013-A014、V006/V008/V012-V015、X005-X006 |
+| L2 数据链路层 | 14 | 5 | 2 | B001-B004、A013-A014、V006/V008/V012-V015、X005-X006 |
 | L3 网络层 | 18 | 7 | 4 | B005-B008/B011-B012、V001/V002/V009-V011/V021-V022、X001-X004/X015 |
 | L4 传输层 | 4 | 2 | 0 | B009-B010、T007-T008 |
 | L5 会话层 | 20 | 3 | 0 | TLS/DTLS/SSH/IKE/SOCKS/STUN 等 |
@@ -87,16 +87,16 @@
 | L7 应用层 | 43 | 13 | 0 | DNS/DHCP/邮件/FTP/采集器/HTTP/身份/代理控制 |
 | 跨层隧道/代理 | 72 | 0 | 0 | VPN/代理/隧道链，不递归建内层流 |
 | non-OSI 产品/变换/密码 | 121 | 0 | 0 | C/F 产品、O 变换、T/SM 密码原语 |
-| 合计 | 292 | 29 | 5 | 跨层与 non-OSI 不计入七层分子 |
+| 合计 | 292 | 30 | 6 | 跨层与 non-OSI 不计入七层分子 |
 
-当前完整适配仍只有 5 行：`B004`（ARP）、`B008`（IPv4/IPv6 分片重组）、
-`B011`/`B012`（ICMPv4/ICMPv6）、`V009`（GRE/mGRE）。
+当前完整适配仍只有 6 行：`B004`（ARP）、`B008`（IPv4/IPv6 分片重组）、
+`B011`/`B012`（ICMPv4/ICMPv6）、`V009`（GRE/mGRE）、`V014`（VXLAN）。
 这说明基础 L2/L3 已经打通，但 L4 以上、跨层隧道和产品上下文仍主要是“已登记未验收”。
 
 ### 3.1 各层缺口
 
 - **L1**：目录没有 L1 条目。后续只新增采集元数据契约（linktype、介质、速率、无线信道），不承诺从 pcap 还原 PHY。
-- **L2**：ARP 已验收；PPP/EAP、L2TP/PPTP/L2TPv3/EtherIP、VXLAN/Geneve、L2TPv3 UDP/IP 尚未实现。LLDP、STP/RSTP、MACsec、802.1X/EAPOL 还不在目录内，需要先决定是否纳入范围。
+- **L2**：ARP、VXLAN 已验收；PPP/EAP、L2TP/PPTP/L2TPv3/EtherIP、Geneve、L2TPv3 UDP/IP 尚未实现。LLDP、STP/RSTP、MACsec、802.1X/EAPOL 还不在目录内，需要先决定是否纳入范围。
 - **L3**：IPv4/IPv6/扩展头、ICMP、GRE 已实现，其中 ICMP/GRE 已验收；B008 分片重组已完成验收；IPsec ESP/AH、NAT-T、IP-in-IP、IPv6-in-IPv4、WireGuard/AmneziaWG 未实现。OSPF/BGP/IS-IS 等路由协议不在 292 行内，若不纳入必须在 scope 明确排除。
 - **L4**：TCP/UDP 已实现；QUIC v1/v2 未实现。SCTP、UDP-Lite 未入目录，按业务场景决定是否新增。
 - **L5**：TLS 1.2/1.3/TLS family 已实现；DTLS、SSH、IKE、STUN/ICE、SOCKS、mTLS、会话恢复、TLCP/国密套件未实现或未验收。L5 需要握手状态机，不能只做首包魔数。
@@ -127,7 +127,7 @@
 ### P1：L1-L3 基础正确性
 
 1. L1 元数据契约：linktype、介质、速率、无线信道；未知值保留 `unknown`。
-2. L2：PPP/EAP、L2TP/PPTP/L2TPv3/EtherIP、VXLAN/Geneve；每项单独分支。
+2. L2：PPP/EAP、L2TP/PPTP/L2TPv3/EtherIP、Geneve；VXLAN 已完成 V014；每项单独分支。
 3. L3：IPsec ESP/AH、NAT-T、IP-in-IP、IPv6-in-IPv4、WireGuard/AmneziaWG。
 4. 视范围决定是否新增 LLDP/STP/MACsec/802.1X 与 OSPF/BGP/IS-IS；不纳入就写入 scope 排除。
 

@@ -56,6 +56,9 @@ pub mod session;
 // 与 export（IPFIX）一样，它只依赖 record/feature/flow 的类型，不反向依赖 pipeline。
 pub mod storage;
 pub mod tcp;
+// VXLAN 有界解析（RFC 7348）：VNI、基础 flags 与可见内层以太网/IP 头。
+// 事件由 cythsec-vxlan 输出，主流水线只做报文级计数，内层不建流。
+pub mod vxlan;
 // TLS 1.3 keylog 解密（仅离线 DPI；零第三方依赖的密码学原语见模块注释）。
 pub mod tlsdecrypt;
 

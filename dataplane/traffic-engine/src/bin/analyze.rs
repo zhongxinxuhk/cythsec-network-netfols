@@ -396,6 +396,9 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
     // IP 分片重组统计（B008）。完整数据报才进流表；缺片/重叠/截断只在这里计数，
     // 字段名是 scripts/verify/check-ipfrag.py 的契约。
     let _ = writeln!(err, "[cythsec-analyze] {}", stats.ipfrag.render_line());
+    // VXLAN 报文级统计（V014）：外层 UDP 进流表，VNI/内层头只在这里计数，
+    // 字段名是 scripts/verify/check-vxlan.py 的契约。
+    let _ = writeln!(err, "[cythsec-analyze] {}", stats.vxlan.render_line());
     let apps: Vec<String> = stats
         .app_outcomes
         .iter()

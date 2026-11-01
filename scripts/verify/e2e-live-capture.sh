@@ -470,20 +470,24 @@ if [[ "${RUST_READY}" == "1" && -s "${PCAP}" ]]; then
     got="$(field "${CONS_OUT}" "ring-consume summary" packets)"
     flows="$(field "${CONS_OUT}" "ring-consume summary" flows)"
     dfail="$(field "${CONS_OUT}" "ring-consume summary" decode_fail)"
+    reassembled_non_initial="$(field "${CONS_OUT}" "ring-consume summary" reassembled_non_initial)"
     check "D 灌入数 == 前缀窗口" "${fed}" "${LIMIT}"
     check "D 环内消费数 == 灌入数" "${got}" "${fed}"
     check_ge "D 解出的 Flow 条数" "${flows}" "1"
     # 解不出五元组是**正确行为**，不断言 dfail=0；要验的是两个独立实现（Rust 解码器 /
     # tshark 裁判）对「哪些帧解不出五元组」的判定一致。裁判口径见 undecodable_count()：
     # 非 IP + IPv4 非首片 + IPv6 非首片（三类都是"按设计拒绝"，不是 bug）。
+    # B008 之后，完整重组的数据报会正常解码，其非首片不再计入 decode_fail；
+    # tshark 仍是逐帧裁判，所以对账要加回 reassembled_non_initial。
     if command -v tshark >/dev/null 2>&1 && [[ "${LIMIT}" != "0" ]]; then
       prefix_bad="$(undecodable_count "${PCAP}" "${LIMIT}" || true)"
-      if [[ "${dfail}" != "${prefix_bad}" ]]; then
+      expected_bad=$((dfail + ${reassembled_non_initial:-0}))
+      if [[ "${expected_bad}" != "${prefix_bad}" ]]; then
         # 不一致要能一眼归因：把三方计数、裁判分项与错误码明细都摊开，而不是只报一个数。
-        echo "  · 归因：Rust decode_fail=${dfail} / tshark 不可解=${prefix_bad}（$(undecodable_breakdown "${PCAP}" "${LIMIT}")） / C++ 分类结果见 C 段摘要" >&2
+        echo "  · 归因：Rust decode_fail=${dfail} + 已重组非首片=${reassembled_non_initial} / tshark 不可解=${prefix_bad}（$(undecodable_breakdown "${PCAP}" "${LIMIT}")） / C++ 分类结果见 C 段摘要" >&2
         grep -E '^ring-consume decode_fail code=' "${CONS_OUT}" | sed 's/^/    /' >&2 || true
       fi
-      check "D Rust decode_fail == tshark 前缀「解不出五元组」帧数（两实现判定一致）" "${dfail}" "${prefix_bad}"
+      check "D Rust decode_fail + 已重组非首片 == tshark 前缀「解不出五元组」帧数（两实现判定一致）" "${expected_bad}" "${prefix_bad}"
     else
       echo "  ⚠ 无 tshark：decode_fail 一致性项未核验（不计为通过）"
     fi

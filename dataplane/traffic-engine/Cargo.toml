@@ -94,6 +94,12 @@ path = "src/bin/gre_collect.rs"
 name = "cythsec-ipfrag"
 path = "src/bin/ipfrag_collect.rs"
 
+# VXLAN 事件采集器（RFC 7348）：VNI、基础 flags、可见内层以太网/IP 头。
+# 内层 IP 不回到流水线，不产生第二条 FlowRecord。
+[[bin]]
+name = "cythsec-vxlan"
+path = "src/bin/vxlan_collect.rs"
+
 [[bin]]
 name = "cythsec-bench"
 path = "src/bin/bench.rs"

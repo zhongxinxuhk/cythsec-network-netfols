@@ -216,6 +216,10 @@ test_rust() {
     echo "✗ [B008] IPv4/IPv6 分片重组回归失败" >&2
     return 1
   fi
+  if ! bash scripts/verify/check-vxlan.sh; then
+    echo "✗ [V014] VXLAN 回归失败" >&2
+    return 1
+  fi
   echo "✓ [rust] 测试通过（含特征 parity、识别 CLI 与独立聚合观测）"
 }
 
@@ -942,6 +946,7 @@ if [[ ${ALL} -eq 1 ]]; then
   bash scripts/verify/check-arp.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-icmp-gre.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-ipfrag.sh --tshark || failed=$((failed+1))
+  bash scripts/verify/check-vxlan.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-vpn-identification.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-aggregate-observability.sh --tshark || failed=$((failed+1))
   bash scripts/verify/check-aggregate-storage.sh || failed=$((failed+1))
