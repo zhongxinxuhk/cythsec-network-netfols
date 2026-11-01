@@ -35,6 +35,7 @@ use crate::channel::{
 use crate::dpi::{self, DpiPolicy, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
+use crate::geneve::{self, GeneveStats};
 use crate::gre::{self, GreStats};
 use crate::icmp::{self, IcmpFamily, IcmpStats};
 use crate::pcapfile::{PcapReader, PcapRecord};
@@ -130,6 +131,9 @@ pub struct AnalyzeStats {
     /// VXLAN 报文级统计（V014）。只展开外层 UDP + VXLAN 头/可见内层以太网头，
     /// 内层 IP 不回到流水线，不产生第二条 FlowRecord。
     pub vxlan: VxlanStats,
+    /// Geneve 报文级统计（V015）。选项只记录头，O=1 控制报文不解释载荷，
+    /// 内层头不回到流水线，不产生第二条 FlowRecord。
+    pub geneve: GeneveStats,
     /// 会话级 TCP 统计（`CYS-TRF-015`）。走**统计行**这个已有出口而不是记录字段：
     /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
     /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
@@ -696,6 +700,35 @@ fn note_vxlan_frame(
     }
 }
 
+/// 当解码成功且外层是 Geneve UDP 端口时，展开报文级统计。
+///
+/// 端口只是触发条件，结构判定仍由 `geneve::parse_with_complete` 完成；控制报文
+/// 不解释载荷，内层以太网/IP 头只记录可见字段，**不**把内层塞回流水线。
+fn note_geneve_frame(
+    stats: &mut GeneveStats,
+    d: &DecodedFrame,
+    frame: &[u8],
+    capture_truncated: bool,
+) {
+    if d.key.proto.number() != 17
+        || (!geneve::is_geneve_port(d.key.src_port) && !geneve::is_geneve_port(d.key.dst_port))
+    {
+        return;
+    }
+    let Some(payload) = l4_payload(frame, d) else {
+        stats.record_error(geneve::GeneveError::TruncatedHeader { need: 8, got: 0 });
+        return;
+    };
+    let complete = !capture_truncated && !payload.is_truncated();
+    match geneve::parse_with_complete(payload.bytes, complete) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated || payload.is_truncated();
+            stats.observe(&f);
+        }
+        Err(e) => stats.record_error(e),
+    }
+}
+
 /// 解码一条 pcap 记录，必要时先做 IP 分片重组。
 ///
 /// 返回 `None` 表示这条记录已被分片表吸收/拒绝，不能进入流表。这里把
@@ -727,6 +760,7 @@ fn decode_record(
             note_icmp_frame(&mut stats.icmp, &decoded, &d.frame, false);
             note_gre_frame(&mut stats.gre, &decoded, &d.frame, false);
             note_vxlan_frame(&mut stats.vxlan, &decoded, &d.frame, false);
+            note_geneve_frame(&mut stats.geneve, &decoded, &d.frame, false);
             Some(DecodedPacket {
                 data: d.frame,
                 decoded,
@@ -747,6 +781,7 @@ fn decode_record(
             note_icmp_frame(&mut stats.icmp, &decoded, &rec.data, truncated);
             note_gre_frame(&mut stats.gre, &decoded, &rec.data, truncated);
             note_vxlan_frame(&mut stats.vxlan, &decoded, &rec.data, truncated);
+            note_geneve_frame(&mut stats.geneve, &decoded, &rec.data, truncated);
             Some(DecodedPacket {
                 data: rec.data,
                 decoded,
@@ -1145,6 +1180,31 @@ mod tests {
         payload.push(0);
         payload.extend_from_slice(&inner);
         udp_frame([192, 0, 2, 1], [192, 0, 2, 2], 55555, 4789, &payload)
+    }
+
+    /// 一条外层 IPv4/UDP 6081 的 Geneve TEB 帧，内层是 IPv4/ICMP 头。
+    fn geneve_v4(vni: u32, inner_src: [u8; 4], inner_dst: [u8; 4]) -> Vec<u8> {
+        let mut inner = vec![0u8; 12]; // 内层 MAC
+        inner.extend_from_slice(&0x0800u16.to_be_bytes());
+        inner.push(0x45);
+        inner.push(0);
+        inner.extend_from_slice(&28u16.to_be_bytes()); // 20 + 8
+        inner.extend_from_slice(&[0, 0, 0x40, 0, 64, 1, 0, 0]);
+        inner.extend_from_slice(&inner_src);
+        inner.extend_from_slice(&inner_dst);
+        inner.extend_from_slice(&[8, 0, 0, 0, 0, 1, 0, 1]); // ICMP echo
+        let mut payload = vec![0, 0, 0x65, 0x58];
+        payload.extend_from_slice(&vni.to_be_bytes()[1..]);
+        payload.push(0);
+        payload.extend_from_slice(&inner);
+        udp_frame([192, 0, 2, 1], [192, 0, 2, 2], 55555, 6081, &payload)
+    }
+
+    /// 非法 Geneve：version=1，但外层五元组仍然可解。
+    fn geneve_unknown_version() -> Vec<u8> {
+        let mut payload = vec![0x40, 0, 0x65, 0x58, 0, 0, 0, 1];
+        payload.extend_from_slice(&[0u8; 14]);
+        udp_frame([192, 0, 2, 1], [192, 0, 2, 2], 55555, 6081, &payload)
     }
 
     /// 非法 VXLAN：I 位为 0，但外层五元组仍然可解。
@@ -1749,6 +1809,38 @@ mod tests {
         assert_eq!(s1.vxlan, s3.vxlan, "VXLAN 统计必须与 worker 数无关");
         assert_eq!(s3.vxlan.vxlan_frames, 2);
         assert_eq!(s3.vxlan.inner_ipv4, 2);
+    }
+
+    #[test]
+    fn geneve_inner_ip_is_not_a_second_flow() {
+        let a = geneve_v4(100, [10, 0, 0, 1], [10, 0, 0, 2]);
+        let b = geneve_v4(200, [10, 0, 0, 3], [10, 0, 0, 4]);
+        let bad = geneve_unknown_version();
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[a, b, bad]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert_eq!(records.len(), 1, "Geneve 内层 IP 不得另造会话");
+        assert_eq!(records[0].key.proto.number(), 17);
+        assert_eq!(records[0].key.dst_port, 6081);
+        assert_eq!(stats.geneve.geneve_frames, 2);
+        assert_eq!(stats.geneve.inner_ipv4, 2);
+        assert_eq!(stats.geneve.inner_complete, 2);
+        assert_eq!(stats.geneve.malformed, 1);
+        assert_eq!(stats.geneve.unsupported_version, 1);
+        assert_eq!(stats.geneve.vni_zero, 0);
+    }
+
+    #[test]
+    fn geneve_stats_are_identical_with_multiple_workers() {
+        let a = geneve_v4(100, [10, 0, 0, 1], [10, 0, 0, 2]);
+        let b = geneve_v4(200, [10, 0, 0, 3], [10, 0, 0, 4]);
+        let tcp = tcp_frame([10, 2, 0, 1], [10, 2, 0, 2], 40000, 80, 0x02, &[]);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[a, b, tcp]);
+        let (one, s1) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).unwrap();
+        let (three, s3) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 3).unwrap();
+        assert_eq!(one, three, "worker 数不得改变 FlowRecord");
+        assert_eq!(s1.geneve, s3.geneve, "Geneve 统计必须与 worker 数无关");
+        assert_eq!(s3.geneve.geneve_frames, 2);
+        assert_eq!(s3.geneve.inner_ipv4, 2);
     }
 
     #[test]

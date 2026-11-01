@@ -42,6 +42,7 @@ use traffic_engine::channel::{
     decode_frame, l4_payload, Channel, Consumer, DecodedFrame, LinkLayer, PacketMeta, RegionPerm,
 };
 use traffic_engine::flow::{Flow, FlowKey};
+use traffic_engine::geneve::{self, GeneveStats};
 use traffic_engine::reassembly::ip::{IpReassembler, PushOutcome};
 use traffic_engine::vxlan::{self, VxlanStats};
 
@@ -62,6 +63,28 @@ fn note_vxlan(stats: &mut VxlanStats, frame: &[u8], d: &DecodedFrame, capture_tr
     };
     let complete = !capture_truncated && !payload.is_truncated();
     match vxlan::parse_with_complete(payload.bytes, complete) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated || payload.is_truncated();
+            stats.observe(&f);
+        }
+        Err(e) => stats.record_error(e),
+    }
+}
+
+/// 与 pipeline 的 `note_geneve_frame` 同一口径：外层 UDP 端口触发，结构判定交给
+/// `geneve::parse_with_complete`；O=1 控制报文不解释载荷，内层不回到流表。
+fn note_geneve(stats: &mut GeneveStats, frame: &[u8], d: &DecodedFrame, capture_truncated: bool) {
+    if d.key.proto.number() != 17
+        || (!geneve::is_geneve_port(d.key.src_port) && !geneve::is_geneve_port(d.key.dst_port))
+    {
+        return;
+    }
+    let Some(payload) = l4_payload(frame, d) else {
+        stats.record_error(geneve::GeneveError::TruncatedHeader { need: 8, got: 0 });
+        return;
+    };
+    let complete = !capture_truncated && !payload.is_truncated();
+    match geneve::parse_with_complete(payload.bytes, complete) {
         Ok(mut f) => {
             f.capture_truncated = capture_truncated || payload.is_truncated();
             stats.observe(&f);
@@ -259,6 +282,7 @@ fn main() -> ExitCode {
     let mut decode_fail: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut ipfrag = IpReassembler::default();
     let mut vxlan = VxlanStats::default();
+    let mut geneve = GeneveStats::default();
     let mut reassembled_non_initial = 0u64;
 
     let drain_result = consumer.drain(|meta: PacketMeta, data: &[u8]| {
@@ -297,6 +321,7 @@ fn main() -> ExitCode {
                     Ok(f) => {
                         decoded += 1;
                         note_vxlan(&mut vxlan, &d.frame, &f, false);
+                        note_geneve(&mut geneve, &d.frame, &f, false);
                         let pkt = traffic_engine::flow::Packet {
                             key: f.key,
                             payload_len: f.ip_payload_len,
@@ -318,6 +343,7 @@ fn main() -> ExitCode {
                 Ok(f) => {
                     decoded += 1;
                     note_vxlan(&mut vxlan, data, &f, meta.is_truncated());
+                    note_geneve(&mut geneve, data, &f, meta.is_truncated());
                     // 负载长度用 ip_payload_len（从 IP 头长度字段算出），而不是 wirelen：
                     // 后者含链路层与网络层头，且截断捕获下偏小。两者混用会让流的字节统计
                     // 在两份输出间不可比。
@@ -387,6 +413,7 @@ fn main() -> ExitCode {
     }
     println!("ring-consume {}", ipfrag.stats().render_line());
     println!("ring-consume {}", vxlan.render_line());
+    println!("ring-consume {}", geneve.render_line());
 
     // 逐流输出。IP:port 的写法对 IPv6 用方括号括起地址，使 `host:port` 的分隔无歧义。
     for flow in flows.values() {
@@ -420,6 +447,7 @@ fn main() -> ExitCode {
         println!("VLAN 标记     : {vlan_tagged}");
         println!("IPv6 报文     : {ipv6}");
         println!("VXLAN 报文    : {}", vxlan.vxlan_frames);
+        println!("Geneve 报文   : {}", geneve.geneve_frames);
         println!("落后丢包      : {overrun}");
         println!("通道 head/tail: {} / {}", chan_stats.head, chan_stats.tail);
         println!("通道 consumed : {}", chan_stats.consumed);

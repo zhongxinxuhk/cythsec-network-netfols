@@ -25,6 +25,9 @@ pub mod flow;
 // GRE / PPTP GRE 有界解析（RFC 2784 / RFC 2890 / RFC 2637）：基础隧道协议识别，
 // 无端口、不进应用识别；事件由 cythsec-gre 输出，主流水线只做报文级计数。
 pub mod gre;
+// Geneve 有界解析（RFC 8926）：VNI、选项头、控制位与可见内层头。
+// 事件由 cythsec-geneve 输出，主流水线只做报文级计数。
+pub mod geneve;
 // hash 是流键的稳定哈希：分片（pipeline）与采样（sampling）共用一份实现，
 // 免得两处各写一份 FNV/splitmix 后各自漂移。见 HANDOFF §2.10 那次"低位恒定"事故。
 pub mod hash;
@@ -35,6 +38,8 @@ pub mod icmp;
 // IE 编号与模板定义**，免得"两侧各自定义一次、一起写错还互相验证通过"。
 // 它只依赖 flow/record/feature 的类型，不依赖 pipeline/channel。
 pub mod identification;
+// 隧道内层以太网/IP 头的共享有界视图（VXLAN/Geneve 共用）。
+pub mod inner;
 pub mod ipfix;
 // NetFlow v9 采集侧（RFC 3954）：与 IPFIX 分开，因为它的序号单位是**导出报文**，
 // 复用 IPFIX 的记录级记账会把丢包率算错一个数量级。

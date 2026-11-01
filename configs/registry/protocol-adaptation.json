@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "revision": "2026-11-01.5",
+  "revision": "2026-11-02.1",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -634,10 +634,10 @@
     },
     {
       "id": "V015",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
-      "accepted": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
+      "accepted": true,
       "osi_layer": "L2",
       "osi_sublayer": "L2-over-L3/L4",
       "osi_role": "encapsulation",
@@ -649,11 +649,54 @@
         "L2:Ethernet"
       ],
       "uses_layers": [],
-      "scope": "目录条目，尚未按统一验收逐项审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "目录标注有界解析，逐项实现与样本验收待核对"
+      "scope": "Geneve（RFC 8926）有界解析：外层UDP 6081触发（端口不是身份结论），8字节固定头、仅接受version 0、6位Opt Len（选项区≤252字节、总头≤260字节）、O/C位与关键选项一致性校验、24位VNI（VNI=0单独计数）；选项只保留class/type/关键位/数据长度，不解释厂商语义，保留位按RFC接收侧忽略并计数；内层支持Protocol Type 0x6558透明以太网（最多2层802.1Q/QinQ）与0x0800/0x86DD裸IPv4/IPv6，可见IPv4/IPv6/ARP头；O=1控制报文不解释载荷，未知Protocol Type只显示不猜测；主流水线报文级统计、cythsec-analyze inline/多worker、cythsec-ring-consume接线与独立cythsec-geneve JSONL事件；内层IP不递归建流；不解析GPE/GBP或厂商选项值、不推断VTEP/VNI租户/对端在线/拓扑、不做主动探测/解封装、不支持pcapng/raw-IP linktype、不在非6081端口做结构发现",
+      "code": [
+        "dataplane/traffic-engine/src/inner.rs",
+        "dataplane/traffic-engine/src/geneve.rs",
+        "dataplane/traffic-engine/src/geneve/tests.rs",
+        "dataplane/traffic-engine/src/bin/geneve_collect.rs",
+        "dataplane/traffic-engine/src/pipeline.rs",
+        "dataplane/traffic-engine/src/bin/analyze.rs",
+        "dataplane/traffic-engine/src/bin/ring_consume.rs",
+        "dataplane/traffic-engine/src/lib.rs",
+        "dataplane/traffic-engine/src/vxlan.rs",
+        "dataplane/traffic-engine/src/vxlan/tests.rs",
+        "dataplane/traffic-engine/Cargo.toml"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/geneve/tests.rs#parses_teb_ipv4_without_options",
+        "dataplane/traffic-engine/src/geneve/tests.rs#parses_teb_vlan_and_qinq",
+        "dataplane/traffic-engine/src/geneve/tests.rs#parses_raw_ipv4_and_ipv6",
+        "dataplane/traffic-engine/src/geneve/tests.rs#parses_critical_option_and_c_bit",
+        "dataplane/traffic-engine/src/geneve/tests.rs#control_packet_does_not_interpret_payload",
+        "dataplane/traffic-engine/src/geneve/tests.rs#vni_zero_and_max_are_preserved",
+        "dataplane/traffic-engine/src/geneve/tests.rs#reserved_bits_are_counted_not_rejected",
+        "dataplane/traffic-engine/src/geneve/tests.rs#rejects_short_header_with_stable_code",
+        "dataplane/traffic-engine/src/geneve/tests.rs#rejects_unknown_version",
+        "dataplane/traffic-engine/src/geneve/tests.rs#rejects_truncated_options_in_complete_capture",
+        "dataplane/traffic-engine/src/geneve/tests.rs#capture_truncated_options_keep_header",
+        "dataplane/traffic-engine/src/geneve/tests.rs#rejects_option_overrun",
+        "dataplane/traffic-engine/src/geneve/tests.rs#rejects_critical_mismatch",
+        "dataplane/traffic-engine/src/geneve/tests.rs#rejects_truncated_inner_for_teb",
+        "dataplane/traffic-engine/src/geneve/tests.rs#capture_truncated_inner_is_not_malformed",
+        "dataplane/traffic-engine/src/geneve/tests.rs#rejects_three_vlan_tags",
+        "dataplane/traffic-engine/src/geneve/tests.rs#unknown_protocol_type_is_visible_not_guessed",
+        "dataplane/traffic-engine/src/geneve/tests.rs#arp_inner_is_not_guessed_as_ip",
+        "dataplane/traffic-engine/src/geneve/tests.rs#stats_classify_and_render_contract_fields",
+        "dataplane/traffic-engine/src/geneve/tests.rs#json_line_has_stable_fields_and_nulls",
+        "dataplane/traffic-engine/src/geneve/tests.rs#ports_are_triggers_not_identity",
+        "dataplane/traffic-engine/src/pipeline.rs#geneve_inner_ip_is_not_a_second_flow",
+        "dataplane/traffic-engine/src/pipeline.rs#geneve_stats_are_identical_with_multiple_workers",
+        "scripts/verify/check-geneve.sh",
+        "scripts/verify/check-geneve.py",
+        "docs/planning/protocol-v015-geneve-verification.md"
+      ],
+      "reference": [
+        "scripts/verify/check-geneve.sh",
+        "scripts/verify/check-geneve.py",
+        "docs/planning/protocol-v015-geneve-verification.md"
+      ],
+      "gap": ""
     },
     {
       "id": "V016",

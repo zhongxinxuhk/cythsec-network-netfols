@@ -20,7 +20,11 @@
 //    可以对任意 UDP 载荷调用解析，但只有结构成立才输出事件。
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
+
+use crate::inner as inner_mod;
+pub use crate::inner::{InnerEthernet as VxlanInner, InnerIp};
+use crate::inner::{ETHERTYPE_ARP, ETHERTYPE_IPV4, ETHERTYPE_IPV6};
 
 /// IANA 分配的 VXLAN UDP 目的端口（RFC 7348）。
 pub const UDP_PORT: u16 = 4789;
@@ -29,22 +33,6 @@ pub const UDP_PORT_LEGACY: u16 = 8472;
 
 /// VXLAN 固定头长度：flags(1) + reserved(3) + VNI(3) + reserved(1)。
 pub const VXLAN_HEADER_LEN: usize = 8;
-
-const ETH_HEADER_LEN: usize = 14;
-const VLAN_TAG_LEN: usize = 4;
-/// 与 `channel::decode` 保持一致：QinQ 是现实上限。
-const MAX_VLAN_TAGS: usize = 2;
-const ETHERTYPE_IPV4: u16 = 0x0800;
-const ETHERTYPE_IPV6: u16 = 0x86DD;
-const ETHERTYPE_ARP: u16 = 0x0806;
-
-fn be16(b: &[u8], off: usize) -> u16 {
-    u16::from_be_bytes([b[off], b[off + 1]])
-}
-
-fn is_vlan(ether_type: u16) -> bool {
-    matches!(ether_type, 0x8100 | 0x88A8 | 0x9100)
-}
 
 /// 是否为主流水线应当尝试 VXLAN 解析的 UDP 端口。
 ///
@@ -107,65 +95,6 @@ impl fmt::Display for VxlanError {
 }
 
 impl std::error::Error for VxlanError {}
-
-/// 内层 IPv4/IPv6 头的可见部分。
-///
-/// 地址只在版本/长度自洽时给出；否则为 `None`，**不拿 0.0.0.0/:: 兜底**。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InnerIp {
-    pub version: u8,
-    pub source: Option<IpAddr>,
-    pub destination: Option<IpAddr>,
-    pub protocol: Option<u8>,
-    /// IPv4 total length 或 IPv6 40 + payload length；只按已捕获头字段读。
-    pub declared_len: Option<u16>,
-    /// IPv4 IHL 或 IPv6 固定 40。
-    pub header_len: Option<usize>,
-    /// 版本、头长与最小头字节都自洽。
-    pub complete_header: bool,
-}
-
-/// 内层以太网帧的可见头。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VxlanInner {
-    pub destination: [u8; 6],
-    pub source: [u8; 6],
-    /// 从外到内的 VLAN ID（最多两层）。空表示未打标。
-    pub vlan_ids: Vec<u16>,
-    pub ether_type: u16,
-    /// 从内层以太头起点到内层载荷起点的字节数（含 VLAN 标签）。
-    pub header_len: usize,
-    /// 内层载荷实际捕获到的字节数。
-    pub captured_len: usize,
-    pub ip: Option<InnerIp>,
-}
-
-impl VxlanInner {
-    pub fn destination_mac(&self) -> String {
-        format_mac(self.destination)
-    }
-
-    pub fn source_mac(&self) -> String {
-        format_mac(self.source)
-    }
-
-    pub fn ether_type_name(&self) -> &'static str {
-        match self.ether_type {
-            ETHERTYPE_IPV4 => "ipv4",
-            ETHERTYPE_IPV6 => "ipv6",
-            ETHERTYPE_ARP => "arp",
-            _ => "unknown",
-        }
-    }
-
-    /// 内层 IP 头是否完整；非 IP 内层只要以太头成立就算完整。
-    pub fn ip_header_complete(&self) -> bool {
-        match &self.ip {
-            Some(ip) => ip.complete_header,
-            None => true,
-        }
-    }
-}
 
 /// 一条结构成立的 VXLAN 报文。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,120 +252,14 @@ pub fn parse_with_complete(payload: &[u8], complete: bool) -> Result<VxlanFrame,
 }
 
 fn parse_inner(p: &[u8]) -> Result<VxlanInner, VxlanError> {
-    if p.len() < ETH_HEADER_LEN {
-        return Err(VxlanError::TruncatedInner {
-            need: ETH_HEADER_LEN,
-            got: p.len(),
-        });
-    }
-    let mut destination = [0u8; 6];
-    destination.copy_from_slice(&p[0..6]);
-    let mut source = [0u8; 6];
-    source.copy_from_slice(&p[6..12]);
-
-    let mut cursor = 12usize; // 当前 EtherType 字段的偏移
-    let mut ether_type = be16(p, cursor);
-    let mut vlan_ids = Vec::new();
-    while is_vlan(ether_type) {
-        if vlan_ids.len() >= MAX_VLAN_TAGS {
-            return Err(VxlanError::TooManyVlanTags {
-                limit: MAX_VLAN_TAGS,
-            });
+    match inner_mod::parse_ethernet(p) {
+        Ok(inner) => Ok(inner),
+        Err(inner_mod::InnerError::TruncatedEthernet { need, got }) => {
+            Err(VxlanError::TruncatedInner { need, got })
         }
-        // TPID(2) + TCI(2) + 内层 EtherType(2)
-        let need = cursor + 6;
-        if p.len() < need {
-            return Err(VxlanError::TruncatedInner { need, got: p.len() });
+        Err(inner_mod::InnerError::TooManyVlanTags { limit }) => {
+            Err(VxlanError::TooManyVlanTags { limit })
         }
-        vlan_ids.push(be16(p, cursor + 2) & 0x0fff);
-        ether_type = be16(p, cursor + 4);
-        cursor += VLAN_TAG_LEN;
-    }
-    let header_len = cursor + 2;
-    let payload = p.get(header_len..).unwrap_or(&[]);
-    let ip = match ether_type {
-        ETHERTYPE_IPV4 => Some(parse_inner_ipv4(payload)),
-        ETHERTYPE_IPV6 => Some(parse_inner_ipv6(payload)),
-        _ => None,
-    };
-    Ok(VxlanInner {
-        destination,
-        source,
-        vlan_ids,
-        ether_type,
-        header_len,
-        captured_len: payload.len(),
-        ip,
-    })
-}
-
-fn parse_inner_ipv4(p: &[u8]) -> InnerIp {
-    let version = p.first().map(|b| b >> 4).unwrap_or(0);
-    if p.len() < 20 || version != 4 {
-        return InnerIp {
-            version,
-            source: None,
-            destination: None,
-            protocol: None,
-            declared_len: None,
-            header_len: None,
-            complete_header: false,
-        };
-    }
-    let ihl = usize::from(p[0] & 0x0f) * 4;
-    let total = be16(p, 2);
-    if ihl < 20 || usize::from(total) < ihl || p.len() < ihl {
-        return InnerIp {
-            version,
-            source: None,
-            destination: None,
-            protocol: None,
-            declared_len: Some(total),
-            header_len: Some(ihl),
-            complete_header: false,
-        };
-    }
-    let mut src = [0u8; 4];
-    src.copy_from_slice(&p[12..16]);
-    let mut dst = [0u8; 4];
-    dst.copy_from_slice(&p[16..20]);
-    InnerIp {
-        version,
-        source: Some(IpAddr::V4(Ipv4Addr::from(src))),
-        destination: Some(IpAddr::V4(Ipv4Addr::from(dst))),
-        protocol: Some(p[9]),
-        declared_len: Some(total),
-        header_len: Some(ihl),
-        complete_header: true,
-    }
-}
-
-fn parse_inner_ipv6(p: &[u8]) -> InnerIp {
-    let version = p.first().map(|b| b >> 4).unwrap_or(0);
-    if p.len() < 40 || version != 6 {
-        return InnerIp {
-            version,
-            source: None,
-            destination: None,
-            protocol: None,
-            declared_len: None,
-            header_len: None,
-            complete_header: false,
-        };
-    }
-    let mut src = [0u8; 16];
-    src.copy_from_slice(&p[8..24]);
-    let mut dst = [0u8; 16];
-    dst.copy_from_slice(&p[24..40]);
-    let payload_len = be16(p, 4);
-    InnerIp {
-        version,
-        source: Some(IpAddr::V6(Ipv6Addr::from(src))),
-        destination: Some(IpAddr::V6(Ipv6Addr::from(dst))),
-        protocol: Some(p[6]),
-        declared_len: Some(40u16.saturating_add(payload_len)),
-        header_len: Some(40),
-        complete_header: true,
     }
 }
 
@@ -533,13 +356,6 @@ impl VxlanStats {
             self.too_many_vlans,
         )
     }
-}
-
-fn format_mac(mac: [u8; 6]) -> String {
-    format!(
-        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-    )
 }
 
 fn json_string_opt(v: Option<String>) -> String {

@@ -1,7 +1,7 @@
 <!-- GENERATED: configs/registry/protocol-adaptation.json; gen-protocol-adaptation.py -->
 # 协议适配 OSI 分层视图
 
-修订：2026-11-01.5。共292行；一行只有一个主层，跨层封装和 non-OSI 单独列出，不重复计入七层。
+修订：2026-11-02.1。共292行；一行只有一个主层，跨层封装和 non-OSI 单独列出，不重复计入七层。
 
 口径：`osi_layer` 是主层，`osi_sublayer` 记录子层/承载关系，`osi_role` 记录协议角色，`encap_chain` 只列可见封装路径，不表示已解析内层或已建立内层流。目录原有 `layer` 轴保留。
 
@@ -12,7 +12,7 @@
 | 主层 | 条目 | 实现审查 | 完整适配 | 口径 |
 | --- | ---: | ---: | ---: | --- |
 | L1 物理层 | 0 | 0 | 0 | 物理层只做链路/介质/速率元数据，不从 pcap 伪造 PHY 解析 |
-| L2 数据链路层 | 14 | 5 | 2 | 帧、VLAN、ARP、PPP/EAP 与 L2 隧道 |
+| L2 数据链路层 | 14 | 6 | 3 | 帧、VLAN、ARP、PPP/EAP 与 L2 隧道 |
 | L3 网络层 | 18 | 7 | 4 | IPv4/IPv6、分片、ICMP、IPsec/GRE 与 L3 隧道 |
 | L4 传输层 | 4 | 2 | 0 | TCP/UDP/QUIC |
 | L5 会话层 | 20 | 3 | 0 | TLS/DTLS/SSH/IKE/SOCKS/STUN 等会话与协商 |
@@ -20,7 +20,7 @@
 | L7 应用层 | 43 | 13 | 0 | 应用协议、身份认证与代理控制 |
 | 跨层隧道/代理 | 72 | 0 | 0 | VPN/隧道/代理链；不递归创建内层流 |
 | non-OSI 产品/变换/密码 | 121 | 0 | 0 | 产品、混淆变换、密码原语；只做上下文证据 |
-| 合计 | 292 | 30 | 6 | 跨层和 non-OSI 不进入七层覆盖率分子 |
+| 合计 | 292 | 31 | 7 | 跨层和 non-OSI 不进入七层覆盖率分子 |
 
 跨层和 non-OSI 不进入七层覆盖率分子；L1/L6 当前没有独立主层条目。
 
@@ -41,7 +41,7 @@
 | ☐ | [V012](V012.md) | L2TPv3 | 封装 | L2-over-L3 | L2:Ethernet → L3:IP → L2:L2TPv3 | ☐ | ☐ | ☐ |
 | ☐ | [V013](V013.md) | EtherIP | 封装 | L2-over-L3 | L2:Ethernet → L3:IP → L2:EtherIP | ☐ | ☐ | ☐ |
 | ☑ | [V014](V014.md) | VXLAN | 封装 | L2-over-L3/L4 | L2:Ethernet → L3:IP → L4:UDP → L2:VXLAN → L2:Ethernet | ☑ | ☑ | ☑ |
-| ☐ | [V015](V015.md) | Geneve | 封装 | L2-over-L3/L4 | L2:Ethernet → L3:IP → L4:UDP → L2:Geneve → L2:Ethernet | ☐ | ☐ | ☐ |
+| ☑ | [V015](V015.md) | Geneve | 封装 | L2-over-L3/L4 | L2:Ethernet → L3:IP → L4:UDP → L2:Geneve → L2:Ethernet | ☑ | ☑ | ☑ |
 | ☐ | [A013](A013.md) | PPP | 封装 | L2 | L2:PPP | ☐ | ☐ | ☐ |
 | ☐ | [A014](A014.md) | EAP | 控制 | L2 | L2:EAP | ☐ | ☐ | ☐ |
 | ☐ | [X005](X005.md) | L2TPv3 UDP | 封装 | L2-over-L3 | L2:Ethernet → L3:IP → L4:UDP → L2:L2TPv3 | ☐ | ☐ | ☐ |
