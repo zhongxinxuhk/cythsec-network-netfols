@@ -42,6 +42,7 @@ use crate::reassembly::ip::{IpFragConfig, IpFragStats, IpReassembler, PushOutcom
 use crate::record::{AppInfo, FlowRecord, TcpSessionStats, RECORD_SCHEMA_VERSION};
 use crate::session::{ManagerStats, SessionConfig, SessionManager};
 use crate::tcp::{Side, TcpConfig, TcpObservation};
+use crate::vxlan::{self, VxlanStats};
 
 /// 流水线参数。
 #[derive(Debug, Clone)]
@@ -126,6 +127,9 @@ pub struct AnalyzeStats {
     /// IPv4/IPv6 分片重组统计（B008）。完整数据报才进入流表；缺片/重叠/
     /// 截断/超预算只在这里计数，不会伪造内层流。
     pub ipfrag: IpFragStats,
+    /// VXLAN 报文级统计（V014）。只展开外层 UDP + VXLAN 头/可见内层以太网头，
+    /// 内层 IP 不回到流水线，不产生第二条 FlowRecord。
+    pub vxlan: VxlanStats,
     /// 会话级 TCP 统计（`CYS-TRF-015`）。走**统计行**这个已有出口而不是记录字段：
     /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
     /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
@@ -663,6 +667,35 @@ fn note_gre_frame(stats: &mut GreStats, d: &DecodedFrame, frame: &[u8], capture_
     }
 }
 
+/// 当解码成功且外层是 VXLAN 的 UDP 端口时，展开报文级统计。
+///
+/// 端口只是触发条件，结构判定仍由 `vxlan::parse_with_complete` 完成；内层
+/// 以太网/IP 头只记录可见字段，**不**把内层 IP 塞回流水线。
+fn note_vxlan_frame(
+    stats: &mut VxlanStats,
+    d: &DecodedFrame,
+    frame: &[u8],
+    capture_truncated: bool,
+) {
+    if d.key.proto.number() != 17
+        || (!vxlan::is_vxlan_port(d.key.src_port) && !vxlan::is_vxlan_port(d.key.dst_port))
+    {
+        return;
+    }
+    let Some(payload) = l4_payload(frame, d) else {
+        stats.record_error(vxlan::VxlanError::TruncatedHeader { need: 8, got: 0 });
+        return;
+    };
+    let complete = !capture_truncated && !payload.is_truncated();
+    match vxlan::parse_with_complete(payload.bytes, complete) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated || payload.is_truncated();
+            stats.observe(&f);
+        }
+        Err(e) => stats.record_error(e),
+    }
+}
+
 /// 解码一条 pcap 记录，必要时先做 IP 分片重组。
 ///
 /// 返回 `None` 表示这条记录已被分片表吸收/拒绝，不能进入流表。这里把
@@ -693,6 +726,7 @@ fn decode_record(
             stats.packets_decoded += 1;
             note_icmp_frame(&mut stats.icmp, &decoded, &d.frame, false);
             note_gre_frame(&mut stats.gre, &decoded, &d.frame, false);
+            note_vxlan_frame(&mut stats.vxlan, &decoded, &d.frame, false);
             Some(DecodedPacket {
                 data: d.frame,
                 decoded,
@@ -712,6 +746,7 @@ fn decode_record(
             stats.packets_decoded += 1;
             note_icmp_frame(&mut stats.icmp, &decoded, &rec.data, truncated);
             note_gre_frame(&mut stats.gre, &decoded, &rec.data, truncated);
+            note_vxlan_frame(&mut stats.vxlan, &decoded, &rec.data, truncated);
             Some(DecodedPacket {
                 data: rec.data,
                 decoded,
@@ -1090,6 +1125,33 @@ mod tests {
         gre.extend_from_slice(&inner_src);
         gre.extend_from_slice(&inner_dst);
         l3_frame([192, 0, 2, 1], [192, 0, 2, 2], 47, &gre)
+    }
+
+    /// 一条外层 IPv4/UDP 4789 的 VXLAN 帧，内层是 IPv4/ICMP 头。
+    ///
+    /// 三个内层地址由调用方给，用来证明“不同内层 IP 仍只有一条外层流”。
+    fn vxlan_v4(vni: u32, inner_src: [u8; 4], inner_dst: [u8; 4]) -> Vec<u8> {
+        let mut inner = vec![0u8; 12]; // 内层 MAC
+        inner.extend_from_slice(&0x0800u16.to_be_bytes());
+        inner.push(0x45);
+        inner.push(0);
+        inner.extend_from_slice(&28u16.to_be_bytes()); // 20 + 8
+        inner.extend_from_slice(&[0, 0, 0x40, 0, 64, 1, 0, 0]);
+        inner.extend_from_slice(&inner_src);
+        inner.extend_from_slice(&inner_dst);
+        inner.extend_from_slice(&[8, 0, 0, 0, 0, 1, 0, 1]); // ICMP echo
+        let mut payload = vec![0x08, 0, 0, 0];
+        payload.extend_from_slice(&vni.to_be_bytes()[1..]);
+        payload.push(0);
+        payload.extend_from_slice(&inner);
+        udp_frame([192, 0, 2, 1], [192, 0, 2, 2], 55555, 4789, &payload)
+    }
+
+    /// 非法 VXLAN：I 位为 0，但外层五元组仍然可解。
+    fn vxlan_missing_i() -> Vec<u8> {
+        let mut payload = vec![0x00, 0, 0, 0, 0, 0, 0, 1];
+        payload.extend_from_slice(&[0u8; 14]); // 一个最短内层以太头，避免被内层截断抢先
+        udp_frame([192, 0, 2, 1], [192, 0, 2, 2], 55555, 4789, &payload)
     }
 
     fn l3_frame(src: [u8; 4], dst: [u8; 4], proto: u8, l4: &[u8]) -> Vec<u8> {
@@ -1655,6 +1717,38 @@ mod tests {
         assert_eq!(stats.gre.protocol_ipv4, 1);
         assert_eq!(stats.gre.inner_complete, 1);
         assert_eq!(stats.icmp.icmp_frames, 0);
+    }
+
+    #[test]
+    fn vxlan_inner_ip_is_not_a_second_flow() {
+        let a = vxlan_v4(100, [10, 0, 0, 1], [10, 0, 0, 2]);
+        let b = vxlan_v4(200, [10, 0, 0, 3], [10, 0, 0, 4]);
+        let bad = vxlan_missing_i();
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[a, b, bad]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert_eq!(records.len(), 1, "VXLAN 内层 IP 不得另造会话");
+        assert_eq!(records[0].key.proto.number(), 17);
+        assert_eq!(records[0].key.dst_port, 4789);
+        assert_eq!(stats.vxlan.vxlan_frames, 2);
+        assert_eq!(stats.vxlan.inner_ipv4, 2);
+        assert_eq!(stats.vxlan.inner_complete, 2);
+        assert_eq!(stats.vxlan.malformed, 1);
+        assert_eq!(stats.vxlan.missing_i_flag, 1);
+        assert_eq!(stats.vxlan.vni_zero, 0);
+    }
+
+    #[test]
+    fn vxlan_stats_are_identical_with_multiple_workers() {
+        let a = vxlan_v4(100, [10, 0, 0, 1], [10, 0, 0, 2]);
+        let b = vxlan_v4(200, [10, 0, 0, 3], [10, 0, 0, 4]);
+        let tcp = tcp_frame([10, 2, 0, 1], [10, 2, 0, 2], 40000, 80, 0x02, &[]);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[a, b, tcp]);
+        let (one, s1) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).unwrap();
+        let (three, s3) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 3).unwrap();
+        assert_eq!(one, three, "worker 数不得改变 FlowRecord");
+        assert_eq!(s1.vxlan, s3.vxlan, "VXLAN 统计必须与 worker 数无关");
+        assert_eq!(s3.vxlan.vxlan_frames, 2);
+        assert_eq!(s3.vxlan.inner_ipv4, 2);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "revision": "2026-11-01.4",
+  "revision": "2026-11-01.5",
   "catalog_revision": "2026-10-26.1",
   "catalog_ids": [
     "V001",
@@ -578,10 +578,10 @@
     },
     {
       "id": "V014",
-      "implemented": false,
-      "local_tested": false,
-      "reference_tested": false,
-      "accepted": false,
+      "implemented": true,
+      "local_tested": true,
+      "reference_tested": true,
+      "accepted": true,
       "osi_layer": "L2",
       "osi_sublayer": "L2-over-L3/L4",
       "osi_role": "encapsulation",
@@ -593,11 +593,44 @@
         "L2:Ethernet"
       ],
       "uses_layers": [],
-      "scope": "目录条目，尚未按统一验收逐项审查",
-      "code": [],
-      "tests": [],
-      "reference": [],
-      "gap": "目录标注有界解析，逐项实现与样本验收待核对"
+      "scope": "VXLAN（RFC 7348）有界解析：外层UDP 4789/8472触发（端口不是身份结论），8字节固定头、I位/基础保留位校验、24位VNI（VNI=0单独计数）、内层以太网（最多2层802.1Q/QinQ）与可见IPv4/IPv6/ARP头；主流水线报文级统计、cythsec-analyze inline/多worker与cythsec-ring-consume接线、独立cythsec-vxlan JSONL事件；内层IP不递归建流；不解析VXLAN-GPE/GBP、不在主流水线对任意UDP端口做结构探测、不推断VTEP/租户/对端在线/拓扑、不做主动探测/解封装、不支持pcapng/raw-IP linktype",
+      "code": [
+        "dataplane/traffic-engine/src/vxlan.rs",
+        "dataplane/traffic-engine/src/vxlan/tests.rs",
+        "dataplane/traffic-engine/src/bin/vxlan_collect.rs",
+        "dataplane/traffic-engine/src/pipeline.rs",
+        "dataplane/traffic-engine/src/bin/analyze.rs",
+        "dataplane/traffic-engine/src/bin/ring_consume.rs",
+        "dataplane/traffic-engine/src/lib.rs",
+        "dataplane/traffic-engine/Cargo.toml"
+      ],
+      "tests": [
+        "dataplane/traffic-engine/src/vxlan/tests.rs#parses_inner_ipv4_and_keeps_vni",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#parses_inner_vlan_and_qinq",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#parses_inner_ipv6",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#parses_inner_arp_without_ip_guess",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#vni_zero_and_max_are_preserved_not_guessed",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#rejects_short_header_with_stable_code",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#rejects_missing_i_flag",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#rejects_reserved_bits_at_each_position",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#rejects_too_many_inner_vlan_tags",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#complete_short_inner_is_an_error_but_capture_short_is_not",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#incomplete_inner_ip_header_is_visible_but_not_complete",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#stats_classify_and_render_contract_fields",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#json_line_has_stable_fields_and_nulls",
+        "dataplane/traffic-engine/src/vxlan/tests.rs#ports_are_triggers_not_identity",
+        "dataplane/traffic-engine/src/pipeline.rs#vxlan_inner_ip_is_not_a_second_flow",
+        "dataplane/traffic-engine/src/pipeline.rs#vxlan_stats_are_identical_with_multiple_workers",
+        "scripts/verify/check-vxlan.sh",
+        "scripts/verify/check-vxlan.py",
+        "docs/planning/protocol-v014-vxlan-verification.md"
+      ],
+      "reference": [
+        "scripts/verify/check-vxlan.sh",
+        "scripts/verify/check-vxlan.py",
+        "docs/planning/protocol-v014-vxlan-verification.md"
+      ],
+      "gap": ""
     },
     {
       "id": "V015",

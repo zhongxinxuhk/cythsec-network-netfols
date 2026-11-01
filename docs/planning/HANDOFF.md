@@ -1,5 +1,7 @@
 # CythSec 接力文档（HANDOFF）
 
+> **2026-11-01 V014 VXLAN 验收**：分支 `feat/v014-vxlan-adaptation`（基线 `main@e95fae9`）完成 RFC 7348 有界解析（4789/8472 触发、I 位/保留位、24 位 VNI、最多 2 层内层 VLAN、可见 IPv4/IPv6/ARP 头）、主流水线/共享环/独立 `cythsec-vxlan` 接线与 14 项模块测试 + 2 项流水线测试；合成语料/tshark 4.6.7 独立对照、7 项反向注入、Linux netns 真实 8 帧 VXLAN 抓包与共享环补充验证通过；并修正 live 门禁对 B008 已重组非首片的旧对账口径（`reassembled_non_initial`）；注册表 V014 已置 `accepted=true`（修订 `2026-11-01.5`，L2 5/2，总计 30/6），完整记录见 [protocol-v014-vxlan-verification.md](protocol-v014-vxlan-verification.md)。
+
 > **2026-11-01 B008 分片重组验收**：分支 `feat/b008-fragmentation-reassembly`（基线 `main@0d57b6d`）完成 IPv4/IPv6 重组、22 项分片单测、4 项流水线测试、tshark 独立重组对照、Linux netns 真实 12 帧分片抓包与共享环补充验证；注册表 B008 已置 `accepted=true`，完整记录见 [protocol-b008-ip-fragmentation-verification.md](protocol-b008-ip-fragmentation-verification.md)。
 
 > **2026-10-26 聚合持续写入增量**：可选磁盘队列、常驻消费者、批次恢复和退避、控制台积压状态；不是 ClickHouse 写入器。最终 lint/build/test 实际退出均 0，前端 48 项、四服务 59 项通过；另修 live 回读计数守恒，普通用户 BPF 5037 帧/15 项通过但无 ICMP 注入；既有裁判例外仍未核验。最新范围和验收见 [INGEST-20261026.md](INGEST-20261026.md)。

@@ -22,7 +22,7 @@
 // 逐流行里也有 `packets=`，若汇总行只写 `ring-consume packets=`，抓取端「取最后一次匹配」
 // 会拿到某条流的 packets 数（实测拿到了 1），而那个数字看起来完全合理，不会引起怀疑。
 //   ring-consume path=<路径> slot_count=<n> slot_size=<n> producer_pid=<n>
-//   ring-consume summary packets=<n> decoded=<n> decode_fail=<n> flows=<n> bytes=<n>
+//   ring-consume summary packets=<n> decoded=<n> decode_fail=<n> flows=<n> bytes=<n> reassembled=<n> reassembled_non_initial=<n>
 //   ring-consume counts truncated=<n> vlan_tagged=<n> ipv6=<n> overrun_skipped=<n>
 //   ring-consume region head=<n> tail=<n> published=<n> consumed=<n> dropped=<n> full_events=<n>
 //   ring-consume decode_fail code=<错误码> count=<n>        （每个错误码一行）
@@ -38,12 +38,37 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use traffic_engine::channel::{decode_frame, Channel, Consumer, LinkLayer, PacketMeta, RegionPerm};
+use traffic_engine::channel::{
+    decode_frame, l4_payload, Channel, Consumer, DecodedFrame, LinkLayer, PacketMeta, RegionPerm,
+};
 use traffic_engine::flow::{Flow, FlowKey};
 use traffic_engine::reassembly::ip::{IpReassembler, PushOutcome};
+use traffic_engine::vxlan::{self, VxlanStats};
 
 const DEFAULT_SLOT_COUNT: u32 = 1024;
 const DEFAULT_SLOT_SIZE: u32 = 2048;
+
+/// 与 pipeline 的 `note_vxlan_frame` 同一口径：外层 UDP 端口触发，结构判定交给
+/// `vxlan::parse_with_complete`；内层 IP 只记录，不回到流表。
+fn note_vxlan(stats: &mut VxlanStats, frame: &[u8], d: &DecodedFrame, capture_truncated: bool) {
+    if d.key.proto.number() != 17
+        || (!vxlan::is_vxlan_port(d.key.src_port) && !vxlan::is_vxlan_port(d.key.dst_port))
+    {
+        return;
+    }
+    let Some(payload) = l4_payload(frame, d) else {
+        stats.record_error(vxlan::VxlanError::TruncatedHeader { need: 8, got: 0 });
+        return;
+    };
+    let complete = !capture_truncated && !payload.is_truncated();
+    match vxlan::parse_with_complete(payload.bytes, complete) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated || payload.is_truncated();
+            stats.observe(&f);
+        }
+        Err(e) => stats.record_error(e),
+    }
+}
 
 fn usage() {
     eprintln!(
@@ -233,6 +258,8 @@ fn main() -> ExitCode {
     let mut ipv6 = 0u64;
     let mut decode_fail: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut ipfrag = IpReassembler::default();
+    let mut vxlan = VxlanStats::default();
+    let mut reassembled_non_initial = 0u64;
 
     let drain_result = consumer.drain(|meta: PacketMeta, data: &[u8]| {
         packets += 1;
@@ -261,9 +288,15 @@ fn main() -> ExitCode {
             }
             PushOutcome::Complete(d) => {
                 reassembled += 1;
+                // 完成的数据报里除首个分片外的帧，单独仍解不出四层头；tshark 的
+                // 逐帧裁判会把它们计为不可解。这里显式记账，供 live 关口做
+                // 「逐帧裁判 = 真实失败 + 已重组非首片」的对账，而不是把已重组
+                // 的非首片误算成解码失败。
+                reassembled_non_initial += d.fragments.saturating_sub(1) as u64;
                 match decode_frame(&d.frame) {
                     Ok(f) => {
                         decoded += 1;
+                        note_vxlan(&mut vxlan, &d.frame, &f, false);
                         let pkt = traffic_engine::flow::Packet {
                             key: f.key,
                             payload_len: f.ip_payload_len,
@@ -284,6 +317,7 @@ fn main() -> ExitCode {
             PushOutcome::NotFragment => match decode_frame(data) {
                 Ok(f) => {
                     decoded += 1;
+                    note_vxlan(&mut vxlan, data, &f, meta.is_truncated());
                     // 负载长度用 ip_payload_len（从 IP 头长度字段算出），而不是 wirelen：
                     // 后者含链路层与网络层头，且截断捕获下偏小。两者混用会让流的字节统计
                     // 在两份输出间不可比。
@@ -325,13 +359,14 @@ fn main() -> ExitCode {
     // `packets` 是消费到的抓包帧数，`decoded` 是成功解码的逻辑包数。
     // 两者不能相减当失败数：一个完整重组数据报由多帧组成，只产生一个逻辑包。
     println!(
-        "ring-consume summary packets={} decoded={} decode_fail={} flows={} bytes={} reassembled={}",
+        "ring-consume summary packets={} decoded={} decode_fail={} flows={} bytes={} reassembled={} reassembled_non_initial={}",
         packets,
         decoded,
         fail_total,
         flows.len(),
         bytes,
-        reassembled
+        reassembled,
+        reassembled_non_initial
     );
     println!(
         "ring-consume counts truncated={} vlan_tagged={} ipv6={} overrun_skipped={}",
@@ -351,6 +386,7 @@ fn main() -> ExitCode {
         println!("ring-consume decode_fail code={code} count={count}");
     }
     println!("ring-consume {}", ipfrag.stats().render_line());
+    println!("ring-consume {}", vxlan.render_line());
 
     // 逐流输出。IP:port 的写法对 IPv6 用方括号括起地址，使 `host:port` 的分隔无歧义。
     for flow in flows.values() {
@@ -383,6 +419,7 @@ fn main() -> ExitCode {
         println!("截断捕获      : {truncated}");
         println!("VLAN 标记     : {vlan_tagged}");
         println!("IPv6 报文     : {ipv6}");
+        println!("VXLAN 报文    : {}", vxlan.vxlan_frames);
         println!("落后丢包      : {overrun}");
         println!("通道 head/tail: {} / {}", chan_stats.head, chan_stats.tail);
         println!("通道 consumed : {}", chan_stats.consumed);
