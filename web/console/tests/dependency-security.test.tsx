@@ -59,3 +59,28 @@ it('removes the vulnerable crypto chain and rejects unsupported Node crypto rath
     expect(() => require(builtins.crypto)).toThrow('does not support Node crypto polyfills');
   }
 });
+
+it('keeps audit-sensitive build packages on fixed implementations', () => {
+  const lock = JSON.parse(readFileSync(resolve('package-lock.json'), 'utf8'));
+  const packages = lock.packages;
+  expect(packages['node_modules/@hono/node-server'].version).toBe('2.1.5');
+  expect(packages['node_modules/glob'].version).toBe('14.0.3');
+  expect(packages['node_modules/minimatch-core'].version).toBe('11.0.3');
+  expect(packages['node_modules/rimraf'].version).toBe('6.1.3');
+  expect(packages['node_modules/test-exclude'].version).toBe('8.0.0');
+  expect(packages['node_modules/deepmerge'].link).toBe(true);
+  expect(packages['node_modules/minimatch'].link).toBe(true);
+});
+
+it('deepmerge rejects prototype keys while minimatch keeps both callable and v11 APIs', () => {
+  const deepmerge = require('deepmerge');
+  const poisoned = JSON.parse('{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}}}');
+  deepmerge({}, poisoned);
+  expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+
+  const minimatch = require('minimatch');
+  expect(typeof minimatch).toBe('function');
+  expect(minimatch('flow.jsonl', '*.jsonl')).toBe(true);
+  expect(minimatch.minimatch('flow.jsonl', '*.jsonl')).toBe(true);
+  expect(typeof minimatch.Minimatch).toBe('function');
+});
