@@ -77,3 +77,12 @@ tshark 独立核对与 3 项反向注入见
 [ARP验收记录](protocol-b004-arp-verification.md)。NDP、ARP 缓存/冲突推断、
 真实设备语料、Linux 矩阵与 PCAPNG/SLL 仍未完成，故 `reference_tested=true`、
 `accepted=false`。
+
+B011 ICMPv4、B012 ICMPv6 与 V009 GRE/mGRE 已于 2026-11-01 补齐基础协议识别：
+`icmp.rs` 解 type/code、echo 标识、错误报文内嵌原始 IP、NDP 固定字段与选项
+Type/Length；`gre.rs` 解 GREv0 的 C/R/K/S、SRE 源路由与 PPTP 增强 GREv1，
+内层 IPv4/IPv6/TEB/MPLS/ERSPAN 只标注不递归建流。独立 `cythsec-icmp` /
+`cythsec-gre` 输出报文级 JSONL，主流水线只做报文级计数；tshark 独立核对与
+6 项反向注入见[ICMP/GRE验收记录](protocol-b011-b012-v009-verification.md)。
+NDP 选项内容、GRE checksum/SRE 执行语义、真实 mGRE/ERSPAN 语料、Linux 矩阵与
+PCAPNG/SLL 仍未完成，故 `reference_tested=true`、`accepted=false`。

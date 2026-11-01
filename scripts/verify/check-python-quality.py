@@ -33,6 +33,7 @@ SUPPORT = (
     'scripts/verify/check-smtp.py',
     'scripts/verify/check-ftp.py',
     'scripts/verify/check-arp.py',
+    'scripts/verify/check-icmp-gre.py',
 )
 
 

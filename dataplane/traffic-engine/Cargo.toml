@@ -76,6 +76,18 @@ path = "src/bin/sflow_collect.rs"
 name = "cythsec-arp"
 path = "src/bin/arp_collect.rs"
 
+# ICMPv4/ICMPv6 事件采集器（RFC 792 / RFC 4443 / RFC 4861）：类型/代码/内嵌原始
+# 数据报/NDP 选项，输出报文级 JSONL。不主动探测、不推断主机在线。
+[[bin]]
+name = "cythsec-icmp"
+path = "src/bin/icmp_collect.rs"
+
+# GRE/PPTP GRE 事件采集器（RFC 2784 / RFC 2890 / RFC 2637）：版本、可选头、
+# 内层协议头，输出报文级 JSONL。不推断 mGRE 拓扑或隧道对端状态。
+[[bin]]
+name = "cythsec-gre"
+path = "src/bin/gre_collect.rs"
+
 [[bin]]
 name = "cythsec-bench"
 path = "src/bin/bench.rs"

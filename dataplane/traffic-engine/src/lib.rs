@@ -22,9 +22,15 @@ pub mod dpi;
 pub mod export;
 pub mod feature;
 pub mod flow;
+// GRE / PPTP GRE 有界解析（RFC 2784 / RFC 2890 / RFC 2637）：基础隧道协议识别，
+// 无端口、不进应用识别；事件由 cythsec-gre 输出，主流水线只做报文级计数。
+pub mod gre;
 // hash 是流键的稳定哈希：分片（pipeline）与采样（sampling）共用一份实现，
 // 免得两处各写一份 FNV/splitmix 后各自漂移。见 HANDOFF §2.10 那次"低位恒定"事故。
 pub mod hash;
+// ICMPv4 / ICMPv6 有界解析（RFC 792 / RFC 4443 / RFC 4861）：基础协议识别，
+// 事件由 cythsec-icmp 输出，主流水线只做报文级计数。
+pub mod icmp;
 // ipfix 是 IPFIX 线路格式与采集侧（M11 / CYS-TRF-051/054）：**编码器与采集器共用同一份
 // IE 编号与模板定义**，免得"两侧各自定义一次、一起写错还互相验证通过"。
 // 它只依赖 flow/record/feature 的类型，不依赖 pipeline/channel。
