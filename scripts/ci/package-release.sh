@@ -80,7 +80,8 @@ cargo build --offline --release --workspace
 mkdir -p "$STAGE/rust/bin"
 rust_bins=(
   traffic-engine dump-abi ring-consume cythsec-analyze cythsec-ipfix-collect
-  cythsec-netflow9-collect cythsec-sflow-collect cythsec-arp cythsec-bench cythsec-dump-ddl
+  cythsec-netflow9-collect cythsec-sflow-collect cythsec-arp cythsec-icmp cythsec-gre \
+  cythsec-bench cythsec-dump-ddl
   cythsec-identify cythsec-observe
 )
 for bin in "${rust_bins[@]}"; do

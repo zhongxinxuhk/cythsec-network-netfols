@@ -87,3 +87,10 @@ B004 ARP 已实现以太网（最多两层 802.1Q/QinQ）ARP/RARP 有界解析�
 主流水线只做帧级统计，详细字段走独立 `cythsec-arp` JSONL；不主动探测、不推断
 邻居缓存/在线状态。NDP、PCAPNG/SLL、真实设备语料与 Linux 矩阵仍未完成，
 完整适配保持未勾选。
+
+B011/B012 ICMPv4/ICMPv6 与 V009 GRE/mGRE 的当前能力边界：`icmp.rs` 只解公共头、
+echo 标识、错误报文内嵌原始 IP 头与 NDP 固定字段/选项 Type-Length，不校验 checksum；
+`gre.rs` 只解 GREv0/v1 头与内层协议头，不校验 checksum、不执行 SRE 源路由、不把
+内层 IP 拆成新流；独立采集器输出报文级 JSONL，主流水线只做统计。范围、tshark
+对照与未完成项见[ICMP/GRE验收记录](../planning/protocol-b011-b012-v009-verification.md)。
+完整适配未勾选，不因“协议号能识别”或单包结构成立而升级。

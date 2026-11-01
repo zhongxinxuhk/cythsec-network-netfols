@@ -116,10 +116,12 @@ jobs:
           target/release/cythsec-observe --help
           target/release/cythsec-dump-ddl --help
           target/release/cythsec-arp --help
+          target/release/cythsec-icmp --help
+          target/release/cythsec-gre --help
           target/release/dump-abi > build/ci-rust/abi.txt
           mkdir -p build/ci-rust/package
           cp VERSION Cargo.lock build/ci-rust/package/
-          for bin in traffic-engine cythsec-analyze cythsec-ipfix-collect cythsec-netflow9-collect cythsec-sflow-collect cythsec-arp cythsec-bench cythsec-dump-ddl cythsec-identify cythsec-observe dump-abi ring-consume; do
+          for bin in traffic-engine cythsec-analyze cythsec-ipfix-collect cythsec-netflow9-collect cythsec-sflow-collect cythsec-arp cythsec-icmp cythsec-gre cythsec-bench cythsec-dump-ddl cythsec-identify cythsec-observe dump-abi ring-consume; do
             cp "target/release/$bin" build/ci-rust/package/
           done
           tar -czf "build/ci-rust/rust-${{ runner.os }}-${{ runner.arch }}.tar.gz" -C build/ci-rust/package .

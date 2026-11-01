@@ -389,6 +389,10 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
     // ARP 没有五元组，因此它只能走统计行，不能混进 FlowRecord。字段名是关口契约，
     // 改名必须同时改 scripts/verify/check-arp.py。
     let _ = writeln!(err, "[cythsec-analyze] {}", stats.arp.render_line());
+    // ICMP/GRE 都有五元组（或外层五元组），会进流表；类型/代码与内层协议只走统计行，
+    // 不伪造额外 FlowRecord。字段名是关口契约，改名必须同时改 check-icmp-gre.py。
+    let _ = writeln!(err, "[cythsec-analyze] {}", stats.icmp.render_line());
+    let _ = writeln!(err, "[cythsec-analyze] {}", stats.gre.render_line());
     let apps: Vec<String> = stats
         .app_outcomes
         .iter()

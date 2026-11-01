@@ -33,6 +33,8 @@ use crate::channel::{decode_frame, l4_payload, tcp_flags, tcp_seq_ack, DecodedFr
 use crate::dpi::{self, DpiPolicy, Outcome};
 use crate::feature::{FeatureExtractor, FlowSample};
 use crate::flow::{FlowKey, Packet};
+use crate::gre::{self, GreStats};
+use crate::icmp::{self, IcmpFamily, IcmpStats};
 use crate::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
 use crate::record::{AppInfo, FlowRecord, TcpSessionStats, RECORD_SCHEMA_VERSION};
 use crate::session::{ManagerStats, SessionConfig, SessionManager};
@@ -112,6 +114,12 @@ pub struct AnalyzeStats {
     /// ARP/RARP 帧级统计（B004）。ARP 没有 IP 五元组，不产生 `FlowRecord`；
     /// 这里只记录“看到并解析了什么”，不从 reply 推断主机在线或地址归属。
     pub arp: ArpStats,
+    /// ICMPv4/ICMPv6 报文级统计（B011/B012）。ICMP 有五元组、会进流表，
+    /// 类型/代码/内嵌原始数据报只在统计行与独立采集器里展开。
+    pub icmp: IcmpStats,
+    /// GRE/PPTP GRE 报文级统计（V009）。内层 IP 不会被当成第二条流：
+    /// 单包可见的只是一个封装头，拆开内层会凭空制造会话。
+    pub gre: GreStats,
     /// 会话级 TCP 统计（`CYS-TRF-015`）。走**统计行**这个已有出口而不是记录字段：
     /// 给 JSONL 加键会改变已实测的落盘字节/记录（gzip 79.4 / 列式 78.5），
     /// 那必须是一个“改契约 + 重测”的专门批次，不能混在这里静默偷掉。
@@ -591,6 +599,47 @@ fn note_arp_frame(
     }
 }
 
+/// 当解码成功且协议号是 ICMP/ICMPv6 时，展开报文级统计。
+///
+/// 不把 type/code 写进 `FlowRecord`：加键会改变已实测的落盘字节与列式契约，
+/// 那必须是一个单独批次；ARP 已经确立了“基础协议走统计行 + 独立事件流”的先例。
+/// 切片按 `ip_payload_len` 截取，抓包少了字节时只解析实有部分并记 capture_truncated。
+fn note_icmp_frame(stats: &mut IcmpStats, d: &DecodedFrame, frame: &[u8], capture_truncated: bool) {
+    let family = match d.key.proto.number() {
+        icmp::IPPROTO_ICMP => IcmpFamily::V4,
+        icmp::IPPROTO_ICMPV6 => IcmpFamily::V6,
+        _ => return,
+    };
+    let want = d.ip_payload_len as usize;
+    let available = frame.get(d.l4_offset..).unwrap_or(&[]);
+    let payload = &available[..available.len().min(want)];
+    match icmp::parse(payload, family) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated || payload.len() < want;
+            stats.observe(&f);
+        }
+        Err(e) => stats.record_error(e),
+    }
+}
+
+/// 当解码成功且协议号是 GRE 时，展开报文级统计。内层协议只记录类型与头字段，
+/// **不**把内层 IP 塞回流水线：一个 GRE 包只能证明封装存在，不能证明内层会话。
+fn note_gre_frame(stats: &mut GreStats, d: &DecodedFrame, frame: &[u8], capture_truncated: bool) {
+    if d.key.proto.number() != gre::IPPROTO_GRE {
+        return;
+    }
+    let want = d.ip_payload_len as usize;
+    let available = frame.get(d.l4_offset..).unwrap_or(&[]);
+    let payload = &available[..available.len().min(want)];
+    match gre::parse(payload) {
+        Ok(mut f) => {
+            f.capture_truncated = capture_truncated || payload.len() < want;
+            stats.observe(&f);
+        }
+        Err(e) => stats.record_error(e),
+    }
+}
+
 /// 就地（单线程）驱动：与历史行为**逐字一致** —— 顺序、会话 id、统计口径都不变。
 fn drive_inline<R: Read>(
     mut reader: PcapReader<R>,
@@ -623,6 +672,8 @@ fn drive_inline<R: Read>(
             }
         };
         stats.packets_decoded += 1;
+        note_icmp_frame(&mut stats.icmp, &decoded, &rec.data, rec.is_truncated());
+        note_gre_frame(&mut stats.gre, &decoded, &rec.data, rec.is_truncated());
         if let Some(sp) = sampler.as_mut() {
             // 传 `canonical()` 键：TCP 两个方向必须得到同一个决定，否则进表的是半条会话。
             if !sp.keep(&decoded.key.canonical()) {
@@ -702,6 +753,8 @@ fn drive_sharded<R: Read>(
             }
         };
         stats.packets_decoded += 1;
+        note_icmp_frame(&mut stats.icmp, &decoded, &rec.data, rec.is_truncated());
+        note_gre_frame(&mut stats.gre, &decoded, &rec.data, rec.is_truncated());
         let key = decoded.key.canonical();
         if let Some(sp) = sampler.as_mut() {
             if !sp.keep(&key) {
@@ -936,6 +989,33 @@ mod tests {
         f.extend_from_slice(&tha);
         f.extend_from_slice(&tpa);
         f
+    }
+
+    /// 一条 IPv4/ICMP 帧；`body` 是公共头之后的字节。
+    fn icmp_v4(
+        src: [u8; 4],
+        dst: [u8; 4],
+        ty: u8,
+        code: u8,
+        rest: [u8; 4],
+        body: &[u8],
+    ) -> Vec<u8> {
+        let mut p = vec![ty, code, 0, 0];
+        p.extend_from_slice(&rest);
+        p.extend_from_slice(body);
+        l3_frame(src, dst, 1, &p)
+    }
+
+    /// 一条 IPv4/GRE 帧，内层带一个 IPv4 头。
+    fn gre_v4(inner_src: [u8; 4], inner_dst: [u8; 4], proto: u8) -> Vec<u8> {
+        let mut gre = vec![0, 0, 0x08, 0x00]; // flags=0, protocol=IPv4
+        gre.push(0x45);
+        gre.push(0x00);
+        gre.extend_from_slice(&40u16.to_be_bytes());
+        gre.extend_from_slice(&[0, 0, 0x40, 0, 64, 6, 0, 0]);
+        gre.extend_from_slice(&inner_src);
+        gre.extend_from_slice(&inner_dst);
+        l3_frame([192, 0, 2, 1], [192, 0, 2, 2], 47, &gre)
     }
 
     fn l3_frame(src: [u8; 4], dst: [u8; 4], proto: u8, l4: &[u8]) -> Vec<u8> {
@@ -1432,6 +1512,72 @@ mod tests {
         assert_eq!(s3.arp.arp_frames, 2);
         assert_eq!(s3.arp.requests, 1);
         assert_eq!(s3.arp.replies, 1);
+    }
+
+    #[test]
+    fn icmp_frames_are_counted_and_keep_one_real_flow() {
+        let req = icmp_v4(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            8,
+            0,
+            [0x12, 0x34, 0, 1],
+            &[0xaa; 8],
+        );
+        let rep = icmp_v4(
+            [10, 0, 0, 2],
+            [10, 0, 0, 1],
+            0,
+            0,
+            [0x12, 0x34, 0, 1],
+            &[0xaa; 8],
+        );
+        let mut embedded = vec![0x45, 0, 0, 28, 0, 0, 0x40, 0, 64, 17, 0, 0];
+        embedded.extend_from_slice(&[10, 0, 0, 1, 10, 0, 0, 2]);
+        let unreachable = icmp_v4([10, 0, 0, 2], [10, 0, 0, 1], 3, 3, [0; 4], &embedded);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[req, rep, unreachable]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert_eq!(records.len(), 1, "三个包属于同一条 ICMP 会话");
+        assert_eq!(records[0].key.proto.number(), 1);
+        assert_eq!(stats.icmp.icmp_frames, 3);
+        assert_eq!(stats.icmp.v4, 3);
+        assert_eq!(stats.icmp.echo_requests, 1);
+        assert_eq!(stats.icmp.echo_replies, 1);
+        assert_eq!(stats.icmp.destination_unreachable, 1);
+        assert_eq!(stats.icmp.errors, 1);
+        assert_eq!(stats.icmp.with_embedded, 1);
+        assert_eq!(stats.icmp.truncated, 0);
+        assert_eq!(stats.gre.gre_frames, 0);
+    }
+
+    #[test]
+    fn gre_inner_ip_is_not_a_second_flow() {
+        let frame = gre_v4([10, 0, 0, 1], [10, 0, 0, 2], 6);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[frame]);
+        let (records, stats) = analyze_pcap(&bytes[..], &AnalyzeOptions::default()).unwrap();
+        assert_eq!(records.len(), 1, "外层 GRE 一条流，内层 IP 不得另造会话");
+        assert_eq!(records[0].key.proto.number(), 47);
+        assert_eq!(stats.gre.gre_frames, 1);
+        assert_eq!(stats.gre.version0, 1);
+        assert_eq!(stats.gre.unkeyed, 1);
+        assert_eq!(stats.gre.protocol_ipv4, 1);
+        assert_eq!(stats.gre.inner_complete, 1);
+        assert_eq!(stats.icmp.icmp_frames, 0);
+    }
+
+    #[test]
+    fn icmp_and_gre_stats_are_identical_with_multiple_workers() {
+        let icmp = icmp_v4([10, 0, 0, 1], [10, 0, 0, 2], 8, 0, [0, 1, 0, 1], &[]);
+        let gre = gre_v4([10, 1, 0, 1], [10, 1, 0, 2], 6);
+        let tcp = tcp_frame([10, 2, 0, 1], [10, 2, 0, 2], 40000, 80, 0x02, &[]);
+        let bytes = tiny_pcap(LINKTYPE_ETHERNET, &[icmp, gre, tcp]);
+        let (one, s1) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 1).unwrap();
+        let (three, s3) = analyze_pcap_with(&bytes[..], &AnalyzeOptions::default(), 3).unwrap();
+        assert_eq!(one, three, "worker 数不得改变 FlowRecord");
+        assert_eq!(s1.icmp, s3.icmp, "ICMP 统计必须与 worker 数无关");
+        assert_eq!(s1.gre, s3.gre, "GRE 统计必须与 worker 数无关");
+        assert_eq!(s3.icmp.icmp_frames, 1);
+        assert_eq!(s3.gre.gre_frames, 1);
     }
 
     #[test]
