@@ -1,4 +1,6 @@
 use super::*;
+use crate::inner::{ETHERTYPE_ARP, ETHERTYPE_IPV4, ETHERTYPE_IPV6};
+use std::net::Ipv4Addr;
 
 fn mac(s: &str) -> [u8; 6] {
     let b: Vec<u8> = s

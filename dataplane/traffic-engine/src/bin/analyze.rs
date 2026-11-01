@@ -399,6 +399,8 @@ fn report(stats: &AnalyzeStats, input: &str, strict: bool, emitted: usize) {
     // VXLAN 报文级统计（V014）：外层 UDP 进流表，VNI/内层头只在这里计数，
     // 字段名是 scripts/verify/check-vxlan.py 的契约。
     let _ = writeln!(err, "[cythsec-analyze] {}", stats.vxlan.render_line());
+    // Geneve 报文级统计（V015）：控制报文不解释载荷，内层头只在这里计数。
+    let _ = writeln!(err, "[cythsec-analyze] {}", stats.geneve.render_line());
     let apps: Vec<String> = stats
         .app_outcomes
         .iter()
