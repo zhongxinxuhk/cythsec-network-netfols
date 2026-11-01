@@ -1,0 +1,4 @@
+The minimatch package is licensed under the BlueOak-1.0.0 license.
+This compatibility shim only re-exports minimatch 11.0.3 and adds a
+callable CommonJS entry point; see the vendored dependency for the
+original implementation and license text.
