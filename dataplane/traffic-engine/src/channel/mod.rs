@@ -28,8 +28,8 @@ mod tests;
 
 pub use consumer::{ConsumeError, Consumer, ConsumerStats, PacketMeta};
 pub use decode::{
-    decode_flow_key, decode_frame, l4_payload, tcp_flags, tcp_seq_ack, DecodeError, DecodeStage,
-    DecodedFrame, L3Proto, L4Payload,
+    decode_flow_key, decode_frame, decode_frame_with_link, l4_payload, tcp_flags, tcp_seq_ack,
+    DecodeError, DecodeStage, DecodedFrame, L3Proto, L4Payload, LinkLayer,
 };
 pub use region::{AttachError, Channel, ChannelStats, RegionPerm};
 

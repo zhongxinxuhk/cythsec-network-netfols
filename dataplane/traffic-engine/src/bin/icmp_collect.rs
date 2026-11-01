@@ -4,15 +4,15 @@
 // JSONL**，用来回答“这条流里的 ICMP 到底是什么类型/代码”。采集器只读 Pcap，
 // 不发探测、不根据 echo reply 推断主机在线或路径可达。
 //
-// Pcap 只接受以太网链路（LINKTYPE_ETHERNET）。Linux cooked capture / raw IP /
-// pcapng 不做猜测：转换方式由调用方决定。
+// Pcap 接受 Ethernet 与 Linux cooked capture（SLL/SLL2）。raw IP、pcapng
+// 不做猜测：转换方式由调用方决定。
 
 use std::io::{self, BufReader, BufWriter, Write};
 use std::process::ExitCode;
 
-use traffic_engine::channel::decode_frame;
+use traffic_engine::channel::{decode_frame_with_link, LinkLayer};
 use traffic_engine::icmp::{self, IcmpFamily, IcmpStats};
-use traffic_engine::pcapfile::{PcapReader, LINKTYPE_ETHERNET};
+use traffic_engine::pcapfile::PcapReader;
 
 const USAGE: &str = "\
 cythsec-icmp —— ICMPv4/ICMPv6 有界事件采集器（RFC 792 / RFC 4443 / RFC 4861）
@@ -96,13 +96,13 @@ fn run(args: &Args) -> Result<(), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("打开 {path}: {e}"))?;
     let mut reader =
         PcapReader::new(BufReader::new(file)).map_err(|e| format!("读 pcap 头: {e}"))?;
-    if reader.linktype() != LINKTYPE_ETHERNET {
-        return Err(format!(
-            "只支持以太网链路的 pcap（当前 linktype={} {}）",
+    let link = LinkLayer::from_linktype(reader.linktype()).ok_or_else(|| {
+        format!(
+            "只支持 Ethernet/Linux SLL/SLL2 链路（当前 linktype={} {}）",
             reader.linktype(),
             reader.header().linktype_name()
-        ));
-    }
+        )
+    })?;
 
     let mut out: Box<dyn Write> = match args.output.as_deref() {
         None | Some("-") => Box::new(BufWriter::new(io::stdout())),
@@ -120,7 +120,7 @@ fn run(args: &Args) -> Result<(), String> {
         .map_err(|e| format!("读 pcap 记录: {e}"))?
     {
         frames += 1;
-        let d = match decode_frame(&rec.data) {
+        let d = match decode_frame_with_link(&rec.data, link) {
             Ok(d) => d,
             Err(_) => {
                 decode_errors += 1;
@@ -138,7 +138,12 @@ fn run(args: &Args) -> Result<(), String> {
         let want = d.ip_payload_len as usize;
         let available = rec.data.get(d.l4_offset..).unwrap_or(&[]);
         let payload = &available[..available.len().min(want)];
-        match icmp::parse(payload, family) {
+        let context = icmp::ChecksumContext {
+            source: d.key.src_ip,
+            destination: d.key.dst_ip,
+            complete: !rec.is_truncated() && payload.len() == want,
+        };
+        match icmp::parse_with_context(payload, family, Some(context)) {
             Ok(mut f) => {
                 f.capture_truncated = rec.is_truncated() || payload.len() < want;
                 stats.observe(&f);

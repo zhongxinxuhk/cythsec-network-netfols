@@ -26,6 +26,10 @@ use crate::reassembly::tcp::TcpFlags;
 
 /// 以太网头部长度（不含 VLAN 标签）。
 const ETH_HEADER_LEN: usize = 14;
+/// Linux cooked capture v1 头：16 字节，协议号在最后 2 字节。
+const SLL_HEADER_LEN: usize = 16;
+/// Linux cooked capture v2 头：20 字节，协议号在最前 2 字节。
+const SLL2_HEADER_LEN: usize = 20;
 /// 单个 802.1Q 标签的长度：2 字节 TCI + 2 字节内层 EtherType。
 const VLAN_TAG_LEN: usize = 4;
 /// 支持的最大 VLAN 标签层数。QinQ（0x88A8 外 + 0x8100 内）是现实上限，
@@ -55,6 +59,43 @@ const IPPROTO_FRAGMENT: u8 = 44;
 /// 扩展头是可串联的，恶意或损坏的报文可以构造出无限链。上限的作用是让「解析不收敛」
 /// 表现为一个明确的错误码，而不是一次挂起或越界读。
 const MAX_IPV6_EXT_HEADERS: u8 = 8;
+
+/// 链路层封装。只接受明确列出的三种；raw IP 等其余 linktype 由调用方拒绝，
+/// 不在这里猜“大概是以太网”。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkLayer {
+    Ethernet,
+    LinuxSll,
+    LinuxSll2,
+}
+
+impl LinkLayer {
+    /// 从 pcap linktype 映射。返回 `None` 表示本解码器不支持该链路层。
+    pub fn from_linktype(linktype: u32) -> Option<Self> {
+        match linktype {
+            crate::pcapfile::LINKTYPE_ETHERNET => Some(Self::Ethernet),
+            crate::pcapfile::LINKTYPE_LINUX_SLL => Some(Self::LinuxSll),
+            crate::pcapfile::LINKTYPE_LINUX_SLL2 => Some(Self::LinuxSll2),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ethernet => "ethernet",
+            Self::LinuxSll => "linux-sll",
+            Self::LinuxSll2 => "linux-sll2",
+        }
+    }
+
+    pub fn header_len(self) -> usize {
+        match self {
+            Self::Ethernet => ETH_HEADER_LEN,
+            Self::LinuxSll => SLL_HEADER_LEN,
+            Self::LinuxSll2 => SLL2_HEADER_LEN,
+        }
+    }
+}
 
 /// 三层协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +129,7 @@ impl L3Proto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeStage {
     Ethernet,
+    Link,
     Vlan,
     Ip,
     Ipv6Extension,
@@ -98,6 +140,7 @@ impl DecodeStage {
     pub fn as_str(self) -> &'static str {
         match self {
             DecodeStage::Ethernet => "ethernet",
+            DecodeStage::Link => "link",
             DecodeStage::Vlan => "vlan",
             DecodeStage::Ip => "ip",
             DecodeStage::Ipv6Extension => "ipv6-ext",
@@ -302,36 +345,85 @@ pub fn l4_payload<'a>(frame: &'a [u8], d: &DecodedFrame) -> Option<L4Payload<'a>
 
 /// 解码一帧，得到五元组及其附属信息。
 pub fn decode_frame(frame: &[u8]) -> Result<DecodedFrame, DecodeError> {
-    // ---- 以太头 ----
-    if frame.len() < ETH_HEADER_LEN {
-        return Err(DecodeError::Truncated {
-            stage: DecodeStage::Ethernet,
-            need: ETH_HEADER_LEN,
-            got: frame.len(),
-        });
-    }
-    let mut ether_type = be16(&frame[12..14]);
+    decode_frame_with_link(frame, LinkLayer::Ethernet)
+}
+
+/// 按链路层封装解码一帧。
+///
+/// SLL/SLL2 只跳过 cooked 头；它们不是“另一种以太网”，所以 VLAN 处理也按
+/// cooked 头的协议字段单独走，不能把 SLL 负载当成从 MAC 头开始的字节。
+pub fn decode_frame_with_link(frame: &[u8], link: LinkLayer) -> Result<DecodedFrame, DecodeError> {
+    // ---- 链路头 ----
+    let (mut ether_type, mut offset, mut vlan_tags) = match link {
+        LinkLayer::Ethernet => {
+            if frame.len() < ETH_HEADER_LEN {
+                return Err(DecodeError::Truncated {
+                    stage: DecodeStage::Ethernet,
+                    need: ETH_HEADER_LEN,
+                    got: frame.len(),
+                });
+            }
+            (be16(&frame[12..14]), ETH_HEADER_LEN, 0u8)
+        }
+        LinkLayer::LinuxSll => {
+            if frame.len() < SLL_HEADER_LEN {
+                return Err(DecodeError::Truncated {
+                    stage: DecodeStage::Link,
+                    need: SLL_HEADER_LEN,
+                    got: frame.len(),
+                });
+            }
+            (be16(&frame[14..16]), SLL_HEADER_LEN, 0u8)
+        }
+        LinkLayer::LinuxSll2 => {
+            if frame.len() < SLL2_HEADER_LEN {
+                return Err(DecodeError::Truncated {
+                    stage: DecodeStage::Link,
+                    need: SLL2_HEADER_LEN,
+                    got: frame.len(),
+                });
+            }
+            (be16(&frame[0..2]), SLL2_HEADER_LEN, 0u8)
+        }
+    };
 
     // ---- VLAN 标签（可能嵌套）----
-    let mut offset = ETH_HEADER_LEN;
-    let mut vlan_tags = 0u8;
-    while ETHERTYPE_VLAN.contains(&ether_type) {
-        if vlan_tags == MAX_VLAN_TAGS {
-            return Err(DecodeError::TooManyVlanTags {
-                limit: MAX_VLAN_TAGS,
-            });
+    if link == LinkLayer::Ethernet {
+        while ETHERTYPE_VLAN.contains(&ether_type) {
+            if vlan_tags == MAX_VLAN_TAGS {
+                return Err(DecodeError::TooManyVlanTags {
+                    limit: MAX_VLAN_TAGS,
+                });
+            }
+            // 一个标签占 4 字节：2 字节 TCI + 2 字节内层 EtherType。
+            // 必须把 TCI 一起算进 need，否则会读到帧尾之外。
+            let need = offset + VLAN_TAG_LEN;
+            if frame.len() < need {
+                return Err(DecodeError::Truncated {
+                    stage: DecodeStage::Vlan,
+                    need,
+                    got: frame.len(),
+                });
+            }
+            // 标签内层 EtherType 位于标签的后 2 字节。
+            ether_type = be16(&frame[offset + 2..offset + 4]);
+            offset += VLAN_TAG_LEN;
+            vlan_tags += 1;
         }
-        if frame.len() < offset + VLAN_TAG_LEN {
+    } else if ETHERTYPE_VLAN.contains(&ether_type) {
+        // cooked 头里的 VLAN 协议号之后，负载以 TCI 开始，没有外层 TPID。
+        // 只支持一层：再嵌套时 cooked 头的表达本身有歧义，宁可报错也不猜。
+        let need = offset + VLAN_TAG_LEN;
+        if frame.len() < need {
             return Err(DecodeError::Truncated {
                 stage: DecodeStage::Vlan,
-                need: offset + VLAN_TAG_LEN,
+                need,
                 got: frame.len(),
             });
         }
-        // 标签内层 EtherType 位于标签的后 2 字节。
         ether_type = be16(&frame[offset + 2..offset + 4]);
         offset += VLAN_TAG_LEN;
-        vlan_tags += 1;
+        vlan_tags = 1;
     }
 
     // ---- 三层 ----
@@ -1122,6 +1214,71 @@ mod tests {
         assert_eq!(p.bytes, b"012345");
         assert_eq!(p.declared_len, 10, "声明长度仍是线上的量");
         assert!(p.is_truncated(), "短于声明长度必须可判别");
+    }
+
+    fn sll_wrap(ip: &[u8], sll2: bool, vlan: bool) -> Vec<u8> {
+        let ether_type = if vlan { 0x8100u16 } else { ETHERTYPE_IPV4 };
+        let mut v = Vec::new();
+        if sll2 {
+            v.extend_from_slice(&ether_type.to_be_bytes());
+            v.extend_from_slice(&[0, 0]); // reserved
+            v.extend_from_slice(&1u32.to_be_bytes()); // ifindex
+            v.extend_from_slice(&1u16.to_be_bytes()); // ARPHRD_ETHER
+            v.push(0); // packet type
+            v.push(6); // addr len
+            v.extend_from_slice(&[0u8; 8]);
+        } else {
+            v.extend_from_slice(&0u16.to_be_bytes()); // packet type
+            v.extend_from_slice(&1u16.to_be_bytes()); // ARPHRD_ETHER
+            v.extend_from_slice(&6u16.to_be_bytes()); // addr len
+            v.extend_from_slice(&[0u8; 8]);
+            v.extend_from_slice(&ether_type.to_be_bytes());
+        }
+        if vlan {
+            v.extend_from_slice(&100u16.to_be_bytes()); // TCI
+            v.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        }
+        v.extend_from_slice(ip);
+        v
+    }
+
+    #[test]
+    fn linux_sll_and_sll2_skip_cooked_header() {
+        let eth = ipv4_tcp_frame([10, 0, 0, 1], 12345, [93, 184, 216, 34], 443);
+        for sll2 in [false, true] {
+            for vlan in [false, true] {
+                let frame = sll_wrap(&eth[14..], sll2, vlan);
+                let link = if sll2 {
+                    LinkLayer::LinuxSll2
+                } else {
+                    LinkLayer::LinuxSll
+                };
+                let d = decode_frame_with_link(&frame, link).expect("cooked 头后应能解出 IPv4");
+                assert_eq!(d.l3, L3Proto::Ipv4);
+                assert_eq!(d.l4, Proto::Tcp);
+                assert_eq!(d.vlan_tags, u8::from(vlan));
+                assert_eq!(
+                    d.key,
+                    FlowKey::new_ipv4([10, 0, 0, 1], 12345, [93, 184, 216, 34], 443, IPPROTO_TCP)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cooked_header_truncation_is_reported_as_link_stage() {
+        let eth = ipv4_tcp_frame([10, 0, 0, 1], 12345, [93, 184, 216, 34], 443);
+        let frame = sll_wrap(&eth[14..], false, false);
+        let e = decode_frame_with_link(&frame[..SLL_HEADER_LEN - 1], LinkLayer::LinuxSll)
+            .expect_err("cooked 头不完整必须报错");
+        assert_eq!(
+            e,
+            DecodeError::Truncated {
+                stage: DecodeStage::Link,
+                need: SLL_HEADER_LEN,
+                got: SLL_HEADER_LEN - 1,
+            }
+        );
     }
 
     #[test]
